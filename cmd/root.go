@@ -41,7 +41,7 @@ Organization decides what they may manage.`,
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable debug logging")
 	root.Version = build.Version
 	root.SetVersionTemplate("workspace-manager version {{.Version}}\n")
-	root.AddCommand(newServeCmd(), newVersionCmd())
+	root.AddCommand(newServeCmd(), newSyncCmd(), newGitCredentialCmd(), newVersionCmd())
 	return root
 }
 

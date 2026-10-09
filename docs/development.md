@@ -1,7 +1,9 @@
 # Developing on workspace-manager
 
 - `make test`: the Go tests, among them the MCP `initialize` against a fake Dex
-  (`internal/server/oauth_test.go`).
+  (`internal/server/oauth_test.go`) and the sync against a local git server
+  over HTTP that wants a token and records every request
+  (`internal/mirror/sync_test.go`; needs `git` on the path).
 - `make lint`: golangci-lint.
 - `make helm-test`: `helm lint` and the helm-unittest suites in
   `helm/workspace-manager/tests/` (the `chart-test` CI job).
@@ -22,6 +24,27 @@ DEX_CLIENT_SECRET=... go run . serve --enable-oauth \
   --dex-issuer-url=https://dex.example.com --dex-client-id=agent-platform \
   --oauth-trusted-audiences=agent-platform
 ```
+
+Run a sync against a directory standing in for a workspace's volume, with a
+selection file and a credential directory per provider instance (`username`
+and `token`; the token is a GitHub App installation token or a fine-grained
+personal access token with read access to the repositories):
+
+```sh
+mkdir -p /tmp/ws-creds/github && printf 'x-access-token' > /tmp/ws-creds/github/username
+# write the token into /tmp/ws-creds/github/token without echoing it
+cat > /tmp/ws-selection.json <<'EOF'
+{"repositories": [{"provider": "github", "owner": "giantswarm", "name": "workspace-manager",
+  "cloneUrl": "https://github.com/giantswarm/workspace-manager.git", "defaultBranch": "main",
+  "pushedAt": "2026-10-09T12:00:00Z"}]}
+EOF
+go run . sync --volume /tmp/ws-volume --selection /tmp/ws-selection.json --credentials-dir /tmp/ws-creds
+cat /tmp/ws-volume/manifest.json
+```
+
+A second run with the same `pushedAt` fetches nothing; `--result-configmap`
+also writes the manifest into a ConfigMap of `--namespace` (the kube flags
+of `serve`).
 
 `helm/workspace-manager/values.schema.json` and the chart README are
 generated (`pre-commit run --all-files`); CI files under `.circleci/` other

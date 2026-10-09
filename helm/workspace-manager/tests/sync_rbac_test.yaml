@@ -1,0 +1,43 @@
+suite: sync job rbac
+templates:
+  - templates/sync-rbac.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+tests:
+  - it: gives the sync Job an account in the workspaces' namespace that writes ConfigMaps only
+    asserts:
+      - hasDocuments:
+          count: 3
+      - documentIndex: 0
+        isKind:
+          of: ServiceAccount
+      - documentIndex: 0
+        equal:
+          path: metadata.namespace
+          value: kagent
+      - documentIndex: 1
+        isKind:
+          of: Role
+      - documentIndex: 1
+        equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [configmaps]
+              verbs: [get, create, update]
+      - documentIndex: 2
+        equal:
+          path: subjects[0]
+          value:
+            kind: ServiceAccount
+            name: workspace-manager-sync
+            namespace: kagent
+
+  - it: renders nothing without rbac.create
+    set:
+      rbac:
+        create: false
+    asserts:
+      - hasDocuments:
+          count: 0
