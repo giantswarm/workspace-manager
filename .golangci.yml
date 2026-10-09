@@ -1,0 +1,9 @@
+# Tunes goconst to flag genuine production-code duplication only: the embedded
+# defaults flag repeated test fixtures, which are not real duplication.
+version: "2"
+linters:
+  settings:
+    goconst:
+      min-len: 5
+      min-occurrences: 5
+      ignore-tests: true

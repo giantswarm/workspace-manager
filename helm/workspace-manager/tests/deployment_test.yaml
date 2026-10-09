@@ -1,0 +1,171 @@
+# What the Deployment renders from the values: the server's arguments, its
+# OAuth contract with muster and Dex, and the hardened pod.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+chart:
+  appVersion: 1.2.3
+tests:
+  - it: serves MCP for the kagent namespace, without OAuth by default
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - serve
+            - --listen=:8080
+            - --in-cluster=true
+            - --namespace=kagent
+            - --mcp-path=/mcp
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: gsoci.azurecr.io/giantswarm/workspace-manager:1.2.3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEX_CLIENT_SECRET
+          any: true
+
+  - it: runs non-root with a read-only root filesystem
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value: [ALL]
+
+  - it: runs two replicas when asked
+    set:
+      replicaCount: 2
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+
+  - it: validates Dex tokens from the platform identity contract
+    set:
+      oauth:
+        enabled: true
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+          existingSecret: platform-oauth
+          ca:
+            secretName: dex-ca
+            key: ca.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-oauth=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oauth-base-url=https://workspace-manager.example.com
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --dex-issuer-url=https://dex.example.com
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --dex-client-id=platform-client
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oauth-trusted-audiences=platform-client
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --dex-ca-file=/etc/workspace-manager/idp-ca/ca.pem
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEX_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: platform-oauth
+                key: dex-client-secret
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: idp-ca
+            secret:
+              secretName: dex-ca
+              items:
+                - key: ca.pem
+                  path: ca.pem
+
+  - it: trusts the audiences it is given, de-duplicated, order kept
+    set:
+      oauth:
+        enabled: true
+        baseURL: https://wm.example.com
+        existingSecret: oauth
+        trustedAudiences: [platform-client, dex-k8s-authenticator, platform-client]
+        dex:
+          issuerURL: https://dex.example.com
+          clientID: platform-client
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oauth-trusted-audiences=platform-client,dex-k8s-authenticator
+
+  - it: refuses OAuth without a Dex issuer
+    set:
+      oauth:
+        enabled: true
+        baseURL: https://wm.example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: oauth.dex.issuerURL \(or global.identity.issuerUrl\) is required
+
+  - it: exports Prometheus metrics on their own port, or nothing
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_METRICS_EXPORTER
+            value: prometheus
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+            containerPort: 9464
+            protocol: TCP
+
+  - it: turns metrics off
+    set:
+      observability:
+        metrics:
+          enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_METRICS_EXPORTER
+            value: none
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+          any: true
+
+  - it: exports traces to an OTLP collector
+    set:
+      observability:
+        otel:
+          endpoint: http://otlp-gateway.kube-system.svc:4317
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: http://otlp-gateway.kube-system.svc:4317

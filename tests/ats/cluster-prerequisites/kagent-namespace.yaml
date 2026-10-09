@@ -1,0 +1,7 @@
+# The chart's placeholder Role and RoleBinding render into the workspaces'
+# namespace, `kagent`. The platform creates that namespace; the ATS kind
+# cluster is bare, so it goes on before the install.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent
