@@ -3,7 +3,8 @@
 The ServiceAccount's permissions in the workspaces' namespace: the manager
 writes the workspace objects, the volume and the jobs itself, once the
 caller's Organization is checked. The Role carries no rules yet; each workspace
-operation adds the rules it writes with.
+operation adds the rules it writes with. The sync Job's account is in
+sync-rbac.yaml.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

@@ -14,18 +14,34 @@ import (
 	"github.com/giantswarm/mcp-toolkit/metrics"
 	"github.com/giantswarm/mcp-toolkit/tracing"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/server"
 )
 
+// kubeFlags select how a command reaches the API server.
+type kubeFlags struct {
+	kubeconfig string
+	context    string
+	inCluster  bool
+}
+
+func (k *kubeFlags) add(f *pflag.FlagSet) {
+	f.StringVar(&k.kubeconfig, "kubeconfig", envOr("KUBECONFIG", ""), "Kubeconfig path; empty uses the default loading rules or in-cluster auth (KUBECONFIG)")
+	f.StringVar(&k.context, "kube-context", envOr("KUBE_CONTEXT", ""), "Kubeconfig context override (KUBE_CONTEXT)")
+	f.BoolVar(&k.inCluster, "in-cluster", envBool("KUBERNETES_IN_CLUSTER", false), "Force in-cluster Kubernetes auth (KUBERNETES_IN_CLUSTER)")
+}
+
+func (k *kubeFlags) config() kube.Config {
+	return kube.Config{Kubeconfig: k.kubeconfig, Context: k.context, InCluster: k.inCluster}
+}
+
 type serveOptions struct {
 	listen string
 
-	kubeconfig  string
-	kubeContext string
-	inCluster   bool
+	kube kubeFlags
 
 	namespace string
 
@@ -56,9 +72,7 @@ environment variable named next to it; flags win over the environment.`,
 	}
 	f := cmd.Flags()
 	f.StringVar(&o.listen, "listen", envOr("WORKSPACE_MANAGER_LISTEN", ":8080"), "Listen address (WORKSPACE_MANAGER_LISTEN)")
-	f.StringVar(&o.kubeconfig, "kubeconfig", envOr("KUBECONFIG", ""), "Kubeconfig path; empty uses the default loading rules or in-cluster auth (KUBECONFIG)")
-	f.StringVar(&o.kubeContext, "kube-context", envOr("KUBE_CONTEXT", ""), "Kubeconfig context override (KUBE_CONTEXT)")
-	f.BoolVar(&o.inCluster, "in-cluster", envBool("KUBERNETES_IN_CLUSTER", false), "Force in-cluster Kubernetes auth (KUBERNETES_IN_CLUSTER)")
+	o.kube.add(f)
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
@@ -94,7 +108,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 
 	// The manager's own ServiceAccount: it writes the workspace objects, the
 	// volume and the jobs once the caller's Organization is checked.
-	clients, err := kube.New(kube.Config{Kubeconfig: o.kubeconfig, Context: o.kubeContext, InCluster: o.inCluster})
+	clients, err := kube.New(o.kube.config())
 	if err != nil {
 		return fmt.Errorf("workspace-manager needs Kubernetes access: %w", err)
 	}
@@ -162,4 +176,16 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func envInt(key string, def int) int {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }

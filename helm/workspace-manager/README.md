@@ -44,7 +44,7 @@ Manages the Agent Platform's workspaces, the sources agent sessions work on and 
 | serviceAccount.create | bool | `true` | Create a ServiceAccount. |
 | serviceAccount.annotations | object | `{}` | Annotations on the ServiceAccount. |
 | serviceAccount.name | string | `""` | ServiceAccount name (generated when empty). |
-| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`. The Role carries no rules yet: each workspace operation brings the rules it writes with. |
+| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`, and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). The manager's Role carries no rules yet: each workspace operation brings the rules it writes with. |
 | podAnnotations | object | `{}` | Annotations on the pod. |
 | podLabels | object | `{}` | Labels on the pod. |
 | podSecurityContext | object | `{"fsGroup":1000,"runAsGroup":1000,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context. |
