@@ -101,8 +101,8 @@ func NewKubeStore(opts Options) (*KubeStore, error) {
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = DefaultLeaseDuration
 	}
-	if opts.LeaseDuration < 2*time.Second {
-		return nil, fmt.Errorf("sign-in store: lease duration %s is under 2s", opts.LeaseDuration)
+	if opts.LeaseDuration < 2*time.Second || opts.LeaseDuration > time.Hour {
+		return nil, fmt.Errorf("sign-in store: lease duration %s is outside 2s to 1h", opts.LeaseDuration)
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -354,7 +354,7 @@ type payload struct {
 }
 
 func (s *KubeStore) seal(in signIn, tok *oauth2.Token) ([]byte, error) {
-	plain, err := json.Marshal(payload{
+	plain, err := json.Marshal(payload{ //nolint:gosec // the tokens are marshaled to be sealed, never stored or logged in clear
 		AccessToken:  tok.AccessToken,
 		TokenType:    tok.TokenType,
 		RefreshToken: tok.RefreshToken,

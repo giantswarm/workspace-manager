@@ -126,7 +126,7 @@ func (l *refreshLease) free(lease *coordinationv1.Lease) bool {
 func (l *refreshLease) spec(now metav1.MicroTime) coordinationv1.LeaseSpec {
 	return coordinationv1.LeaseSpec{
 		HolderIdentity:       ptr.To(l.identity),
-		LeaseDurationSeconds: ptr.To(int32(l.duration / time.Second)),
+		LeaseDurationSeconds: ptr.To(int32(l.duration / time.Second)), //nolint:gosec // NewKubeStore bounds it to an hour
 		AcquireTime:          &now,
 		RenewTime:            &now,
 	}

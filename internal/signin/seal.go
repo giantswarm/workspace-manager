@@ -140,7 +140,7 @@ func (k *Keyring) Open(sealed []byte, context string) ([]byte, error) {
 // header is the envelope's clear prefix: version, key id length, key id.
 func (k *Keyring) header(id string) []byte {
 	h := make([]byte, 0, 2+len(id))
-	h = append(h, envelopeVersion, byte(len(id)))
+	h = append(h, envelopeVersion, byte(len(id))) //nolint:gosec // keyIDPattern bounds a key id to 32 bytes
 	return append(h, id...)
 }
 
