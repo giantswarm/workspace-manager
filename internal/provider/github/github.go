@@ -178,13 +178,15 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 		}
 		for _, r := range page {
 			items = append(items, provider.Item{
-				Owner:      owner,
-				Name:       r.Name,
-				Language:   r.Language,
-				Topics:     r.Topics,
-				Archived:   r.Archived,
-				Fork:       r.Fork,
-				LastChange: r.PushedAt,
+				Owner:         owner,
+				Name:          r.Name,
+				Language:      r.Language,
+				Topics:        r.Topics,
+				Archived:      r.Archived,
+				Fork:          r.Fork,
+				LastChange:    r.PushedAt,
+				CloneURL:      r.CloneURL,
+				DefaultBranch: r.DefaultBranch,
 			})
 		}
 	}
@@ -192,12 +194,14 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 }
 
 type repository struct {
-	Name     string    `json:"name"`
-	Language string    `json:"language"`
-	Topics   []string  `json:"topics"`
-	Archived bool      `json:"archived"`
-	Fork     bool      `json:"fork"`
-	PushedAt time.Time `json:"pushed_at"`
+	Name          string    `json:"name"`
+	Language      string    `json:"language"`
+	Topics        []string  `json:"topics"`
+	Archived      bool      `json:"archived"`
+	Fork          bool      `json:"fork"`
+	PushedAt      time.Time `json:"pushed_at"`
+	CloneURL      string    `json:"clone_url"`
+	DefaultBranch string    `json:"default_branch"`
 }
 
 func (k *Kind) get(ctx context.Context, cred oauth2.TokenSource, path string, out any) error {

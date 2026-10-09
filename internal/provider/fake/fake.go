@@ -97,6 +97,8 @@ func (k *Kind) List(_ context.Context, cred oauth2.TokenSource, owner string) ([
 	}
 	items := make([]provider.Item, 0, len(k.store.items[owner]))
 	for _, it := range k.store.items[owner] {
+		it.CloneURL = "https://" + k.v.Host + "/" + owner + "/" + it.Name + ".git"
+		it.DefaultBranch = "main"
 		items = append(items, it)
 	}
 	return items, nil

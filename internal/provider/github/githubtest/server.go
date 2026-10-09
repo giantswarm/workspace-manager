@@ -221,6 +221,7 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string)
 		out = append(out, map[string]any{
 			"name": it.Name, "full_name": owner + "/" + it.Name, "language": lang, "topics": topics,
 			"archived": it.Archived, "fork": it.Fork, "pushed_at": it.LastChange.UTC().Format(time.RFC3339),
+			"clone_url": s.URL + "/" + owner + "/" + it.Name + ".git", "default_branch": "main",
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

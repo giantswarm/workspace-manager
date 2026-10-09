@@ -65,6 +65,11 @@ type Item struct {
 	// LastChange is when the item last changed: on git providers the last
 	// push to any branch or tag.
 	LastChange time.Time
+	// CloneURL is the git clone URL over http(s), without a credential: the
+	// sync's credential helper supplies it.
+	CloneURL string
+	// DefaultBranch is the branch a mirror's HEAD points at.
+	DefaultBranch string
 }
 
 // Key identifies an item across owners: `<owner>/<name>`, also its mirror's

@@ -86,6 +86,12 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		byName := map[string]provider.Item{}
 		for _, it := range items {
 			assert.Equal(t, Owner, it.Owner, "every item is listed under the owner asked for")
+			assert.NotEmpty(t, it.DefaultBranch, "%s: default branch", it.Name)
+			u, err := url.Parse(it.CloneURL)
+			if assert.NoError(t, err, it.Name) {
+				assert.True(t, (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil,
+					"%s: clone URL %q is http(s) without a credential", it.Name, it.CloneURL)
+			}
 			byName[it.Name] = it
 		}
 		assert.ElementsMatch(t, []string{"api", "web", "docs", oldAPI, "upstream-fork"}, keys(byName), "the owner's items, none of another owner's")
