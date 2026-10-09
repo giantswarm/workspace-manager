@@ -337,6 +337,26 @@
         "provider": {
             "type": "string"
         },
+        "providers": {
+            "type": "array",
+            "description": "The installation's workspace providers, several at once: each a unique `name` (a DNS label: the name workspaces and sign-ins refer to), a `kind` and the kind's `values`. A duplicate name, an unknown kind or invalid values fail the server's start with a message naming the instance. Kind `github` (github.com or a GitHub Enterprise Server) takes `url` (default `https://github.com`), `apiURL` (derived from `url`), `app.id`, `app.privateKey` and `oauth.clientID`, `oauth.clientSecret`; a Secret reference is `{name, key}` of a Secret in the release namespace, e.g. `{name: github, kind: github, values: {app: {id: \"123\", privateKey: {name: github-agents-app, key: private-key}}, oauth: {clientID: Iv1.abc, clientSecret: {name: github-agents-app, key: client-secret}}}}`.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "values": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                }
+            }
+        },
         "rbac": {
             "type": "object",
             "additionalProperties": false,

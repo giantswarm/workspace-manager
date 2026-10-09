@@ -77,6 +77,8 @@ volume mounted at `--volume`:
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server and its tracing and metrics middleware.
+- `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, and the provider instance list (`--providers-config`, the chart's `providers`).
+- `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes.
 - `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.
 - `internal/mirror`: the sync: the volume's layout, the mirrors, the manifest, the credential helper and the borrowed-objects rule.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).
