@@ -83,8 +83,9 @@ func (s *gitServer) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The fixture serves its own repositories to its own tests.
 	dir := filepath.Join(s.root, parts[0], parts[1])
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() { //nolint:gosec // the path is the fixture's own
 		http.NotFound(w, r)
 		return
 	}
@@ -102,7 +103,7 @@ func (s *gitServer) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		service := "# service=git-upload-pack\n"
 		_, _ = fmt.Fprintf(w, "%04x%s0000", len(service)+4, service)
-		_, _ = w.Write(out)
+		_, _ = w.Write(out) //nolint:gosec // git's reference advertisement, not a page
 	case r.Method == http.MethodPost && parts[2] == "git-upload-pack":
 		body := io.Reader(r.Body)
 		if r.Header.Get("Content-Encoding") == "gzip" {
@@ -111,7 +112,7 @@ func (s *gitServer) serve(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			defer gz.Close()
+			defer func() { _ = gz.Close() }()
 			body = gz
 		}
 		cmd := exec.CommandContext(r.Context(), "git", "upload-pack", "--stateless-rpc", dir) //nolint:gosec // the fixture's own repository
