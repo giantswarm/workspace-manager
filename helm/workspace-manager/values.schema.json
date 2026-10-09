@@ -363,7 +363,7 @@
             "properties": {
                 "create": {
                     "type": "boolean",
-                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`. The Role carries no rules yet: each workspace operation brings the rules it writes with."
+                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`, and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). The manager's Role carries no rules yet: each workspace operation brings the rules it writes with."
                 }
             }
         },
