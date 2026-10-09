@@ -144,7 +144,7 @@ func loadProviders(path string) ([]provider.Instance, error) {
 	if path == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is the operator's own flag.
 	if err != nil {
 		return nil, fmt.Errorf("provider configuration: %w", err)
 	}
