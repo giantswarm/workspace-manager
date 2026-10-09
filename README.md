@@ -3,9 +3,11 @@
 Manages the Agent Platform's workspaces, the sources agent sessions work on,
 and their provider sign-ins, as one MCP server behind muster.
 
-muster registers it like every other manager, unpinned with `forwardToken`: it
-forwards the person's Dex id_token, which workspace-manager validates as an
-OAuth 2.1 resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
+The chart registers it with muster like every other manager, through its own
+`MCPServer` (`muster.mcpServer.enabled`; the tools appear as
+`x_workspace-manager_<tool>`), unpinned with `forwardToken`: muster forwards
+the person's Dex id_token, which workspace-manager validates as an OAuth 2.1
+resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
 The caller's identity and Dex token travel with every request, and a request
 without one is refused with 401. The manager checks the caller's Organization
 from that identity and writes with its own ServiceAccount.

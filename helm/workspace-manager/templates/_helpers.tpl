@@ -124,12 +124,25 @@ global.identity.ca. Name empty means system trust.
 {{- end }}
 
 {{/*
-Trusted audiences, comma-separated: oauth.trustedAudiences, else the platform
-client id (global.identity.clientId).
+Trusted audiences, comma-separated: the OAuth client ids whose Dex id_tokens
+this server accepts as bearer tokens. The union, in this order and without
+duplicates, of
+  - oauth.trustedAudiences, else the platform client (global.identity.clientId)
+    -- the client MCP clients and the muster CLI log in with;
+  - muster.mcpServer.auth.requiredAudiences -- every token muster forwards to
+    this server carries them by construction (muster requests them at login)
+    and they are the audiences the kube-apiserver trusts, so a portal
+    session's token, which carries them but not the platform client, is
+    accepted too.
 */}}
 {{- define "workspace-manager.oauthTrustedAudiences" -}}
 {{- $g := include "workspace-manager.globalIdentity" . | fromJson -}}
-{{- .Values.oauth.trustedAudiences | default (compact (list (dig "clientId" "" $g))) | uniq | join "," -}}
+{{- $base := .Values.oauth.trustedAudiences | default (list (dig "clientId" "" $g)) -}}
+{{- $auds := list -}}
+{{- range concat $base (.Values.muster.mcpServer.auth.requiredAudiences | default list) -}}
+{{- if and . (not (has . $auds)) }}{{ $auds = append $auds . }}{{ end -}}
+{{- end -}}
+{{- join "," $auds -}}
 {{- end }}
 
 {{/*
