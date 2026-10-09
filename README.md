@@ -1,7 +1,7 @@
 # workspace-manager
 
-Manages the Agent Platform's workspaces, their provider sign-ins, volume sync,
-snapshots and session grants, as one MCP server behind muster.
+Manages the Agent Platform's workspaces, the sources agent sessions work on,
+and their provider sign-ins, as one MCP server behind muster.
 
 muster registers it like every other manager, unpinned with `forwardToken`: it
 forwards the person's Dex id_token, which workspace-manager validates as an

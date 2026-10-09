@@ -2,8 +2,7 @@
 {{- /*
 The ServiceAccount's own permissions in the workspaces' namespace. The Role
 carries no rules yet: every request acts as the caller with the caller's Dex
-token, and the server's own work (volumes, sync jobs, snapshots) adds the
-rules it needs when it arrives.
+token, and the server's own work adds the rules it needs when it arrives.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

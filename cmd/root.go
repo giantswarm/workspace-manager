@@ -25,10 +25,9 @@ func newRootCmd() *cobra.Command {
 		Use:   "workspace-manager",
 		Short: "Workspace service for the Agent Platform",
 		Long: `workspace-manager manages the Agent Platform's workspaces: the sources an
-agent session works on, their provider sign-ins, volume sync, snapshots and
-session grants. It is one MCP server behind muster, which forwards the
-person's Dex identity; every Kubernetes call a request makes is made as that
-person.`,
+agent session works on, and their provider sign-ins. It is one MCP server
+behind muster, which forwards the person's Dex identity; every Kubernetes call
+a request makes is made as that person.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {

@@ -36,8 +36,8 @@ fullnameOverride: ""
 global: {}  # @schema type: object; additionalProperties: true
 
 workspaces:
-  # -- Namespace the workspaces, their volumes, snapshots and session grants
-  # live in: the namespace kagent runs its sessions in. The placeholder
+  # -- Namespace the workspaces and everything they own live in: the
+  # namespace kagent runs its sessions in. The placeholder
   # Role (`rbac.create`) is rendered here.
   namespace: kagent
 
@@ -122,8 +122,7 @@ serviceAccount:
 rbac:
   # -- Create the ServiceAccount's Role and RoleBinding in
   # `workspaces.namespace`. The Role carries no rules yet: requests act as the
-  # caller, and the server's own work (volumes, sync jobs, snapshots) brings
-  # its rules with it.
+  # caller, and the server's own work brings its rules with it.
   create: true
 
 # -- Annotations on the pod.

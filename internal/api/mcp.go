@@ -23,8 +23,7 @@ const tracerName = "github.com/giantswarm/workspace-manager"
 type Config struct {
 	// Kube hands out the caller's Kubernetes clients.
 	Kube kube.Provider
-	// Namespace is where the workspaces, their volumes, snapshots and session
-	// grants live.
+	// Namespace is where the workspaces and everything they own live.
 	Namespace string
 }
 

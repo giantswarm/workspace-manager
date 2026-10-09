@@ -1,6 +1,6 @@
 # workspace-manager
 
-Manages the Agent Platform's workspaces, their provider sign-ins, volume sync, snapshots and session grants, as one MCP server behind muster
+Manages the Agent Platform's workspaces, the sources agent sessions work on and their provider sign-ins, as one MCP server behind muster
 
 **Homepage:** <https://github.com/giantswarm/workspace-manager>
 
@@ -22,7 +22,7 @@ Manages the Agent Platform's workspaces, their provider sign-ins, volume sync, s
 | nameOverride | string | `""` | Override the chart name. |
 | fullnameOverride | string | `""` | Override the fully qualified release name. |
 | global | object | `{}` |  |
-| workspaces.namespace | string | `"kagent"` | Namespace the workspaces, their volumes, snapshots and session grants live in: the namespace kagent runs its sessions in. The placeholder Role (`rbac.create`) is rendered here. |
+| workspaces.namespace | string | `"kagent"` | Namespace the workspaces and everything they own live in: the namespace kagent runs its sessions in. The placeholder Role (`rbac.create`) is rendered here. |
 | mcp.path | string | `"/mcp"` | MCP endpoint path. |
 | oauth.enabled | bool | `false` | Make workspace-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint requires a bearer token Dex issued, and every call carries the caller's identity and Dex token, which every Kubernetes call of the request presents. muster forwards the session's Dex id_token (its MCPServer registration with `auth.forwardToken`, unpinned like every manager); it is validated against Dex's JWKS when its audience is in `trustedAudiences`. Off: no caller, so nothing that reaches Kubernetes works; only for a server nothing but a trusted proxy can reach. |
 | oauth.baseURL | string | `""` | Public base URL of this server: the issuer of its own OAuth metadata (https, or http on loopback). Empty derives `https://<fullname>.<global.domain>` when `global.domain` is set. |
@@ -44,7 +44,7 @@ Manages the Agent Platform's workspaces, their provider sign-ins, volume sync, s
 | serviceAccount.create | bool | `true` | Create a ServiceAccount. |
 | serviceAccount.annotations | object | `{}` | Annotations on the ServiceAccount. |
 | serviceAccount.name | string | `""` | ServiceAccount name (generated when empty). |
-| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`. The Role carries no rules yet: requests act as the caller, and the server's own work (volumes, sync jobs, snapshots) brings its rules with it. |
+| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`. The Role carries no rules yet: requests act as the caller, and the server's own work brings its rules with it. |
 | podAnnotations | object | `{}` | Annotations on the pod. |
 | podLabels | object | `{}` | Labels on the pod. |
 | podSecurityContext | object | `{"fsGroup":1000,"runAsGroup":1000,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context. |

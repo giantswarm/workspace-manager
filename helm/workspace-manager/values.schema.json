@@ -343,7 +343,7 @@
             "properties": {
                 "create": {
                     "type": "boolean",
-                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`. The Role carries no rules yet: requests act as the caller, and the server's own work (volumes, sync jobs, snapshots) brings its rules with it."
+                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`. The Role carries no rules yet: requests act as the caller, and the server's own work brings its rules with it."
                 }
             }
         },
@@ -521,7 +521,7 @@
             "properties": {
                 "namespace": {
                     "type": "string",
-                    "description": "Namespace the workspaces, their volumes, snapshots and session grants live in: the namespace kagent runs its sessions in. The placeholder Role (`rbac.create`) is rendered here."
+                    "description": "Namespace the workspaces and everything they own live in: the namespace kagent runs its sessions in. The placeholder Role (`rbac.create`) is rendered here."
                 }
             }
         }

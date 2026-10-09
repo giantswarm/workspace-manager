@@ -8,7 +8,7 @@ appVersion: 0.0.1
 
 name: workspace-manager
 
-description: Manages the Agent Platform's workspaces, their provider sign-ins, volume sync, snapshots and session grants, as one MCP server behind muster
+description: Manages the Agent Platform's workspaces, the sources agent sessions work on and their provider sign-ins, as one MCP server behind muster
 
 home: https://github.com/giantswarm/workspace-manager
 
