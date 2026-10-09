@@ -61,7 +61,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.BoolVar(&o.inCluster, "in-cluster", envBool("KUBERNETES_IN_CLUSTER", false), "Force in-cluster Kubernetes auth (KUBERNETES_IN_CLUSTER)")
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
-	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and token travel with every request, and a request without a caller token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
+	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("WORKSPACE_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (WORKSPACE_MANAGER_OAUTH_BASE_URL)")
 	f.StringVar(&o.dexIssuerURL, "dex-issuer-url", envOr("DEX_ISSUER_URL", ""), "Dex issuer URL (DEX_ISSUER_URL)")
 	f.StringVar(&o.dexClientID, "dex-client-id", envOr("DEX_CLIENT_ID", ""), "Dex client ID (DEX_CLIENT_ID)")
@@ -92,13 +92,12 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	defer flush(ctx, "metrics", shutdownMetrics, log)
 
-	// The pod's own client carries the in-cluster address and CA only: every
-	// Kubernetes call a request makes presents the caller's Dex token.
+	// The manager's own ServiceAccount: it writes the workspace objects, the
+	// volume and the jobs once the caller's Organization is checked.
 	clients, err := kube.New(kube.Config{Kubeconfig: o.kubeconfig, Context: o.kubeContext, InCluster: o.inCluster})
 	if err != nil {
 		return fmt.Errorf("workspace-manager needs Kubernetes access: %w", err)
 	}
-	provider := kube.NewCallerProvider(clients, log)
 
 	srvCfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
 	if o.oauthEnabled {
@@ -114,7 +113,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		}
 	}
-	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: provider, Namespace: o.namespace}, build.Version), log)
+	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: clients, Namespace: o.namespace}, build.Version), log)
 	if err != nil {
 		return err
 	}

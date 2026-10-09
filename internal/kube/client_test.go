@@ -1,98 +1,57 @@
 package kube
 
 import (
-	"context"
-	"encoding/base64"
-	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/client-go/rest"
-
-	"github.com/giantswarm/workspace-manager/internal/identity"
 )
 
-func testClients(t *testing.T) *Clients {
-	t.Helper()
-	c, err := fromRESTConfig(&rest.Config{ // #nosec G101 -- test fixture, not a credential
-		Host:            "https://kubernetes.example.test:6443",
-		BearerToken:     "service-account-token",
-		BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
-		UserAgent:       "workspace-manager",
-		TLSClientConfig: rest.TLSClientConfig{Insecure: true},
-	})
+const kubeconfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: lab
+  cluster:
+    server: https://lab.example.test:6443
+- name: other
+  cluster:
+    server: https://other.example.test:6443
+users:
+- name: lab
+  user: {}
+contexts:
+- name: lab
+  context: {cluster: lab, user: lab}
+- name: other
+  context: {cluster: other, user: lab}
+current-context: lab
+`
+
+func TestNewReadsTheKubeconfigAndContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	require.NoError(t, os.WriteFile(path, []byte(kubeconfig), 0o600))
+
+	cfg, err := restConfig(Config{Kubeconfig: path})
 	require.NoError(t, err)
-	return c
+	assert.Equal(t, "https://lab.example.test:6443", cfg.Host)
+
+	cfg, err = restConfig(Config{Kubeconfig: path, Context: "other"})
+	require.NoError(t, err)
+	assert.Equal(t, "https://other.example.test:6443", cfg.Host, "the context override wins")
+
+	c, err := New(Config{Kubeconfig: path})
+	require.NoError(t, err)
+	assert.NotNil(t, c.Dynamic())
+	assert.NotNil(t, c.Typed())
+	assert.NotNil(t, c.Discovery())
 }
 
-func TestForTokenDropsEveryServiceAccountCredential(t *testing.T) {
-	c := testClients(t)
-	user, err := c.ForToken("user-id-token")
-	require.NoError(t, err)
-	assert.Equal(t, "user-id-token", user.restCfg.BearerToken)
-	assert.Empty(t, user.restCfg.BearerTokenFile, "the pod's token file must not shadow the caller's token")
-	assert.Equal(t, c.restCfg.Host, user.restCfg.Host)
-	assert.Equal(t, c.restCfg.TLSClientConfig, user.restCfg.TLSClientConfig)
-	assert.Equal(t, "workspace-manager", user.restCfg.UserAgent)
-	assert.NotSame(t, c.Typed(), user.Typed())
-
-	_, err = c.ForToken("")
-	assert.ErrorIs(t, err, ErrNoCallerToken)
-}
-
-func TestCallerProviderNeedsTheCallerToken(t *testing.T) {
-	p := NewCallerProvider(testClients(t), nil)
-
-	_, err := p.Client(context.Background())
-	assert.ErrorIs(t, err, ErrNoCallerToken, "no token, no client: there is no other credential to fall back to")
-
-	valid := jwt(t, time.Now().Add(time.Hour))
-	ctx := identity.ContextWithToken(identity.ContextWith(context.Background(), &identity.Identity{Email: "admin@lab.local"}), valid)
-	user, err := p.Client(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, valid, user.(*Clients).restCfg.BearerToken, "the caller's token is what the apiserver sees")
-	again, err := p.Client(ctx)
-	require.NoError(t, err)
-	assert.Same(t, user, again, "cached per token")
-
-	other := identity.ContextWithToken(context.Background(), jwt(t, time.Now().Add(time.Hour), 7))
-	second, err := p.Client(other)
-	require.NoError(t, err)
-	assert.NotSame(t, user, second, "another token, another client")
-
-	expired := identity.ContextWithToken(context.Background(), jwt(t, time.Now().Add(-time.Minute)))
-	stale, err := p.Client(expired)
-	require.NoError(t, err, "an expired token is still presented: the apiserver rejects it, nothing else answers")
-	again, err = p.Client(expired)
-	require.NoError(t, err)
-	assert.Same(t, stale, again)
-
-	opaque := identity.ContextWithToken(context.Background(), "opaque")
-	_, err = p.Client(opaque)
-	require.NoError(t, err, "a token without exp is presented as long as the request lasts")
-}
-
-func TestCallerProviderEvictsExpiredEntriesWhenFull(t *testing.T) {
-	p := NewCallerProvider(testClients(t), nil)
-	for i := 0; i < maxCallerClients; i++ {
-		_, err := p.Client(identity.ContextWithToken(context.Background(), jwt(t, time.Now().Add(-time.Hour), i)))
-		require.NoError(t, err)
-	}
-	assert.Len(t, p.byToken, maxCallerClients)
-	_, err := p.Client(identity.ContextWithToken(context.Background(), jwt(t, time.Now().Add(time.Hour), -1)))
-	require.NoError(t, err)
-	assert.Len(t, p.byToken, 1, "expired entries are evicted before a new one is cached")
-}
-
-func jwt(t *testing.T, exp time.Time, salt ...int) string {
-	t.Helper()
-	claims := map[string]any{"exp": exp.Unix()}
-	if len(salt) > 0 {
-		claims["jti"] = salt[0]
-	}
-	payload, err := json.Marshal(claims)
-	require.NoError(t, err)
-	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`)) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+func TestNewFailsWithoutAnyCluster(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	_, err := New(Config{Kubeconfig: filepath.Join(t.TempDir(), "missing")})
+	assert.Error(t, err)
+	_, err = New(Config{InCluster: true})
+	assert.Error(t, err, "no pod environment")
 }

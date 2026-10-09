@@ -1,8 +1,8 @@
 // Package server assembles the single HTTP listener: health endpoints and the
 // MCP streamable-HTTP endpoint behind the OAuth guard when configured. Without
 // OAuth there is no authentication and no caller: only a server nothing but a
-// trusted proxy can reach runs that way, and every tool that reaches
-// Kubernetes refuses for want of a caller token.
+// trusted proxy can reach runs that way, and every tool that needs the
+// caller's Organization refuses.
 package server
 
 import (
@@ -25,7 +25,7 @@ type Config struct {
 	// OAuth, when set, makes the server an OAuth 2.1 resource server: the MCP
 	// endpoint requires a bearer token Dex issued (forwarded by muster) or
 	// this server's own, and every call carries the caller's identity and
-	// token.
+	// Dex token.
 	OAuth *OAuthConfig
 }
 

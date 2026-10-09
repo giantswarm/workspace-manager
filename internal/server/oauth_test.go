@@ -214,7 +214,7 @@ func TestForwardedIDTokenBecomesTheCaller(t *testing.T) {
 	assert.Equal(t, "sub-admin", seen.id.Subject)
 	assert.Equal(t, []string{"platform-admins"}, seen.id.Groups)
 	assert.Equal(t, identity.SourceSSO, seen.id.Source)
-	assert.Equal(t, forwarded, seen.token, "the forwarded id_token is what the Kubernetes API will see")
+	assert.Equal(t, forwarded, seen.token, "the forwarded id_token travels with the request")
 
 	// A token minted for some other client (another aggregator, another app)
 	// is not trusted, even though the same IdP signed it.
@@ -227,13 +227,13 @@ func TestForwardedIDTokenBecomesTheCaller(t *testing.T) {
 
 // TestUntrustedAudienceIsNamedInTheRefusal: a session that signed in through
 // another Dex client forwards an id_token for that client next to the
-// audience the MCPServer requires — never the platform client. With neither trusted, mcp-oauth falls
-// back to the IdP's userinfo endpoint (Dex answers for any token it signed),
-// so the caller is known but not SSO and there is no token to present
-// downstream. The refusal names the token's audiences and the trusted ones,
-// in the log and in the WWW-Authenticate description muster shows, without
-// any token material. Trusting the required audience — the chart's default —
-// turns the same token into the caller.
+// audience the MCPServer requires, never the platform client. With neither
+// trusted, mcp-oauth falls back to Dex's userinfo endpoint (Dex answers for
+// any token it signed), so the caller is known but not SSO and there is no
+// Dex token to carry. The refusal names the token's audiences and the trusted
+// ones, in the log and in the WWW-Authenticate description muster shows,
+// without any token material. Trusting the required audience turns the same
+// token into the caller.
 func TestUntrustedAudienceIsNamedInTheRefusal(t *testing.T) {
 	idp := newFakeIdP(t)
 	var logs bytes.Buffer
@@ -294,7 +294,7 @@ func TestUntrustedAudienceIsNamedInTheRefusal(t *testing.T) {
 	require.NotNil(t, seen)
 	assert.Equal(t, identity.SourceSSO, seen.Source)
 	assert.Equal(t, "admin@lab.local", seen.Email)
-	assert.Equal(t, portal, seenToken, "the portal's id_token is what the Kubernetes API will see")
+	assert.Equal(t, portal, seenToken, "the id_token travels with the request")
 }
 
 func TestUnverifiedAudience(t *testing.T) {

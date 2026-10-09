@@ -29,8 +29,7 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "workspace-manager.serviceAccountName" . }}
       {{- /*
-      The token is mounted for the in-cluster API address and CA; every
-      request presents the caller's Dex token instead.
+      The manager acts as its ServiceAccount (rbac.yaml).
       */}}
       automountServiceAccountToken: true
       securityContext:

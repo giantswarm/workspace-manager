@@ -2,10 +2,7 @@ package identity
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,20 +34,4 @@ func TestContextRoundTrip(t *testing.T) {
 	assert.Equal(t, "tok", tok)
 	assert.Same(t, ctx, ContextWithToken(ctx, ""), "an empty token adds nothing")
 	assert.Same(t, ctx, ContextWith(ctx, nil), "a nil identity adds nothing")
-}
-
-func TestTokenExpiry(t *testing.T) {
-	exp := time.Now().Add(time.Hour).Truncate(time.Second)
-	assert.Equal(t, exp, TokenExpiry(jwt(t, map[string]any{"exp": exp.Unix()})))
-	assert.True(t, TokenExpiry(jwt(t, map[string]any{"sub": "x"})).IsZero(), "no exp claim")
-	assert.True(t, TokenExpiry("opaque-token").IsZero())
-	assert.True(t, TokenExpiry("a.!!!.c").IsZero())
-}
-
-func jwt(t *testing.T, claims map[string]any) string {
-	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	payload, err := json.Marshal(claims)
-	require.NoError(t, err)
-	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }

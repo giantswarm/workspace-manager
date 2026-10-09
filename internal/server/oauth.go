@@ -26,9 +26,9 @@ import (
 // in front of the MCP endpoint. Dex is the authority: muster forwards the
 // session's Dex id_token byte-identical (MCPServer auth.forwardToken, unpinned
 // like every manager), which is validated here against Dex's JWKS when its
-// audience is one of TrustedAudiences. The caller's identity and token then
-// travel with the request (identity package); every Kubernetes call is made
-// with that token, so a request that yields none is refused (401).
+// audience is one of TrustedAudiences. The caller's identity and Dex token then
+// travel with the request (identity package); a request that yields no Dex
+// token is refused (401), since nothing else proves who the caller is.
 type OAuthConfig struct {
 	// BaseURL is the public URL of this server: the OAuth issuer identifier
 	// of its own authorization-server metadata (https, or http on loopback).
@@ -165,8 +165,8 @@ func (o *oauthRuntime) protect(next http.Handler) http.Handler {
 // attachIdentity translates the validated mcp-oauth user into the request's
 // identity and resolves the caller's Dex token: a forwarded id_token is the
 // bearer itself; for a token this server issued, Dex's id_token is looked up
-// in the store. A request that yields no Dex token is refused: every
-// Kubernetes call presents it, and there is nothing else to act with.
+// in the store. A request that yields no Dex token is refused: the caller's
+// Organization is checked from it, and nothing else proves who the caller is.
 func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -199,7 +199,7 @@ func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 // token's aud is read without verification, for the message only. muster
 // shows the WWW-Authenticate description in its session hint.
 func (o *oauthRuntime) refuse(w http.ResponseWriter, r *http.Request, id *identity.Identity) {
-	reason := "no identity token to act with towards the Kubernetes API"
+	reason := "no Dex identity token for the caller"
 	attrs := []any{"caller", id.String(), "source", id.Source, "path", r.URL.Path}
 	if aud, ok := untrustedAudience(bearerToken(r), o.cfg.TrustedAudiences); ok {
 		reason = fmt.Sprintf("token audience %v matches none of the trusted audiences %v (--oauth-trusted-audiences)", aud, o.cfg.TrustedAudiences)

@@ -1,6 +1,6 @@
 // Package api is workspace-manager's MCP surface. The server carries no tools
-// yet; each workspace operation registers its tool here and reaches
-// Kubernetes through Config.Kube, as the caller.
+// yet; each workspace operation registers its tool here, checks the caller's
+// Organization and writes through Config.Kube, the manager's own clients.
 package api
 
 import (
@@ -21,8 +21,8 @@ const tracerName = "github.com/giantswarm/workspace-manager"
 
 // Config is what the tools work with.
 type Config struct {
-	// Kube hands out the caller's Kubernetes clients.
-	Kube kube.Provider
+	// Kube is the manager's ServiceAccount clients.
+	Kube kube.Client
 	// Namespace is where the workspaces and everything they own live.
 	Namespace string
 }
@@ -45,6 +45,6 @@ func NewMCPServer(_ Config, version string) *mcpserver.MCPServer {
 		// MCP spans nest under it instead of extracting it a second time.
 		mcpotel.WithServerTracingPropagator(otel.Tracer(tracerName), propagation.NewCompositeTextMapPropagator()),
 		mcpserver.WithToolCapabilities(false),
-		mcpserver.WithInstructions("Manage the Agent Platform's workspaces: the sources an agent session works on. Every call acts as the caller."),
+		mcpserver.WithInstructions("Manage the Agent Platform's workspaces: the sources an agent session works on. Every call is checked against the caller's Organization."),
 	)
 }

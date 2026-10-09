@@ -6,9 +6,9 @@ and their provider sign-ins, as one MCP server behind muster.
 muster registers it like every other manager, unpinned with `forwardToken`: it
 forwards the person's Dex id_token, which workspace-manager validates as an
 OAuth 2.1 resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
-The caller's identity and token travel with every request, and every
-Kubernetes call a request makes presents that token, so the person's RBAC
-decides. A request without a caller token is refused with 401.
+The caller's identity and Dex token travel with every request, and a request
+without one is refused with 401. The manager checks the caller's Organization
+from that identity and writes with its own ServiceAccount.
 
 ## Endpoints
 
@@ -26,7 +26,7 @@ Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 - `cmd/`: the CLI (`serve`, `version`); every flag also reads an environment variable.
 - `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request.
 - `internal/identity`: the caller and the caller's Dex token on the request context.
-- `internal/kube`: Kubernetes clients that present the caller's token.
+- `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server and its tracing and metrics middleware.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).
 
