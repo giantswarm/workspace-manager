@@ -7,9 +7,10 @@
 #     unittest plugin is not in the architect go image, so the job runs in a
 #     plain container with a pinned helm.
 #   - envtest: the tests behind the envtest build tag, which need a real API
-#     server (the Workspace CRD's validation rules), through
-#     `make test-envtest`; setup-envtest fetches kube-apiserver and etcd. It
-#     first checks the generated API files are current.
+#     server (the sign-in store's cross-replica refresh, the Workspace CRD's
+#     validation rules), through `make test-envtest`; setup-envtest fetches
+#     kube-apiserver and etcd. It first checks the generated API files are
+#     current.
 version: 2.1
 
 jobs:
