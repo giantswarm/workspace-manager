@@ -4,6 +4,10 @@
   (`internal/server/oauth_test.go`) and the sync against a local git server
   over HTTP that wants a token and records every request
   (`internal/mirror/sync_test.go`; needs `git` on the path).
+- `make test-envtest`: the tests behind the `envtest` build tag, against a
+  real kube-apiserver and etcd that setup-envtest fetches (the `envtest` CI
+  job): the sign-in store's refresh, single-flighted across two replicas
+  (`internal/signin/envtest_test.go`).
 - `make lint`: golangci-lint.
 - `make helm-test`: `helm lint` and the helm-unittest suites in
   `helm/workspace-manager/tests/` (the `chart-test` CI job).
