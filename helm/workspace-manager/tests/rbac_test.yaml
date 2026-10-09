@@ -1,0 +1,37 @@
+suite: rbac placeholder
+templates:
+  - templates/rbac.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+tests:
+  - it: binds an empty Role in the workspaces' namespace
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        isKind:
+          of: Role
+      - documentIndex: 0
+        equal:
+          path: metadata.namespace
+          value: kagent
+      - documentIndex: 0
+        equal:
+          path: rules
+          value: []
+      - documentIndex: 1
+        equal:
+          path: subjects[0]
+          value:
+            kind: ServiceAccount
+            name: workspace-manager
+            namespace: agent-platform
+
+  - it: renders nothing without rbac.create
+    set:
+      rbac:
+        create: false
+    asserts:
+      - hasDocuments:
+          count: 0

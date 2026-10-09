@@ -1,0 +1,81 @@
+suite: networking and monitoring
+templates:
+  - templates/networkpolicy.yaml
+  - templates/servicemonitor.yaml
+  - templates/service.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+tests:
+  - it: renders neither NetworkPolicy nor ServiceMonitor by default
+    templates:
+      - templates/networkpolicy.yaml
+      - templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: lets the named namespaces reach the MCP port and Prometheus the metrics port
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        enabled: true
+        ingressNamespaces: [muster]
+    asserts:
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: muster
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 8080
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9464
+
+  - it: opens egress to an in-cluster OTLP collector's namespace
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        enabled: true
+      observability:
+        otel:
+          endpoint: http://otlp-gateway.kube-system.svc:4317
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+            ports:
+              - protocol: TCP
+                port: 4317
+
+  - it: scrapes the metrics port with the tenant label
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor:
+        enabled: true
+        labels:
+          observability.giantswarm.io/tenant: giantswarm
+    asserts:
+      - equal:
+          path: spec.endpoints[0].port
+          value: metrics
+      - equal:
+          path: metadata.labels["observability.giantswarm.io/tenant"]
+          value: giantswarm
+
+  - it: exposes the MCP and metrics ports
+    template: templates/service.yaml
+    asserts:
+      - equal:
+          path: spec.ports[0].name
+          value: http
+      - equal:
+          path: spec.ports[1].name
+          value: metrics

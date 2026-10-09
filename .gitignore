@@ -1,0 +1,11 @@
+# local builds
+/workspace-manager
+/workspace-manager-linux-*
+/workspace-manager-darwin-*
+/workspace-manager-windows-*
+/build/
+/dist/
+# editor / OS
+.idea/
+.vscode/
+.DS_Store

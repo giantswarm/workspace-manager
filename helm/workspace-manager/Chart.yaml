@@ -3,33 +3,28 @@
 
 apiVersion: v2
 
-# Version of the packaged app
+# Version of the packaged app; the release pipeline stamps it.
 appVersion: 0.0.1
 
-# Make sure your name DOES NOT end in "app" or "-app".
 name: workspace-manager
 
-# Please describe what the app provides in a sentence or two.
-description: Please add description
+description: Manages the Agent Platform's workspaces, the sources agent sessions work on and their provider sign-ins, as one MCP server behind muster
 
-# URL of the GitHub repository that is the source of this Chart.yaml file.
 home: https://github.com/giantswarm/workspace-manager
 
-# Default Giant Swarm icon, so that the first build passes the icon checks.
-# Replace it with the app's own icon: add it to https://github.com/giantswarm/web-assets
-# and set the final URL here.
 icon: https://s.giantswarm.io/app-icons/giantswarm/1/light.svg
 
 sources:
-- https://github.com/some-org/some-repo
+- https://github.com/giantswarm/workspace-manager
+keywords:
+- mcp
+- workspaces
+- agent-platform
 version: 0.0.0-dev
 annotations:
-  # Adapt to 'giantswarm' if this application is not to be deployed by customers
   io.giantswarm.application.audience: all
-  # Adapt to 'true' if Giant Swarm takes responsibility for this app where it's deplyed
-  io.giantswarm.application.managed: "false"
+  io.giantswarm.application.managed: "true"
   # Team owning this app, used through .Chart.Annotations in templates/_helpers.tpl.
-  # bumblebee is a placeholder for the team's short name, e.g. 'shield' for team-shield.
   io.giantswarm.application.team: "bumblebee"
   # Metadata for artifacthub.io, where Giant Swarm publishes all public charts
   # (see https://github.com/giantswarm/roadmap/issues/3940)

@@ -1,12 +1,232 @@
-# This file is a Helm values file for the workspace-manager chart.
-#
-# To learn more about how to configure your app on your cluster
-# and override the default values in here, visit:
-#
-#   https://docs.giantswarm.io/tutorials/fleet-management/app-platform/app-configuration/#basic-values-merging-example
-#
+# Default values for workspace-manager.
+
+# -- Number of replicas. The server keeps no MCP session state (a session
+# begun on one replica continues on another), so two or more are fine. Tokens issued by its own OAuth flow (a client that signs
+# in to it directly) live in one replica's memory; muster's forwarded Dex
+# tokens are validated by every replica.
+replicaCount: 1
+
+# -- Number of old ReplicaSets retained for rollback.
+revisionHistoryLimit: 3
+
 image:
-  name: "giantswarm/workspace-manager"
+  # -- Image registry.
+  registry: gsoci.azurecr.io
+  # -- Image repository.
+  repository: giantswarm/workspace-manager
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to the chart appVersion.
   tag: ""
-registry:
-  domain: gsoci.azurecr.io
+
+# -- Image pull secrets.
+imagePullSecrets: []  # @schema item: object ; itemProperties: {name: {type: string}}
+# -- Override the chart name.
+nameOverride: ""
+# -- Override the fully qualified release name.
+fullnameOverride: ""
+
+# The platform contract a parent chart (the `agent-platform` meta chart)
+# provides and this chart reads as fallbacks for `oauth.*`:
+# `global.identity.issuerUrl`, `global.identity.clientId`,
+# `global.identity.existingSecret`, `global.identity.ca.secretName` / `.key`,
+# and `global.domain` for the OAuth base URL. Empty here; a chart installed on
+# its own sets `oauth.*` directly.
+global: {}  # @schema type: object; additionalProperties: true
+
+workspaces:
+  # -- Namespace the workspaces and everything they own live in: the
+  # namespace kagent runs its sessions in. The placeholder
+  # Role (`rbac.create`) is rendered here.
+  namespace: kagent
+
+mcp:
+  # -- MCP endpoint path.
+  path: /mcp
+
+oauth:
+  # -- Make workspace-manager an OAuth 2.1 resource server (mcp-oauth): the
+  # MCP endpoint requires a bearer token Dex issued, and every call carries the
+  # caller's identity and Dex token, from which the caller's Organization is
+  # checked. muster forwards the session's Dex id_token (its
+  # MCPServer registration with `auth.forwardToken`, unpinned like every
+  # manager); it is validated against Dex's JWKS when its audience is in
+  # `trustedAudiences`. Off: no caller, so nothing that needs an Organization
+  # works; only for a server nothing but a trusted proxy can reach.
+  enabled: false
+  # -- Public base URL of this server: the issuer of its own OAuth metadata
+  # (https, or http on loopback). Empty derives
+  # `https://<fullname>.<global.domain>` when `global.domain` is set.
+  baseURL: ""
+  dex:
+    # -- Dex issuer URL. Empty falls back to `global.identity.issuerUrl`.
+    issuerURL: ""
+    # -- Dex OAuth client ID. Empty falls back to `global.identity.clientId`.
+    clientID: ""
+    # -- Dex OAuth client secret (prefer `oauth.existingSecret`).
+    clientSecret: ""
+    # -- Let the issuer resolve to a private or loopback address (an
+    # in-cluster Dex).
+    allowPrivateURLs: false
+    # -- Secret with the CA of a Dex that serves a private certificate;
+    # mounted and passed as `--dex-ca-file`. Empty name falls back to
+    # `global.identity.ca.secretName` / `global.identity.ca.key`.
+    caSecret:
+      name: ""
+      key: ca.crt
+  # -- Existing Secret with the Dex client secret under `dex-client-secret`.
+  # Empty falls back to `global.identity.existingSecret`; without that, the
+  # chart renders a Secret from `oauth.dex.clientSecret`.
+  existingSecret: ""
+  # -- OAuth client IDs whose Dex id_tokens are accepted as bearer tokens:
+  # the platform client and the audiences muster requires at login (what the
+  # kube-apiserver trusts). Empty falls back to `[global.identity.clientId]`.
+  trustedAudiences: []
+  sso:
+    # -- Let Dex's JWKS endpoint resolve to a private address when validating
+    # forwarded tokens (an in-cluster Dex).
+    allowPrivateIPs: false
+  # -- Accept unauthenticated dynamic client registration (labs only).
+  allowPublicClientRegistration: false
+
+networkPolicy:
+  # -- Create a Kubernetes NetworkPolicy for the pod (off when an umbrella
+  # chart renders the policies).
+  enabled: false
+  # -- Namespaces allowed to reach the MCP endpoint (label
+  # kubernetes.io/metadata.name). Empty allows ingress from the release
+  # namespace only.
+  ingressNamespaces: []
+  # -- Allow egress to the Kubernetes API server.
+  allowKubeAPI: true
+  # -- Allow egress on 443 to every destination: Dex (discovery and JWKS).
+  # Vanilla NetworkPolicy cannot select by name; narrow with egressCIDRs
+  # instead when the addresses are known.
+  allowInternet: true
+  # -- Extra egress CIDRs.
+  egressCIDRs: []
+  # -- Namespaces allowed to scrape the metrics port (label
+  # kubernetes.io/metadata.name), when `observability.metrics.enabled`.
+  metricsNamespaces:
+    - kube-system
+
+serviceAccount:
+  # -- Create a ServiceAccount.
+  create: true
+  # -- Annotations on the ServiceAccount.
+  annotations: {}  # @schema additionalProperties: true
+  # -- ServiceAccount name (generated when empty).
+  name: ""
+
+rbac:
+  # -- Create the ServiceAccount's Role and RoleBinding in
+  # `workspaces.namespace`. The Role carries no rules yet: each workspace
+  # operation brings the rules it writes with.
+  create: true
+
+# -- Annotations on the pod.
+podAnnotations: {}  # @schema additionalProperties: true
+# -- Labels on the pod.
+podLabels: {}  # @schema additionalProperties: true
+
+# -- Pod security context.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context.
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  # -- Service type.
+  type: ClusterIP
+  # -- Service port (the container listens on 8080).
+  port: 8080
+
+# -- Container resources.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+    # `/tmp` is an emptyDir, the only writable path with
+    # `readOnlyRootFilesystem`; Kyverno's require-emptydir-requests-and-limits
+    # policy wants ephemeral-storage requests and limits on such a container.
+    ephemeral-storage: 50Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+    ephemeral-storage: 100Mi
+
+observability:
+  otel:
+    # -- OTLP collector URL for traces, e.g.
+    # `http://otlp-gateway.kube-system.svc:4317` (gRPC) or
+    # `https://tempo.example.com:4318` (with protocol `http/protobuf`). Empty
+    # exports nothing; inbound `traceparent` headers still propagate. With
+    # `networkPolicy.enabled` the policy opens egress to it: the Service's
+    # namespace for an in-cluster host, every address otherwise.
+    endpoint: ""
+    # -- OTLP protocol: `grpc` or `http/protobuf`.
+    protocol: grpc  # @schema enum: [grpc, http/protobuf]
+    # -- OTLP headers (`OTEL_EXPORTER_OTLP_HEADERS`), e.g.
+    # `X-Scope-OrgID=giantswarm` for a multi-tenant collector.
+    headers: ""
+    # -- Resource attributes appended to the downward-API `k8s.pod.name`,
+    # `k8s.namespace.name` and `k8s.node.name`.
+    resourceAttributes: ""
+    # -- `OTEL_TRACES_SAMPLER`. The parent-based default follows the caller's
+    # sampling decision and samples `samplerArg` of the traces that start here.
+    sampler: parentbased_traceidratio
+    # -- `OTEL_TRACES_SAMPLER_ARG`.
+    samplerArg: "0.1"
+  metrics:
+    # -- Serve Prometheus metrics on `GET /metrics` of the `metrics` port:
+    # `mcp_server_operation_duration_seconds` per tool and
+    # `http_server_request_duration_seconds` for the MCP endpoint. Off,
+    # `OTEL_METRICS_EXPORTER=none`: nothing is served.
+    enabled: true
+    # -- Port of the metrics listener, apart from the MCP port so the OAuth
+    # guard never covers it.
+    port: 9464
+
+serviceMonitor:
+  # -- Render a ServiceMonitor for the `metrics` port. Also needs
+  # `observability.metrics.enabled`.
+  enabled: false
+  # -- Scrape interval; empty uses the Prometheus Operator default.
+  interval: ""
+  # -- Labels on the ServiceMonitor, beside the chart's own. The Giant Swarm
+  # observability platform routes a scrape to a Mimir tenant by
+  # `observability.giantswarm.io/tenant`; a monitor without it writes to no
+  # tenant.
+  labels: {}  # @schema additionalProperties: true
+
+logging:
+  # -- Enable debug logging.
+  verbose: false
+
+# -- Extra container arguments.
+extraArgs: []
+# -- Extra environment variables.
+extraEnv: []  # @schema item: object ; itemProperties: {name: {type: string}, value: {type: string}, valueFrom: {type: object, additionalProperties: true}}
+
+# -- Node selector.
+nodeSelector: {}  # @schema additionalProperties: true
+# -- Tolerations.
+tolerations: []  # @schema item: object ; itemProperties: {key: {type: string}, operator: {type: string}, value: {type: string}, effect: {type: string}, tolerationSeconds: {type: integer}}
+# -- Affinity.
+affinity: {}  # @schema additionalProperties: true

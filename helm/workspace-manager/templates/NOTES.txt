@@ -1,0 +1,7 @@
+workspace-manager is running; workspaces live in {{ .Values.workspaces.namespace }}.
+
+  MCP : http://{{ include "workspace-manager.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}{{ .Values.mcp.path }}
+{{- if .Values.oauth.enabled }}
+
+Every MCP call needs a Dex token whose audience is one of {{ include "workspace-manager.oauthTrustedAudiences" . | quote }}; muster forwards it.
+{{- end }}
