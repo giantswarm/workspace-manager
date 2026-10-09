@@ -1,11 +1,13 @@
 package mirror
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"net/http"
-	"net/http/cgi" //nolint:gosec // git's http-backend is a CGI program; the Httpoxy fix predates every supported Go
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -21,10 +23,11 @@ import (
 // GitHub App installation token's is x-access-token.
 const fixtureUsername = "x-access-token"
 
-// gitServer is a local git server over HTTP: git's http-backend behind a
-// token check, recording every request per repository, with the upstream
-// repositories as bare repositories on disk and a work clone each to push
-// from.
+// gitServer is a local git server over HTTP: git's smart protocol for
+// fetching (what git http-backend serves, spoken here over `git upload-pack`
+// since a minimal git lacks http-backend) behind a token check, recording
+// every request per repository, with the upstream repositories as bare
+// repositories on disk and a work clone each to push from.
 type gitServer struct {
 	t      *testing.T
 	root   string
@@ -38,18 +41,12 @@ type gitServer struct {
 
 func newGitServer(t *testing.T) *gitServer {
 	t.Helper()
-	gitBin, err := exec.LookPath("git")
+	_, err := exec.LookPath("git")
 	require.NoError(t, err, "the fixture needs git")
 	var raw [16]byte
 	_, err = rand.Read(raw[:])
 	require.NoError(t, err)
 	s := &gitServer{t: t, root: t.TempDir(), work: t.TempDir(), token: "fixture-token-" + hex.EncodeToString(raw[:]), requests: map[string]int{}}
-	backend := &cgi.Handler{
-		Path:       gitBin,
-		Args:       []string{"http-backend"},
-		Env:        []string{"GIT_PROJECT_ROOT=" + s.root, "GIT_HTTP_EXPORT_ALL=1"},
-		InheritEnv: []string{"PATH"},
-	}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.record(r.URL.Path)
 		user, pass, ok := r.BasicAuth()
@@ -58,7 +55,7 @@ func newGitServer(t *testing.T) *gitServer {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		backend.ServeHTTP(w, r)
+		s.serve(w, r)
 	}))
 	t.Cleanup(s.server.Close)
 	return s
@@ -73,6 +70,62 @@ func (s *gitServer) record(urlPath string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests[parts[0]+"/"+strings.TrimSuffix(parts[1], ".git")]++
+}
+
+// serve answers the two requests of a smart-HTTP fetch: the reference
+// advertisement (GET <repo>/info/refs?service=git-upload-pack) and the
+// upload-pack exchange (POST <repo>/git-upload-pack), each run through
+// `git upload-pack --stateless-rpc` on the bare repository, with the
+// client's protocol version passed along.
+func (s *gitServer) serve(w http.ResponseWriter, r *http.Request) {
+	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 3)
+	if len(parts) < 3 {
+		http.NotFound(w, r)
+		return
+	}
+	dir := filepath.Join(s.root, parts[0], parts[1])
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	env := append(os.Environ(), "GIT_PROTOCOL="+r.Header.Get("Git-Protocol"))
+	switch {
+	case r.Method == http.MethodGet && parts[2] == "info/refs" && r.URL.Query().Get("service") == "git-upload-pack":
+		cmd := exec.CommandContext(r.Context(), "git", "upload-pack", "--stateless-rpc", "--advertise-refs", dir) //nolint:gosec // the fixture's own repository
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		w.Header().Set("Cache-Control", "no-cache")
+		service := "# service=git-upload-pack\n"
+		_, _ = fmt.Fprintf(w, "%04x%s0000", len(service)+4, service)
+		_, _ = w.Write(out)
+	case r.Method == http.MethodPost && parts[2] == "git-upload-pack":
+		body := io.Reader(r.Body)
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gz, err := gzip.NewReader(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			defer gz.Close()
+			body = gz
+		}
+		cmd := exec.CommandContext(r.Context(), "git", "upload-pack", "--stateless-rpc", dir) //nolint:gosec // the fixture's own repository
+		cmd.Env = env
+		cmd.Stdin = body
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+		w.Header().Set("Cache-Control", "no-cache")
+		cmd.Stdout = w
+		if err := cmd.Run(); err != nil {
+			s.t.Logf("upload-pack %s: %v", dir, err)
+		}
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (s *gitServer) requestsFor(owner, name string) int {
