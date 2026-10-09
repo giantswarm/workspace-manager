@@ -78,9 +78,14 @@ oauth:
   # Empty falls back to `global.identity.existingSecret`; without that, the
   # chart renders a Secret from `oauth.dex.clientSecret`.
   existingSecret: ""
-  # -- OAuth client IDs whose Dex id_tokens are accepted as bearer tokens:
-  # the platform client and the audiences muster requires at login (what the
-  # kube-apiserver trusts). Empty falls back to `[global.identity.clientId]`.
+  # -- OAuth client IDs whose Dex id_tokens are accepted as bearer tokens (SSO
+  # token forwarding). Empty falls back to `[global.identity.clientId]`, the
+  # platform client MCP clients and the muster CLI log in with. The server
+  # trusts the union of this list and `muster.mcpServer.auth.requiredAudiences`
+  # (in that order, without duplicates): every token muster forwards carries
+  # the required audiences by construction and they are what the
+  # kube-apiserver trusts, so a portal session — whose id_token carries them
+  # but not the platform client — is accepted without listing its client here.
   trustedAudiences: []
   sso:
     # -- Let Dex's JWKS endpoint resolve to a private address when validating
@@ -88,6 +93,35 @@ oauth:
     allowPrivateIPs: false
   # -- Accept unauthenticated dynamic client registration (labs only).
   allowPublicClientRegistration: false
+
+muster:
+  mcpServer:
+    # -- Register this server with muster by rendering an
+    # `mcpservers.muster.giantswarm.io` CR in the release namespace. Tools then
+    # appear as `x_<name>_<tool>`.
+    enabled: false
+    # -- MCPServer CR name (drives the tool prefix).
+    name: workspace-manager
+    # -- Start the server connection when muster initializes.
+    autoStart: true
+    # -- Human-readable description shown by muster.
+    description: Workspaces of this installation, the sources agent sessions work on and their provider sign-ins, for the Agent Platform
+    # -- Extra labels on the MCPServer CR.
+    labels: {}  # @schema additionalProperties: true
+    # -- How muster authenticates to this server; rendered only with
+    # `oauth.enabled`. `forwardToken` makes muster forward the session's Dex
+    # id_token byte-identical (the SSO path this chart trusts through its
+    # trusted audiences). `requiredAudiences` are extra audiences that token
+    # must carry — the Dex cross-client audience the kube-apiserver trusts
+    # (`dex-k8s-authenticator` on Giant Swarm clusters; agentlab's is
+    # `kubernetes`); muster requests them at login, so users re-login after a
+    # change. They are trusted as bearer audiences by construction, since the
+    # server's trusted audiences are `oauth.trustedAudiences` plus this list.
+    # The registration is unpinned — no authorization server and no GitHub
+    # App: a provider sign-in is the workspace-manager's own business.
+    auth:
+      forwardToken: true
+      requiredAudiences: []
 
 networkPolicy:
   # -- Create a Kubernetes NetworkPolicy for the pod (off when an umbrella
