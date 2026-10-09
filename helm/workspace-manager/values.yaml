@@ -36,9 +36,22 @@ global: {}  # @schema type: object; additionalProperties: true
 
 workspaces:
   # -- Namespace the workspaces and everything they own live in: the
-  # namespace kagent runs its sessions in. The placeholder
-  # Role (`rbac.create`) is rendered here.
+  # namespace kagent runs its sessions in. The manager's Role
+  # (`rbac.create`) is rendered here.
   namespace: kagent
+
+crds:
+  # -- Install the `Workspace` CRD (`workspaces.workspace-manager.giantswarm.io`).
+  # Kept on uninstall, so removing the chart never deletes a workspace.
+  install: true
+
+# -- The Organizations whose members manage workspaces, each with its member
+# groups: a caller whose forwarded identity carries any of an Organization's
+# groups reads and writes its workspaces, nobody else does. An Organization
+# not listed has no members. Members are bound to nothing in
+# `workspaces.namespace`; the manager writes as its ServiceAccount.
+# For example `{giantswarm: {memberGroups: [giantswarm-ad:developers]}}`.
+organizations: {}  # @schema additionalProperties: {type: object, additionalProperties: false, required: [memberGroups], properties: {memberGroups: {type: array, minItems: 1, items: {type: string, minLength: 1}}}}
 
 mcp:
   # -- MCP endpoint path.
@@ -120,10 +133,9 @@ serviceAccount:
 
 rbac:
   # -- Create the ServiceAccount's Role and RoleBinding in
-  # `workspaces.namespace`, and the sync Job's own ServiceAccount and Role
-  # there (`<fullname>-sync`, allowed to write its result ConfigMap). The
-  # manager's Role carries no rules yet: each workspace operation brings the
-  # rules it writes with.
+  # `workspaces.namespace` (the manager writes the Workspaces), and the sync
+  # Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to
+  # write its result ConfigMap). No person or group is bound to anything.
   create: true
 
 # -- Annotations on the pod.

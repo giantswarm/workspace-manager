@@ -1,6 +1,7 @@
 // Package api is workspace-manager's MCP surface. The server carries no tools
-// yet; each workspace operation registers its tool here, checks the caller's
-// Organization and writes through Config.Kube, the manager's own clients.
+// yet; each workspace operation registers its tool here and reads and writes
+// through a workspace.Store, which checks the caller's Organization and writes
+// with Config.Kube, the manager's own clients.
 package api
 
 import (
@@ -15,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
 const tracerName = "github.com/giantswarm/workspace-manager"
@@ -25,6 +27,9 @@ type Config struct {
 	Kube kube.Client
 	// Namespace is where the workspaces and everything they own live.
 	Namespace string
+	// Organizations decides who may read and write an Organization's
+	// workspaces (workspace.Store checks it on every call).
+	Organizations workspace.Organizations
 }
 
 // genAIToolName labels the mcp.tools/call server span with the called tool

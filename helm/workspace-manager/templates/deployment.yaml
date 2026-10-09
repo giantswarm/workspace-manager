@@ -46,6 +46,9 @@ spec:
             - --in-cluster=true
             - --namespace={{ .Values.workspaces.namespace }}
             - --mcp-path={{ .Values.mcp.path }}
+            {{- range $org, $o := .Values.organizations }}
+            - --organization={{ $org }}={{ join "," $o.memberGroups }}
+            {{- end }}
             {{- if .Values.oauth.enabled }}
             - --enable-oauth=true
             - --oauth-base-url={{ include "workspace-manager.oauthBaseURL" . }}

@@ -4,6 +4,13 @@
   (`internal/server/oauth_test.go`) and the sync against a local git server
   over HTTP that wants a token and records every request
   (`internal/mirror/sync_test.go`; needs `git` on the path).
+- `make test-envtest`: the tests behind the `envtest` build tag, against a
+  real kube-apiserver and etcd that setup-envtest fetches (the `envtest` CI
+  job): the chart's Workspace CRD, its CEL rules and the Workspace store
+  (`internal/workspace/envtest_test.go`).
+- `make generate`: the API's deepcopy functions and the CRD in
+  `helm/workspace-manager/files/crds` from `api/` (controller-gen);
+  `make verify-generate` fails when they are stale (in the `envtest` job).
 - `make lint`: golangci-lint.
 - `make helm-test`: `helm lint` and the helm-unittest suites in
   `helm/workspace-manager/tests/` (the `chart-test` CI job).

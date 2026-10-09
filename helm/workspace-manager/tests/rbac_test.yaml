@@ -1,11 +1,13 @@
-suite: rbac placeholder
+suite: rbac
 templates:
   - templates/rbac.yaml
+  - templates/sync-rbac.yaml
 release:
   name: workspace-manager
   namespace: agent-platform
 tests:
-  - it: binds an empty Role in the workspaces' namespace
+  - it: lets the manager's ServiceAccount write Workspaces in the workspaces' namespace
+    template: templates/rbac.yaml
     asserts:
       - hasDocuments:
           count: 2
@@ -19,14 +21,57 @@ tests:
       - documentIndex: 0
         equal:
           path: rules
-          value: []
+          value:
+            - apiGroups: [workspace-manager.giantswarm.io]
+              resources: [workspaces]
+              verbs: [get, list, watch, create, update, patch, delete]
+            - apiGroups: [workspace-manager.giantswarm.io]
+              resources: [workspaces/status]
+              verbs: [get, update, patch]
       - documentIndex: 1
         equal:
-          path: subjects[0]
+          path: subjects
           value:
-            kind: ServiceAccount
-            name: workspace-manager
-            namespace: agent-platform
+            - kind: ServiceAccount
+              name: workspace-manager
+              namespace: agent-platform
+
+  # Members are bound to nothing: every binding names a ServiceAccount, so no
+  # member gains a right on Workspaces, PVCs or Jobs, whatever
+  # organizations lists.
+  - it: binds only ServiceAccounts, never a person or a group
+    set:
+      organizations:
+        acme:
+          memberGroups: [acme-devs]
+    documentSelector:
+      path: kind
+      value: RoleBinding
+      matchMany: true
+    asserts:
+      - lengthEqual:
+          path: subjects
+          count: 1
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+
+  - it: grants no right on PVCs or Jobs
+    documentSelector:
+      path: kind
+      value: Role
+      matchMany: true
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            resources: [persistentvolumeclaims]
+          any: true
+      - notContains:
+          path: rules
+          content:
+            resources: [jobs]
+          any: true
 
   - it: renders nothing without rbac.create
     set:

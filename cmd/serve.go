@@ -19,6 +19,7 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/server"
+	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
 // kubeFlags select how a command reaches the API server.
@@ -43,7 +44,8 @@ type serveOptions struct {
 
 	kube kubeFlags
 
-	namespace string
+	namespace     string
+	organizations []string
 
 	mcpPath string
 
@@ -74,6 +76,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.listen, "listen", envOr("WORKSPACE_MANAGER_LISTEN", ":8080"), "Listen address (WORKSPACE_MANAGER_LISTEN)")
 	o.kube.add(f)
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
+	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("WORKSPACE_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (WORKSPACE_MANAGER_OAUTH_BASE_URL)")
@@ -106,6 +109,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	defer flush(ctx, "metrics", shutdownMetrics, log)
 
+	orgs, err := workspace.ParseOrganizations(o.organizations)
+	if err != nil {
+		return err
+	}
+
 	// The manager's own ServiceAccount: it writes the workspace objects, the
 	// volume and the jobs once the caller's Organization is checked.
 	clients, err := kube.New(o.kube.config())
@@ -127,12 +135,12 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		}
 	}
-	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: clients, Namespace: o.namespace}, build.Version), log)
+	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: clients, Namespace: o.namespace, Organizations: orgs}, build.Version), log)
 	if err != nil {
 		return err
 	}
 	log.Info("workspace-manager starting", "version", build.Version, "commit", build.Commit, "listen", o.listen,
-		"mcp", o.mcpPath, "oauth", o.oauthEnabled, "namespace", o.namespace)
+		"mcp", o.mcpPath, "oauth", o.oauthEnabled, "namespace", o.namespace, "organizations", len(orgs))
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -22,7 +22,9 @@ Manages the Agent Platform's workspaces, the sources agent sessions work on and 
 | nameOverride | string | `""` | Override the chart name. |
 | fullnameOverride | string | `""` | Override the fully qualified release name. |
 | global | object | `{}` |  |
-| workspaces.namespace | string | `"kagent"` | Namespace the workspaces and everything they own live in: the namespace kagent runs its sessions in. The placeholder Role (`rbac.create`) is rendered here. |
+| workspaces.namespace | string | `"kagent"` | Namespace the workspaces and everything they own live in: the namespace kagent runs its sessions in. The manager's Role (`rbac.create`) is rendered here. |
+| crds.install | bool | `true` | Install the `Workspace` CRD (`workspaces.workspace-manager.giantswarm.io`). Kept on uninstall, so removing the chart never deletes a workspace. |
+| organizations | object | `{}` | The Organizations whose members manage workspaces, each with its member groups: a caller whose forwarded identity carries any of an Organization's groups reads and writes its workspaces, nobody else does. An Organization not listed has no members. Members are bound to nothing in `workspaces.namespace`; the manager writes as its ServiceAccount. For example `{giantswarm: {memberGroups: [giantswarm-ad:developers]}}`. |
 | mcp.path | string | `"/mcp"` | MCP endpoint path. |
 | oauth.enabled | bool | `false` | Make workspace-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint requires a bearer token Dex issued, and every call carries the caller's identity and Dex token, from which the caller's Organization is checked. muster forwards the session's Dex id_token (its MCPServer registration with `auth.forwardToken`, unpinned like every manager); it is validated against Dex's JWKS when its audience is in `trustedAudiences`. Off: no caller, so nothing that needs an Organization works; only for a server nothing but a trusted proxy can reach. |
 | oauth.baseURL | string | `""` | Public base URL of this server: the issuer of its own OAuth metadata (https, or http on loopback). Empty derives `https://<fullname>.<global.domain>` when `global.domain` is set. |
@@ -44,7 +46,7 @@ Manages the Agent Platform's workspaces, the sources agent sessions work on and 
 | serviceAccount.create | bool | `true` | Create a ServiceAccount. |
 | serviceAccount.annotations | object | `{}` | Annotations on the ServiceAccount. |
 | serviceAccount.name | string | `""` | ServiceAccount name (generated when empty). |
-| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`, and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). The manager's Role carries no rules yet: each workspace operation brings the rules it writes with. |
+| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace` (the manager writes the Workspaces), and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). No person or group is bound to anything. |
 | podAnnotations | object | `{}` | Annotations on the pod. |
 | podLabels | object | `{}` | Labels on the pod. |
 | podSecurityContext | object | `{"fsGroup":1000,"runAsGroup":1000,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context. |
