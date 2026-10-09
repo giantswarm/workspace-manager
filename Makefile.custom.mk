@@ -28,3 +28,12 @@ helm-unittest: helm-plugin-unittest ## Run the helm-unittest suites in helm/work
 .PHONY: helm-plugin-unittest
 helm-plugin-unittest:
 	@helm plugin list | grep -q '^unittest' || helm plugin install https://github.com/helm-unittest/helm-unittest --version $(HELM_UNITTEST_VERSION)
+
+##@ Testing
+
+ENVTEST_K8S_VERSION := 1.37.0
+SETUP_ENVTEST := go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.25
+
+.PHONY: test-envtest
+test-envtest: ## Run the tests that need a real API server (build tag envtest) against envtest's kube-apiserver and etcd.
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -race -count=1 -tags envtest ./...
