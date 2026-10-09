@@ -13,9 +13,15 @@ spec:
       {{- include "workspace-manager.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations .Values.providers }}
       annotations:
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.providers }}
+        {{- /* The server reads the providers at start only. */}}
+        checksum/providers: {{ include (print $.Template.BasePath "/providers-configmap.yaml") . | sha256sum }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "workspace-manager.labels" . | nindent 8 }}
@@ -46,6 +52,9 @@ spec:
             - --in-cluster=true
             - --namespace={{ .Values.workspaces.namespace }}
             - --mcp-path={{ .Values.mcp.path }}
+            {{- if .Values.providers }}
+            - --providers-config=/etc/workspace-manager/providers/providers.yaml
+            {{- end }}
             {{- if .Values.oauth.enabled }}
             - --enable-oauth=true
             - --oauth-base-url={{ include "workspace-manager.oauthBaseURL" . }}
@@ -172,6 +181,11 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.providers }}
+            - name: providers
+              mountPath: /etc/workspace-manager/providers
+              readOnly: true
+            {{- end }}
             {{- if $idpCA }}
             - name: idp-ca
               mountPath: /etc/workspace-manager/idp-ca
@@ -180,6 +194,11 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.providers }}
+        - name: providers
+          configMap:
+            name: {{ include "workspace-manager.fullname" . }}-providers
+        {{- end }}
         {{- if $idpCA }}
         - name: idp-ca
           secret:

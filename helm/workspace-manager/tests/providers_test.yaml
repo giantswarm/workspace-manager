@@ -1,0 +1,85 @@
+# The provider instances: rendered into a ConfigMap the server reads at start,
+# mounted and passed as --providers-config, and nothing at all without any.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: providers
+templates:
+  - templates/providers-configmap.yaml
+  - templates/deployment.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+set:
+  providers:
+    - name: github
+      kind: github
+      values:
+        app:
+          id: "123"
+          privateKey: {name: github-agents-app, key: private-key}
+        oauth:
+          clientID: Iv1.abc
+          clientSecret: {name: github-agents-app, key: client-secret}
+    - name: ghes
+      kind: github
+      values:
+        url: https://ghe.example.com
+        app:
+          id: "7"
+          privateKey: {name: ghes-app, key: private-key}
+        oauth:
+          clientID: Iv1.def
+          clientSecret: {name: ghes-app, key: client-secret}
+tests:
+  - it: renders every instance into providers.yaml
+    template: templates/providers-configmap.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: workspace-manager-providers
+      - equal:
+          path: metadata.namespace
+          value: agent-platform
+      - matchRegex:
+          path: data["providers.yaml"]
+          pattern: "(?s)^providers:\\n- kind: github\\n  name: github\\n.*- kind: github\\n  name: ghes\\n.*url: https://ghe.example.com"
+
+  - it: mounts the file and passes it to the server
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --providers-config=/etc/workspace-manager/providers/providers.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: providers
+            mountPath: /etc/workspace-manager/providers
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: providers
+            configMap:
+              name: workspace-manager-providers
+      - exists:
+          path: spec.template.metadata.annotations["checksum/providers"]
+
+  - it: renders nothing for no providers
+    set:
+      providers: []
+    template: templates/providers-configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: passes no file for no providers
+    set:
+      providers: []
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --providers-config=/etc/workspace-manager/providers/providers.yaml
+      - notExists:
+          path: spec.template.metadata.annotations

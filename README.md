@@ -28,6 +28,8 @@ Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server and its tracing and metrics middleware.
+- `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, and the provider instance list (`--providers-config`, the chart's `providers`).
+- `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).
 
 See [docs/development.md](docs/development.md) for building and testing.
