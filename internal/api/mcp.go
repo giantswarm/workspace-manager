@@ -1,7 +1,7 @@
-// Package api is workspace-manager's MCP surface. The server carries no tools
-// yet; each workspace operation registers its tool here and reads and writes
-// through a workspace.Store, which checks the caller's Organization and writes
-// with Config.Kube, the manager's own clients.
+// Package api is workspace-manager's MCP surface: the person's provider
+// sign-ins (providers.go) and the workspace operations' tools, each reading
+// and writing through a workspace.Store, which checks the caller's
+// Organization and writes with Config.Kube, the manager's own clients.
 package api
 
 import (
@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
@@ -33,6 +34,9 @@ type Config struct {
 	Organizations workspace.Organizations
 	// Providers are the installation's provider instances.
 	Providers []provider.Instance
+	// Connector, when set, serves the person's provider sign-ins:
+	// list_providers, connect_provider and disconnect_provider.
+	Connector *connect.Connector
 }
 
 // genAIToolName labels the mcp.tools/call server span with the called tool
@@ -45,8 +49,8 @@ func genAIToolName(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 }
 
 // NewMCPServer builds the MCP server with its tracing and metrics middleware.
-func NewMCPServer(_ Config, version string) *mcpserver.MCPServer {
-	return mcpserver.NewMCPServer("workspace-manager", version,
+func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
+	s := mcpserver.NewMCPServer("workspace-manager", version,
 		mcpserver.WithToolHandlerMiddleware(genAIToolName),
 		mcpserver.WithToolHandlerMiddleware(toolDuration(otel.Meter(tracerName))),
 		// The HTTP server span already joined the inbound traceparent, so the
@@ -55,4 +59,8 @@ func NewMCPServer(_ Config, version string) *mcpserver.MCPServer {
 		mcpserver.WithToolCapabilities(false),
 		mcpserver.WithInstructions("Manage the Agent Platform's workspaces: the sources an agent session works on. Every call is checked against the caller's Organization."),
 	)
+	if cfg.Connector != nil {
+		addProviderTools(s, cfg.Connector)
+	}
+	return s
 }

@@ -156,6 +156,7 @@ func (k *Kind) SignIn() provider.SignIn {
 		// DELETE with the client's Basic credentials and the token in the
 		// body revokes the person's grant.
 		RevocationURL: k.api.String() + "/applications/" + url.PathEscape(k.v.OAuth.ClientID) + "/grant",
+		Revocation:    provider.RevokeGrant,
 		ClientID:      k.v.OAuth.ClientID,
 		ClientSecret:  k.v.OAuth.ClientSecret,
 	}
