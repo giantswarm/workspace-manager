@@ -19,7 +19,7 @@ from that identity and writes with its own ServiceAccount.
 | `/mcp` | MCP over streamable HTTP; behind the OAuth guard when `--enable-oauth` |
 | `/healthz`, `/readyz` | Probes, always open |
 | `/.well-known/oauth-*`, `/oauth/*` | OAuth metadata and this server's own OAuth flow, with `--enable-oauth` |
-| `/connect/<instance>`, `/callback/<instance>`, `/signin` | A person's provider sign-in in the browser, with providers and `--enable-oauth` (below) |
+| `/connect/<instance>`, `/callback/<instance>`, `/signin` | A person's provider sign-in in the browser, with providers and `--enable-oauth`; otherwise a 503 "No provider configured" page (below) |
 | `POST /token` | Token exchange (RFC 8693) for the installation's kagent client, with providers, `--enable-oauth` and `--token-exchange-client-id` (below) |
 | `:9464/metrics` | Prometheus metrics (`OTEL_METRICS_EXPORTER=prometheus`) |
 
@@ -42,6 +42,12 @@ Dex at `/signin`, so a connect link one person hands another connects nobody.
 Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
 `/connect/<instance>` starts the same flow for a person in the browser: the
 link other surfaces show.
+
+The sign-in routes (`/connect/<instance>`, `/callback/<instance>`, `/signin`)
+are served only with at least one configured provider instance and
+`--enable-oauth`. Without them each answers `503 Service Unavailable` with a
+short "No provider configured" page naming the missing configuration, never a
+404.
 
 ## Token exchange
 
