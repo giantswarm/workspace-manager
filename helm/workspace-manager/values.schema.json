@@ -584,6 +584,26 @@
                 }
             }
         },
+        "signin": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "keys": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "current": {
+                            "type": "string",
+                            "description": "The id of the key that seals. The others still open what they sealed, so a key rotates by adding a new one, making it current and dropping the old one once every sign-in was written again."
+                        },
+                        "secretName": {
+                            "type": "string",
+                            "description": "Secret in the release namespace with the keys that seal each person's provider sign-ins and the sign-in flow's state: each data entry is a key id (a lower-case DNS label of at most 32 characters) and its 32 random bytes. Required with `providers` and `oauth.enabled`; the chart never renders it."
+                        }
+                    }
+                }
+            }
+        },
         "subscriptionID": {
             "type": "string"
         },

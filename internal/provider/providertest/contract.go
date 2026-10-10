@@ -18,7 +18,9 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/provider"
 )
 
-// Backend stands in for one kind's provider.
+// Backend stands in for one kind's provider. A change it makes is visible to
+// the kind's next listing: a backend of a kind that caches its listing moves
+// the kind's clock past provider.ListingFreshness, as time passing would.
 type Backend interface {
 	// Values configure an instance of the kind against the backend.
 	Values() json.RawMessage
@@ -46,16 +48,16 @@ const (
 	oldAPI   = "old-api"
 )
 
-// seed is a mix every case starts from: languages, topics, an archived
+// seed is a mix every case starts from: languages, topics, sizes, an archived
 // repository and a fork, and one of another owner's.
 func seed(b Backend) {
 	for _, it := range []provider.Item{
-		{Owner: Owner, Name: "api", Language: "Go", Topics: []string{platform, backend}, LastChange: t0},
-		{Owner: Owner, Name: "web", Language: "TypeScript", Topics: []string{platform, frontend}, LastChange: t0.Add(time.Hour)},
-		{Owner: Owner, Name: "docs", Language: "", Topics: nil, LastChange: t0.Add(2 * time.Hour)},
-		{Owner: Owner, Name: oldAPI, Language: "Go", Topics: []string{platform}, Archived: true, LastChange: t0.Add(-time.Hour)},
-		{Owner: Owner, Name: "upstream-fork", Language: "Go", Topics: []string{backend}, Fork: true, LastChange: t0.Add(3 * time.Hour)},
-		{Owner: Other, Name: "theirs", Language: "Go", Topics: []string{platform}, LastChange: t0},
+		{Owner: Owner, Name: "api", Language: "Go", Topics: []string{platform, backend}, LastChange: t0, SizeKiB: 1200},
+		{Owner: Owner, Name: "web", Language: "TypeScript", Topics: []string{platform, frontend}, LastChange: t0.Add(time.Hour), SizeKiB: 48000},
+		{Owner: Owner, Name: "docs", Language: "", Topics: nil, LastChange: t0.Add(2 * time.Hour), SizeKiB: 300},
+		{Owner: Owner, Name: oldAPI, Language: "Go", Topics: []string{platform}, Archived: true, LastChange: t0.Add(-time.Hour), SizeKiB: 900},
+		{Owner: Owner, Name: "upstream-fork", Language: "Go", Topics: []string{backend}, Fork: true, LastChange: t0.Add(3 * time.Hour), SizeKiB: 2048},
+		{Owner: Other, Name: "theirs", Language: "Go", Topics: []string{platform}, LastChange: t0, SizeKiB: 10},
 	} {
 		b.Put(it)
 	}
@@ -99,6 +101,8 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		assert.Equal(t, "Go", api.Language)
 		assert.ElementsMatch(t, []string{platform, backend}, api.Topics)
 		assert.True(t, api.LastChange.Equal(t0), "last change %s", api.LastChange)
+		assert.EqualValues(t, 1200, api.SizeKiB, "size reported")
+		assert.EqualValues(t, 48000, byName["web"].SizeKiB, "size reported")
 		assert.True(t, byName[oldAPI].Archived, "archived reported")
 		assert.True(t, byName["upstream-fork"].Fork, "fork reported")
 		assert.Empty(t, byName["docs"].Language, "no language reported as empty")
@@ -144,13 +148,14 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 
 		b.Put(provider.Item{Owner: Owner, Name: "api", Language: "Go", Topics: []string{platform, backend}, LastChange: t0.Add(24 * time.Hour)})
 		b.Put(provider.Item{Owner: Owner, Name: "cli", Language: "Go", Topics: []string{platform}, LastChange: t0})
+		b.Put(provider.Item{Owner: Owner, Name: "docs", Language: "", Topics: []string{platform}, LastChange: t0.Add(2 * time.Hour)})
 		b.Put(provider.Item{Owner: Owner, Name: "web", Language: "TypeScript", Topics: []string{frontend}, LastChange: t0.Add(time.Hour)})
 		got := provider.Diff(recorded, provider.Select(list(), src))
 		assert.Equal(t, provider.Changes{
-			Added:   []string{Owner + "/cli"},
+			Added:   []string{Owner + "/cli", Owner + "/docs"},
 			Removed: []string{Owner + "/web"},
 			Changed: []string{Owner + "/api"},
-		}, got, "a push, a repository joining by topic and one leaving it")
+		}, got, "a push, a new repository with the topic, one gaining it and one losing it")
 
 		recorded = provider.StateOf(provider.Select(list(), src))
 		b.Delete(Owner, "cli")
@@ -187,6 +192,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 				assert.True(t, u.IsAbs() && u.Host != "", "%s URL %q is absolute", name, raw)
 			}
 		}
+		assert.Contains(t, []provider.Revocation{"", provider.RevokeRFC7009, provider.RevokeGrant}, s.Revocation, "revocation method")
 		assert.NotEmpty(t, s.ClientID)
 		assert.Contains(t, k.SecretRefs(), s.ClientSecret, "the client secret is one of the instance's Secret references")
 	})

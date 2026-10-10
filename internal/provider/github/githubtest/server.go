@@ -1,9 +1,13 @@
 // Package githubtest is a stub of the GitHub REST API's parts the github kind
-// calls: accounts, repository listings (paged), and a GitHub App's
-// installation tokens, whose JWTs it verifies.
+// calls: a GitHub App's installation on an organization or a user account,
+// its installation tokens, whose JWTs it verifies, and the installation's
+// repository listing (paged), with the rate-limit answers GitHub gives. It
+// goes by a clock the kind under test shares, moved past the listing's
+// freshness by every change, as time passing would.
 package githubtest
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -29,24 +33,83 @@ import (
 // AppID is the App the stub accepts JWTs of.
 const AppID = "4242"
 
-// PageSize is the stub's page size, small so listings page.
-const PageSize = 2
+// DefaultPageSize is the stub's page size, small so listings page.
+const DefaultPageSize = 2
 
 var (
 	privateKeyRef   = provider.SecretRef{Name: "github-app", Key: "private-key"}
 	clientSecretRef = provider.SecretRef{Name: "github-oauth", Key: "client-secret"}
 )
 
+// Clock is a stopped clock: it moves when advanced, and a Sleep moves it by
+// the duration slept, which it records.
+type Clock struct {
+	mu    sync.Mutex
+	now   time.Time
+	slept []time.Duration
+}
+
+// Now implements provider.Clock.
+func (c *Clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// Sleep implements provider.Clock without waiting.
+func (c *Clock) Sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+	c.slept = append(c.slept, d)
+	return nil
+}
+
+// Advance moves the clock forward by d.
+func (c *Clock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// Slept are the waits so far.
+func (c *Clock) Slept() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Duration(nil), c.slept...)
+}
+
+// Limit is a rate-limited answer the stub gives.
+type Limit struct {
+	// Status is 403 or 429.
+	Status int
+	// Header carries `Retry-After`, or `X-RateLimit-Remaining` and
+	// `X-RateLimit-Reset`, or nothing.
+	Header http.Header
+	// Message is the answer's message.
+	Message string
+}
+
 // Server is the stub. Owners are organizations unless made users.
 type Server struct {
 	*httptest.Server
-	key *rsa.PrivateKey
+	// Clock is the stub's time: the kind under test goes by it too.
+	Clock *Clock
+	// PageSize is how many repositories a listing page holds.
+	PageSize int
+	key      *rsa.PrivateKey
 
-	mu     sync.Mutex
-	repos  map[string]map[string]provider.Item
-	users  map[string]bool
-	tokens map[string]string // installation token → owner
-	minted int
+	mu       sync.Mutex
+	repos    map[string]map[string]provider.Item
+	users    map[string]bool
+	tokens   map[string]string // installation token → owner
+	minted   int
+	listed   int
+	requests int
+	limits   []Limit
 }
 
 // NewServer starts a stub, stopped when t ends.
@@ -56,27 +119,34 @@ func NewServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{key: key, repos: map[string]map[string]provider.Item{}, users: map[string]bool{}, tokens: map[string]string{}}
+	s := &Server{
+		Clock: &Clock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}, PageSize: DefaultPageSize, key: key,
+		repos: map[string]map[string]provider.Item{}, users: map[string]bool{}, tokens: map[string]string{},
+	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
 }
 
-// Put creates or replaces a repository.
+// Put creates or replaces a repository, and moves the clock past the
+// listing's freshness so the next listing sees it.
 func (s *Server) Put(it provider.Item) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.repos[it.Owner] == nil {
 		s.repos[it.Owner] = map[string]provider.Item{}
 	}
 	s.repos[it.Owner][it.Name] = it
+	s.mu.Unlock()
+	s.Clock.Advance(provider.ListingFreshness)
 }
 
-// Delete removes a repository.
+// Delete removes a repository, and moves the clock past the listing's
+// freshness so the next listing sees it gone.
 func (s *Server) Delete(owner, name string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.repos[owner], name)
+	s.mu.Unlock()
+	s.Clock.Advance(provider.ListingFreshness)
 }
 
 // User makes owner a user account instead of an organization.
@@ -86,11 +156,35 @@ func (s *Server) User(owner string) {
 	s.users[owner] = true
 }
 
+// LimitNext answers the next n API requests with the rate limit l.
+func (s *Server) LimitNext(n int, l Limit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for range n {
+		s.limits = append(s.limits, l)
+	}
+}
+
 // Minted is the number of installation tokens issued.
 func (s *Server) Minted() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.minted
+}
+
+// Listed is the number of listing pages served.
+func (s *Server) Listed() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listed
+}
+
+// Requests is the number of API requests received, rate-limited ones
+// included.
+func (s *Server) Requests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requests
 }
 
 // Values configure a github instance against the stub.
@@ -117,17 +211,32 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.mu.Lock()
+	s.requests++
+	var limit *Limit
+	if len(s.limits) > 0 {
+		limit, s.limits = &s.limits[0], s.limits[1:]
+	}
+	s.mu.Unlock()
+	if limit != nil {
+		for k, vs := range limit.Header {
+			w.Header()[k] = vs
+		}
+		fail(w, limit.Status, limit.Message)
+		return
+	}
 	parts := strings.Split(path, "/")
 	switch {
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "users" && parts[2] == "installation":
+	case r.Method == http.MethodGet && len(parts) == 3 && (parts[0] == "orgs" || parts[0] == "users") && parts[2] == "installation":
 		if !s.validJWT(r) {
 			fail(w, http.StatusUnauthorized, "A JSON web token could not be decoded")
 			return
 		}
 		s.mu.Lock()
 		_, known := s.repos[parts[1]]
+		isUser := s.users[parts[1]]
 		s.mu.Unlock()
-		if !known {
+		if !known || isUser != (parts[0] == "users") {
 			fail(w, http.StatusNotFound, "Not Found")
 			return
 		}
@@ -146,29 +255,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.mu.Unlock()
-		writeJSON(w, http.StatusCreated, map[string]any{"token": tok, "expires_at": time.Now().Add(time.Hour).UTC()})
-	case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "users":
-		owner := s.authorized(w, r, parts[1])
-		if owner == "" {
-			return
-		}
-		typ := "Organization"
+		writeJSON(w, http.StatusCreated, map[string]any{"token": tok, "expires_at": s.Clock.Now().Add(time.Hour).UTC()})
+	case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "installation" && parts[1] == "repositories":
+		tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		s.mu.Lock()
-		if s.users[owner] {
-			typ = "User"
-		}
+		owner, ok := s.tokens[tok]
 		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"login": owner, "type": typ})
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[2] == "repos" && (parts[0] == "orgs" || parts[0] == "users"):
-		owner := s.authorized(w, r, parts[1])
-		if owner == "" {
-			return
-		}
-		s.mu.Lock()
-		isUser := s.users[owner]
-		s.mu.Unlock()
-		if isUser != (parts[0] == "users") {
-			fail(w, http.StatusNotFound, "Not Found")
+		if !ok {
+			fail(w, http.StatusUnauthorized, "Bad credentials")
 			return
 		}
 		s.listRepos(w, r, owner)
@@ -177,20 +271,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authorized checks the bearer is an installation token on owner.
-func (s *Server) authorized(w http.ResponseWriter, r *http.Request, owner string) string {
-	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.tokens[tok] != owner {
-		fail(w, http.StatusUnauthorized, "Bad credentials")
-		return ""
-	}
-	return owner
-}
-
 func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string) {
 	s.mu.Lock()
+	s.listed++
 	var all []provider.Item
 	for _, it := range s.repos[owner] {
 		all = append(all, it)
@@ -200,7 +283,7 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string)
 
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	page = max(page, 1)
-	from, to := min((page-1)*PageSize, len(all)), min(page*PageSize, len(all))
+	from, to := min((page-1)*s.PageSize, len(all)), min(page*s.PageSize, len(all))
 	if to < len(all) {
 		next := *r.URL
 		q := next.Query()
@@ -219,12 +302,13 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string)
 			lang = it.Language
 		}
 		out = append(out, map[string]any{
-			"name": it.Name, "full_name": owner + "/" + it.Name, "language": lang, "topics": topics,
-			"archived": it.Archived, "fork": it.Fork, "pushed_at": it.LastChange.UTC().Format(time.RFC3339),
+			"name": it.Name, "full_name": owner + "/" + it.Name, "owner": map[string]any{"login": owner},
+			"language": lang, "topics": topics, "archived": it.Archived, "fork": it.Fork,
+			"pushed_at": it.LastChange.UTC().Format(time.RFC3339), "size": it.SizeKiB,
 			"clone_url": s.URL + "/" + owner + "/" + it.Name + ".git", "default_branch": "main",
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(all), "repository_selection": "all", "repositories": out})
 }
 
 func (s *Server) validJWT(r *http.Request) bool {
@@ -243,7 +327,7 @@ func (s *Server) validJWT(r *http.Request) bool {
 	if c.Expiry == nil || c.IssuedAt == nil || c.Expiry.Time().Sub(c.IssuedAt.Time()) > 10*time.Minute {
 		return false
 	}
-	return c.Validate(jwt.Expected{Issuer: AppID, Time: time.Now()}) == nil
+	return c.Validate(jwt.Expected{Issuer: AppID, Time: s.Clock.Now()}) == nil
 }
 
 func installationID(owner string) int64 {

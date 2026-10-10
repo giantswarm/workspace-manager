@@ -17,10 +17,12 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/giantswarm/workspace-manager/internal/api"
+	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/kinds"
 	"github.com/giantswarm/workspace-manager/internal/server"
+	"github.com/giantswarm/workspace-manager/internal/signin"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
@@ -53,6 +55,10 @@ type serveOptions struct {
 
 	providersConfig string
 
+	managerNamespace string
+	signInKeysSecret string
+	signInCurrentKey string
+
 	oauthEnabled                  bool
 	oauthBaseURL                  string
 	dexIssuerURL                  string
@@ -82,6 +88,9 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
 	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
+	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace: provider Secrets, the sealing keys and the sign-ins live there (POD_NAMESPACE)")
+	f.StringVar(&o.signInKeysSecret, "signin-keys-secret", envOr("WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET", ""), "Secret in the manager's namespace with the sign-in sealing keys, each data entry a key id and its 32 raw bytes; required with providers and OAuth (WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET)")
+	f.StringVar(&o.signInCurrentKey, "signin-current-key", envOr("WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY", ""), "The id of the sealing key that seals new sign-ins (WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("WORKSPACE_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (WORKSPACE_MANAGER_OAUTH_BASE_URL)")
@@ -148,7 +157,19 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		}
 	}
-	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: clients, Namespace: o.namespace, Providers: providers, Organizations: orgs}, build.Version), log)
+	apiCfg := api.Config{Kube: clients, Namespace: o.namespace, Providers: providers, Organizations: orgs}
+	if len(providers) > 0 {
+		if srvCfg.OAuth == nil {
+			log.Warn("provider sign-ins are off: they need --enable-oauth, which names the person")
+		} else {
+			conn, pages, err := providerSignIns(ctx, o, srvCfg.OAuth, clients, providers, log)
+			if err != nil {
+				return err
+			}
+			apiCfg.Connector, srvCfg.Pages = conn, pages
+		}
+	}
+	srv, err := server.New(srvCfg, api.NewMCPServer(apiCfg, build.Version), log)
 	if err != nil {
 		return err
 	}
@@ -158,6 +179,42 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return srv.Run(ctx)
+}
+
+// providerSignIns builds the person's provider sign-ins: the sealing keys,
+// the sign-in store, the connector and its browser pages, which sign the
+// browser in to Dex at connect.SignInPath.
+func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAuthConfig, clients *kube.Clients, providers []provider.Instance, log *slog.Logger) (*connect.Connector, *connect.Pages, error) {
+	if o.managerNamespace == "" || o.signInKeysSecret == "" || o.signInCurrentKey == "" {
+		return nil, nil, fmt.Errorf("provider sign-ins need --manager-namespace, --signin-keys-secret and --signin-current-key")
+	}
+	keyring, err := signin.LoadKeyring(ctx, clients.Typed(), o.managerNamespace, o.signInKeysSecret, o.signInCurrentKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	secrets := kube.Secrets{Client: clients.Typed(), Namespace: o.managerNamespace}
+	oauthClients, err := connect.NewClients(providers, secrets, oauthCfg.BaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	store, err := signin.NewKubeStore(signin.Options{Client: clients.Typed(), Namespace: o.managerNamespace, Keyring: keyring, OAuth2: oauthClients, Logger: log})
+	if err != nil {
+		return nil, nil, err
+	}
+	conn, err := connect.New(connect.Options{Clients: oauthClients, Store: store, Keyring: keyring, Logger: log})
+	if err != nil {
+		return nil, nil, err
+	}
+	idp, err := oauthCfg.DexProvider(connect.SignInPath, log)
+	if err != nil {
+		return nil, nil, err
+	}
+	pages, err := connect.NewPages(conn, idp)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Info("provider sign-ins enabled", "namespace", o.managerNamespace, "keysSecret", o.signInKeysSecret, "currentKey", keyring.Current())
+	return conn, pages, nil
 }
 
 // loadProviders reads and validates the provider instances.

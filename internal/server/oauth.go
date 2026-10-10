@@ -93,17 +93,9 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	if err != nil {
 		return nil, fmt.Errorf("oauth: %w", err)
 	}
-	provider, err := dex.NewProvider(&dex.Config{
-		IssuerURL:      cfg.DexIssuerURL,
-		ClientID:       cfg.DexClientID,
-		ClientSecret:   cfg.DexClientSecret,
-		RedirectURL:    strings.TrimSuffix(cfg.BaseURL, "/") + "/oauth/callback",
-		AllowPrivateIP: cfg.DexAllowPrivateIP,
-		RootCAs:        rootCAs,
-		Logger:         log,
-	})
+	provider, err := cfg.dexProvider("/oauth/callback", rootCAs, log)
 	if err != nil {
-		return nil, fmt.Errorf("oauth: dex provider: %w", err)
+		return nil, err
 	}
 	store := memory.New()
 	serverCfg := &oauth.ServerConfig{
@@ -122,6 +114,36 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	}
 	log.Info("OAuth resource server enabled", "issuer", cfg.BaseURL, "dex", cfg.DexIssuerURL, "trustedAudiences", cfg.TrustedAudiences)
 	return &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}, nil
+}
+
+// DexProvider is a Dex client of the same configuration returning to
+// redirectPath below the base URL: the browser pages' own sign-in, whose
+// redirect URI Dex must list for the client.
+func (c OAuthConfig) DexProvider(redirectPath string, log *slog.Logger) (*dex.Provider, error) {
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	rootCAs, err := loadRootCAs(c.DexCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("oauth: %w", err)
+	}
+	return c.dexProvider(redirectPath, rootCAs, log)
+}
+
+func (c OAuthConfig) dexProvider(redirectPath string, rootCAs *x509.CertPool, log *slog.Logger) (*dex.Provider, error) {
+	p, err := dex.NewProvider(&dex.Config{
+		IssuerURL:      c.DexIssuerURL,
+		ClientID:       c.DexClientID,
+		ClientSecret:   c.DexClientSecret,
+		RedirectURL:    strings.TrimSuffix(c.BaseURL, "/") + redirectPath,
+		AllowPrivateIP: c.DexAllowPrivateIP,
+		RootCAs:        rootCAs,
+		Logger:         log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("oauth: dex provider: %w", err)
+	}
+	return p, nil
 }
 
 // loadRootCAs is the system pool plus the PEM bundle at caFile; (nil, nil)

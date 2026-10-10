@@ -22,8 +22,9 @@ import (
 // parts are what a workspace needs from a provider.
 type Kind interface {
 	// List resolves an owner (an organization, a user account, a group) to
-	// every item it holds that cred can see. Selection by name, language and
-	// topics is Select's, over what List reports.
+	// every item it holds that cred can see, from a listing at most
+	// ListingFreshness old. Selection by name, language and topics is
+	// Select's, over what List reports.
 	List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]Item, error)
 
 	// SyncCredential is the provider's own credential for an owner, the one
@@ -47,6 +48,33 @@ type Kind interface {
 // values it does not know or that are missing.
 type Factory func(values json.RawMessage) (Kind, error)
 
+// Clock is the time a kind reads and waits by: its credential's renewal, its
+// listing cache and the waits a provider's rate limit asks for. A kind takes
+// one so its tests run those without waiting.
+type Clock interface {
+	Now() time.Time
+	// Sleep waits for d, or until ctx ends with its error.
+	Sleep(ctx context.Context, d time.Duration) error
+}
+
+// RealClock is the wall clock.
+type RealClock struct{}
+
+// Now implements Clock.
+func (RealClock) Now() time.Time { return time.Now() }
+
+// Sleep implements Clock.
+func (RealClock) Sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // Item is one thing an owner holds: a repository on a git provider.
 type Item struct {
 	// Owner is the owner the item was listed under.
@@ -65,6 +93,9 @@ type Item struct {
 	// LastChange is when the item last changed: on git providers the last
 	// push to any branch or tag.
 	LastChange time.Time
+	// SizeKiB is the item's size as the provider reports it, in KiB: the
+	// estimate a workspace's volume is sized from.
+	SizeKiB int64
 	// CloneURL is the git clone URL over http(s), without a credential: the
 	// sync's credential helper supplies it.
 	CloneURL string
@@ -97,6 +128,8 @@ type SignIn struct {
 	TokenURL string
 	// RevocationURL revokes a person's grant when they disconnect.
 	RevocationURL string
+	// Revocation is how RevocationURL is called; empty is RevokeRFC7009.
+	Revocation Revocation
 	// ClientID is the OAuth client's public identifier.
 	ClientID string
 	// ClientSecret is the OAuth client's secret.
@@ -105,6 +138,20 @@ type SignIn struct {
 	// permissions (a GitHub App).
 	Scopes []string
 }
+
+// Revocation is how a provider revokes a person's grant. Both authenticate
+// with the client's Basic credentials.
+type Revocation string
+
+const (
+	// RevokeRFC7009 POSTs the token as a form (`token`, `token_type_hint`),
+	// the refresh token where there is one: OAuth 2.0 Token Revocation.
+	RevokeRFC7009 Revocation = "rfc7009"
+	// RevokeGrant DELETEs with a JSON body `{"access_token": …}`, which
+	// revokes the whole grant the token belongs to: a GitHub App's
+	// `DELETE /applications/{client_id}/grant`.
+	RevokeGrant Revocation = "grant"
+)
 
 // Scheme is how a token is set on a host.
 type Scheme string

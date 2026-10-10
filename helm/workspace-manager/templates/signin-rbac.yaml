@@ -1,0 +1,38 @@
+{{- if and .Values.rbac.create .Values.providers .Values.oauth.enabled }}
+{{- /*
+The ServiceAccount's permissions in its own namespace for the person's
+provider sign-ins: it reads the provider instances' Secrets and the sealing
+keys, keeps one Secret per person and provider instance, and takes a Lease
+per sign-in while it refreshes the token.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "workspace-manager.fullname" . }}-signin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "workspace-manager.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "workspace-manager.fullname" . }}-signin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "workspace-manager.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "workspace-manager.fullname" . }}-signin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "workspace-manager.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -19,7 +19,28 @@ from that identity and writes with its own ServiceAccount.
 | `/mcp` | MCP over streamable HTTP; behind the OAuth guard when `--enable-oauth` |
 | `/healthz`, `/readyz` | Probes, always open |
 | `/.well-known/oauth-*`, `/oauth/*` | OAuth metadata and this server's own OAuth flow, with `--enable-oauth` |
+| `/connect/<instance>`, `/callback/<instance>`, `/signin` | A person's provider sign-in in the browser, with providers and `--enable-oauth` (below) |
 | `:9464/metrics` | Prometheus metrics (`OTEL_METRICS_EXPORTER=prometheus`) |
+
+## Provider sign-ins
+
+A person connects each provider instance their workspaces need once. The MCP
+tools `list_providers` (every instance, its kind and whether the caller is
+connected), `connect_provider` (the provider's authorization URL) and
+`disconnect_provider` (revokes the grant at the provider and forgets the
+sign-in) act for the caller's Dex subject.
+
+The sign-in is OAuth 2.0 authorization code with PKCE, the instance's client
+secret read by Secret reference. Its `state` is sealed with the sign-in keys
+(`--signin-keys-secret`, `--signin-current-key`): it binds the person, the
+instance and the PKCE verifier for ten minutes, and the verifier never leaves
+the manager in clear. The provider returns to `/callback/<instance>` (on
+GitHub the `-agents` App's callback URL), which stores the token only for the
+person the state was made for: the browser proves who it is by signing in to
+Dex at `/signin`, so a connect link one person hands another connects nobody.
+Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
+`/connect/<instance>` starts the same flow for a person in the browser: the
+link other surfaces show.
 
 Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
@@ -125,14 +146,15 @@ volume mounted at `--volume`:
 ## Layout
 
 - `cmd/`: the CLI (`serve`, `sync`, `version`); every flag also reads an environment variable.
-- `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request.
+- `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request; `routes.go` is the one place every route is registered.
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
 - `internal/workspace`: the Organization check, the provider validation and the Workspace store every tool reads and writes through.
 - `internal/kube`: the manager's Kubernetes clients.
-- `internal/api`: the MCP server and its tracing and metrics middleware.
-- `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, and the provider instance list (`--providers-config`, the chart's `providers`).
-- `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes.
+- `internal/api`: the MCP server, its tools (`list_providers`, `connect_provider`, `disconnect_provider`) and its tracing and metrics middleware.
+- `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.
+- `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, the listing cache (one listing per owner within a minute, shared by the workspaces resolved on the owner and by an editor's picker), and the provider instance list (`--providers-config`, the chart's `providers`).
+- `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes. The `github` kind lists a GitHub App installation's repositories (name, language, topics, archived, fork, last push, size in KiB) with the installation token it mints per owner and renews before expiry, and waits out a rate limit as GitHub asks (`Retry-After`, the primary limit's reset, else a minute).
 - `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.
 - `internal/mirror`: the sync: the volume's layout, the mirrors, the manifest, the credential helper and the borrowed-objects rule.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).

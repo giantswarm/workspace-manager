@@ -1,0 +1,104 @@
+# The person's provider sign-ins: with providers and OAuth, the server gets
+# its sealing keys and a Role in its own namespace for the sign-in Secrets and
+# refresh Leases; without either, neither.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: signin
+templates:
+  - templates/deployment.yaml
+  - templates/providers-configmap.yaml
+  - templates/oauth-secret.yaml
+  - templates/signin-rbac.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+set:
+  providers:
+    - name: github
+      kind: github
+      values:
+        app:
+          id: "123"
+          privateKey: {name: github-agents-app, key: private-key}
+        oauth:
+          clientID: Iv1.abc
+          clientSecret: {name: github-agents-app, key: client-secret}
+  oauth:
+    enabled: true
+    baseURL: https://workspace-manager.example.com
+    dex:
+      issuerURL: https://dex.example.com
+      clientID: workspace-manager
+      clientSecret: dex-secret
+  signin:
+    keys:
+      secretName: workspace-manager-signin-keys
+      current: k1
+tests:
+  - it: passes the sealing keys and the pod's namespace to the server
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --signin-keys-secret=workspace-manager-signin-keys
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --signin-current-key=k1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+
+  - it: refuses providers with OAuth but without sealing keys
+    template: templates/deployment.yaml
+    set:
+      signin.keys.secretName: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: signin.keys.secretName is required with providers and oauth.enabled
+
+  - it: lets the ServiceAccount keep sign-ins and refresh leases in its own namespace
+    template: templates/signin-rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        equal:
+          path: metadata.namespace
+          value: agent-platform
+      - documentIndex: 0
+        equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [secrets]
+              verbs: [get, create, update, delete]
+            - apiGroups: [coordination.k8s.io]
+              resources: [leases]
+              verbs: [get, create, update, delete]
+      - documentIndex: 1
+        equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: workspace-manager
+              namespace: agent-platform
+
+  - it: renders no Role without OAuth
+    template: templates/signin-rbac.yaml
+    set:
+      oauth.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no Role without providers
+    template: templates/signin-rbac.yaml
+    set:
+      providers: []
+    asserts:
+      - hasDocuments:
+          count: 0

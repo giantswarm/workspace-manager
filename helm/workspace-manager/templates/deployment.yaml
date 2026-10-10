@@ -78,6 +78,11 @@ spec:
             {{- if .Values.oauth.allowPublicClientRegistration }}
             - --allow-public-client-registration=true
             {{- end }}
+            {{- if .Values.providers }}
+            {{- /* The person's provider sign-ins, sealed with these keys. */}}
+            - --signin-keys-secret={{ required "signin.keys.secretName is required with providers and oauth.enabled" .Values.signin.keys.secretName }}
+            - --signin-current-key={{ required "signin.keys.current is required with providers and oauth.enabled" .Values.signin.keys.current }}
+            {{- end }}
             {{- end }}
             {{- if .Values.logging.verbose }}
             - --verbose
@@ -90,6 +95,10 @@ spec:
           entry (prometheus or none), so this block is unconditional.
           */}}
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- if .Values.oauth.enabled }}
             - name: DEX_CLIENT_SECRET
               valueFrom:
