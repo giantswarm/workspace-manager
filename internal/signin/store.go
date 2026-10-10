@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -36,6 +37,20 @@ type Store interface {
 	// AccessToken returns an access token valid for at least the store's
 	// refresh margin, refreshing the sign-in when needed.
 	AccessToken(ctx context.Context, person, instance string) (string, error)
+	// Access is AccessToken with the token's expiry.
+	Access(ctx context.Context, person, instance string) (Access, error)
+}
+
+// Access is an access token as released to a caller: never the refresh
+// token.
+type Access struct {
+	Token string
+	// Expiry is when the token expires; zero when the provider set none.
+	Expiry time.Time
+}
+
+func accessOf(tok *oauth2.Token) Access {
+	return Access{Token: tok.AccessToken, Expiry: tok.Expiry}
 }
 
 // OAuth2Configs resolves a provider instance's OAuth 2.0 client: its token
