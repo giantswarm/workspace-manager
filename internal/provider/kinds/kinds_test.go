@@ -25,7 +25,8 @@ func testRegistry(store *fake.Store) provider.Registry {
 // TestContract.
 var backends = map[string]func(t *testing.T) (provider.Factory, providertest.Backend){
 	github.KindName: func(t *testing.T) (provider.Factory, providertest.Backend) {
-		return github.Factory(nil), githubtest.NewServer(t)
+		s := githubtest.NewServer(t)
+		return github.Factory(github.Options{Clock: s.Clock}), s
 	},
 	fake.KindName: func(*testing.T) (provider.Factory, providertest.Backend) {
 		b := fake.NewBackend()
