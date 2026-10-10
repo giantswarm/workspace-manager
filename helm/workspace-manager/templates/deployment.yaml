@@ -82,6 +82,11 @@ spec:
             {{- /* The person's provider sign-ins, sealed with these keys. */}}
             - --signin-keys-secret={{ required "signin.keys.secretName is required with providers and oauth.enabled" .Values.signin.keys.secretName }}
             - --signin-current-key={{ required "signin.keys.current is required with providers and oauth.enabled" .Values.signin.keys.current }}
+            {{- with .Values.tokenExchange.clientID }}
+            {{- /* POST /token for the installation's kagent client. */}}
+            - --token-exchange-client-id={{ . }}
+            - --token-exchange-client-secret={{ required "tokenExchange.clientSecret.name is required with tokenExchange.clientID" $.Values.tokenExchange.clientSecret.name }}/{{ required "tokenExchange.clientSecret.key is required with tokenExchange.clientID" $.Values.tokenExchange.clientSecret.key }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.logging.verbose }}

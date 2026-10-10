@@ -78,6 +78,20 @@ signin:
     # dropping the old one once every sign-in was written again.
     current: ""
 
+tokenExchange:
+  # -- The installation's kagent client: the only client the token exchange
+  # `POST /token` (RFC 8693) answers, with the person's access token for a
+  # provider instance. Empty serves no token exchange. Needs `providers` and
+  # `oauth.enabled`; kagent's namespace belongs in
+  # `networkPolicy.ingressNamespaces`.
+  clientID: ""
+  clientSecret:
+    # -- Secret in the release namespace with the kagent client's secret,
+    # read on every exchange; the chart never renders it.
+    name: ""
+    # -- Key of the client secret in that Secret.
+    key: client-secret
+
 mcp:
   # -- MCP endpoint path.
   path: /mcp

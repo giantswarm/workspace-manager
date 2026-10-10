@@ -20,6 +20,7 @@ from that identity and writes with its own ServiceAccount.
 | `/healthz`, `/readyz` | Probes, always open |
 | `/.well-known/oauth-*`, `/oauth/*` | OAuth metadata and this server's own OAuth flow, with `--enable-oauth` |
 | `/connect/<instance>`, `/callback/<instance>`, `/signin` | A person's provider sign-in in the browser, with providers and `--enable-oauth` (below) |
+| `POST /token` | Token exchange (RFC 8693) for the installation's kagent client, with providers, `--enable-oauth` and `--token-exchange-client-id` (below) |
 | `:9464/metrics` | Prometheus metrics (`OTEL_METRICS_EXPORTER=prometheus`) |
 
 ## Provider sign-ins
@@ -41,6 +42,32 @@ Dex at `/signin`, so a connect link one person hands another connects nobody.
 Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
 `/connect/<instance>` starts the same flow for a person in the browser: the
 link other surfaces show.
+
+## Token exchange
+
+On every turn of a Session with a workspace, kagent exchanges the turn
+caller's Dex token for the person's access token at a provider instance:
+`POST /token`, OAuth 2.0 Token Exchange (RFC 8693). Only the installation's
+kagent client is answered (`--token-exchange-client-id`, its secret by Secret
+reference `--token-exchange-client-secret=<secret>/<key>`, read on every
+exchange), authenticated with `client_secret_basic` or `client_secret_post`;
+every other client gets `invalid_client`.
+
+- `grant_type` `urn:ietf:params:oauth:grant-type:token-exchange`;
+  `subject_token` the caller's Dex token, accepted on the MCP bearer's terms
+  (`subject_token_type` `id_token`, `jwt` or `access_token`); `audience` one
+  provider instance's name.
+- The response is the stored access token, refreshed ahead of expiry:
+  `issued_token_type` access token, `token_type` Bearer, `expires_in`; never a
+  refresh token. While the stored token is valid beyond the refresh margin, no
+  provider request is made.
+- A person without a sign-in, or whose refresh was revoked, gets
+  `invalid_target` with `error_uri` the instance's `/connect/<instance>`; an
+  unknown audience gets `invalid_target` without one; an invalid subject
+  token gets `invalid_request`.
+- Every exchange is logged (person, instance, client, outcome) and counted
+  (`workspace_manager.token_exchange.requests` by provider instance and
+  outcome), never with a token.
 
 Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
@@ -155,6 +182,7 @@ volume mounted at `--volume`:
 - `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.
 - `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, the listing cache (one listing per owner within a minute, shared by the workspaces resolved on the owner and by an editor's picker), and the provider instance list (`--providers-config`, the chart's `providers`).
 - `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes. The `github` kind lists a GitHub App installation's repositories (name, language, topics, archived, fork, last push, size in KiB) with the installation token it mints per owner and renews before expiry, and waits out a rate limit as GitHub asks (`Retry-After`, the primary limit's reset, else a minute).
+- `internal/exchange`: the token exchange `POST /token` (RFC 8693) for the installation's kagent client.
 - `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.
 - `internal/mirror`: the sync: the volume's layout, the mirrors, the manifest, the credential helper and the borrowed-objects rule.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).

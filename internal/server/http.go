@@ -16,6 +16,8 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"github.com/giantswarm/workspace-manager/internal/exchange"
 )
 
 // Config configures the listener.
@@ -29,13 +31,18 @@ type Config struct {
 	OAuth *OAuthConfig
 	// Pages, when set, serves the person's provider connect pages.
 	Pages Pages
+	// TokenExchange, when set, serves the token exchange (RFC 8693) for the
+	// installation's kagent client. It needs OAuth, which validates the
+	// subject token.
+	TokenExchange *exchange.Config
 }
 
 // Server is the assembled HTTP server.
 type Server struct {
-	http  *http.Server
-	oauth *oauthRuntime
-	log   *slog.Logger
+	http     *http.Server
+	oauth    *oauthRuntime
+	exchange *exchange.Handler
+	log      *slog.Logger
 }
 
 // New builds the server.
@@ -53,6 +60,16 @@ func New(cfg Config, mcpSrv *mcpserver.MCPServer, log *slog.Logger) (*Server, er
 			return nil, err
 		}
 		s.oauth = o
+	}
+	if cfg.TokenExchange != nil {
+		if s.oauth == nil {
+			return nil, errors.New("token exchange: needs OAuth, which validates the subject token")
+		}
+		h, err := exchange.New(*cfg.TokenExchange, s.oauth)
+		if err != nil {
+			return nil, err
+		}
+		s.exchange = h
 	}
 	mux := http.NewServeMux()
 	s.routes(mux, cfg, mcpSrv)

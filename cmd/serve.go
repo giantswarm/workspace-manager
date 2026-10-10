@@ -18,6 +18,7 @@ import (
 
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/connect"
+	"github.com/giantswarm/workspace-manager/internal/exchange"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/kinds"
@@ -59,6 +60,9 @@ type serveOptions struct {
 	signInKeysSecret string
 	signInCurrentKey string
 
+	tokenExchangeClientID     string
+	tokenExchangeClientSecret string
+
 	oauthEnabled                  bool
 	oauthBaseURL                  string
 	dexIssuerURL                  string
@@ -91,6 +95,8 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace: provider Secrets, the sealing keys and the sign-ins live there (POD_NAMESPACE)")
 	f.StringVar(&o.signInKeysSecret, "signin-keys-secret", envOr("WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET", ""), "Secret in the manager's namespace with the sign-in sealing keys, each data entry a key id and its 32 raw bytes; required with providers and OAuth (WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET)")
 	f.StringVar(&o.signInCurrentKey, "signin-current-key", envOr("WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY", ""), "The id of the sealing key that seals new sign-ins (WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY)")
+	f.StringVar(&o.tokenExchangeClientID, "token-exchange-client-id", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID", ""), "The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers; empty serves no token exchange. Needs providers and OAuth (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID)")
+	f.StringVar(&o.tokenExchangeClientSecret, "token-exchange-client-secret", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET", ""), "The kagent client's secret as `<secret>/<key>` of a Secret in the manager's namespace, read on every exchange (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("WORKSPACE_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (WORKSPACE_MANAGER_OAUTH_BASE_URL)")
@@ -162,12 +168,18 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		if srvCfg.OAuth == nil {
 			log.Warn("provider sign-ins are off: they need --enable-oauth, which names the person")
 		} else {
-			conn, pages, err := providerSignIns(ctx, o, srvCfg.OAuth, clients, providers, log)
+			si, err := providerSignIns(ctx, o, srvCfg.OAuth, clients, providers, log)
 			if err != nil {
 				return err
 			}
-			apiCfg.Connector, srvCfg.Pages = conn, pages
+			apiCfg.Connector, srvCfg.Pages = si.connector, si.pages
+			if srvCfg.TokenExchange, err = tokenExchange(o, si, providers, log); err != nil {
+				return err
+			}
 		}
+	}
+	if o.tokenExchangeClientID != "" && srvCfg.TokenExchange == nil {
+		return fmt.Errorf("--token-exchange-client-id needs providers and --enable-oauth")
 	}
 	srv, err := server.New(srvCfg, api.NewMCPServer(apiCfg, build.Version), log)
 	if err != nil {
@@ -181,40 +193,71 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	return srv.Run(ctx)
 }
 
+// signIns are the person's provider sign-ins as serve wires them.
+type signIns struct {
+	connector *connect.Connector
+	pages     *connect.Pages
+	store     *signin.KubeStore
+	clients   *connect.Clients
+	secrets   kube.Secrets
+}
+
 // providerSignIns builds the person's provider sign-ins: the sealing keys,
 // the sign-in store, the connector and its browser pages, which sign the
 // browser in to Dex at connect.SignInPath.
-func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAuthConfig, clients *kube.Clients, providers []provider.Instance, log *slog.Logger) (*connect.Connector, *connect.Pages, error) {
+func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAuthConfig, clients *kube.Clients, providers []provider.Instance, log *slog.Logger) (*signIns, error) {
 	if o.managerNamespace == "" || o.signInKeysSecret == "" || o.signInCurrentKey == "" {
-		return nil, nil, fmt.Errorf("provider sign-ins need --manager-namespace, --signin-keys-secret and --signin-current-key")
+		return nil, fmt.Errorf("provider sign-ins need --manager-namespace, --signin-keys-secret and --signin-current-key")
 	}
 	keyring, err := signin.LoadKeyring(ctx, clients.Typed(), o.managerNamespace, o.signInKeysSecret, o.signInCurrentKey)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	secrets := kube.Secrets{Client: clients.Typed(), Namespace: o.managerNamespace}
 	oauthClients, err := connect.NewClients(providers, secrets, oauthCfg.BaseURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	store, err := signin.NewKubeStore(signin.Options{Client: clients.Typed(), Namespace: o.managerNamespace, Keyring: keyring, OAuth2: oauthClients, Logger: log})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	conn, err := connect.New(connect.Options{Clients: oauthClients, Store: store, Keyring: keyring, Logger: log})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	idp, err := oauthCfg.DexProvider(connect.SignInPath, log)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	pages, err := connect.NewPages(conn, idp)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	log.Info("provider sign-ins enabled", "namespace", o.managerNamespace, "keysSecret", o.signInKeysSecret, "currentKey", keyring.Current())
-	return conn, pages, nil
+	return &signIns{connector: conn, pages: pages, store: store, clients: oauthClients, secrets: secrets}, nil
+}
+
+// tokenExchange configures POST /token for the installation's kagent client;
+// nil without --token-exchange-client-id.
+func tokenExchange(o *serveOptions, si *signIns, providers []provider.Instance, log *slog.Logger) (*exchange.Config, error) {
+	if o.tokenExchangeClientID == "" {
+		return nil, nil
+	}
+	name, key, ok := strings.Cut(o.tokenExchangeClientSecret, "/")
+	if !ok || name == "" || key == "" {
+		return nil, fmt.Errorf("--token-exchange-client-secret must be <secret>/<key>, got %q", o.tokenExchangeClientSecret)
+	}
+	log.Info("token exchange enabled", "client", o.tokenExchangeClientID, "clientSecret", name+"/"+key)
+	return &exchange.Config{
+		ClientID:     o.tokenExchangeClientID,
+		ClientSecret: provider.SecretRef{Name: name, Key: key},
+		Secrets:      si.secrets,
+		Instances:    providers,
+		Tokens:       si.store,
+		ConnectURL:   si.clients.ConnectURL,
+		Logger:       log,
+	}, nil
 }
 
 // loadProviders reads and validates the provider instances.
