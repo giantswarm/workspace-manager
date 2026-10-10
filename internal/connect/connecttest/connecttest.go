@@ -99,7 +99,7 @@ func (s *AuthServer) authorize(w http.ResponseWriter, r *http.Request) {
 	v.Set("code", code)
 	v.Set("state", q.Get("state"))
 	to.RawQuery = v.Encode()
-	http.Redirect(w, r, to.String(), http.StatusFound)
+	http.Redirect(w, r, to.String(), http.StatusFound) //nolint:gosec // G710: a fake authorization server redirects where it is asked, like the real one after checking the client.
 }
 
 func (s *AuthServer) client(r *http.Request) bool {

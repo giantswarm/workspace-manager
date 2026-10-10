@@ -8,7 +8,6 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -19,12 +18,12 @@ import (
 // pages.
 const DefaultSessionTTL = time.Hour
 
+// The cookies are Secure and host-only (`__Host-`): no sibling subdomain can
+// set one in their place. The manager's base URL is https, or loopback http,
+// which browsers treat as secure.
 const (
-	sessionCookie = "workspace-manager-session"
-	signInCookie  = "workspace-manager-signin"
-	// hostPrefix keeps a cookie to the manager's own host over https: no
-	// sibling subdomain can set one in its place.
-	hostPrefix = "__Host-"
+	sessionCookie = "__Host-workspace-manager-session"
+	signInCookie  = "__Host-workspace-manager-signin"
 	// SignInPath is the manager's redirect URI at the identity provider.
 	SignInPath = "/signin"
 )
@@ -44,19 +43,17 @@ type IdentityProvider interface {
 // the manager, so a callback is completed only by the person its state was
 // made for: a link one person hands another connects nobody.
 type Pages struct {
-	c      *Connector
-	idp    IdentityProvider
-	secure bool
-	ttl    time.Duration
+	c   *Connector
+	idp IdentityProvider
+	ttl time.Duration
 }
 
-// NewPages builds the pages; their cookies are Secure when the manager's
-// base URL is https.
+// NewPages builds the pages.
 func NewPages(c *Connector, idp IdentityProvider) (*Pages, error) {
 	if c == nil || idp == nil {
 		return nil, errors.New("connect pages: a connector and an identity provider are required")
 	}
-	return &Pages{c: c, idp: idp, secure: strings.HasPrefix(c.baseURL, "https://"), ttl: DefaultSessionTTL}, nil
+	return &Pages{c: c, idp: idp, ttl: DefaultSessionTTL}, nil
 }
 
 // session is a browser signed in to the pages.
@@ -139,7 +136,7 @@ func (p *Pages) Callback(w http.ResponseWriter, r *http.Request) {
 func (p *Pages) SignIn(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var st signInState
-	cookie, err := r.Cookie(p.cookieName(signInCookie))
+	cookie, err := r.Cookie(signInCookie)
 	if err != nil || open(p.c.keyring, signInContext, q.Get("state"), &st) != nil ||
 		subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(st.Nonce)) != 1 ||
 		!p.c.now().Before(time.Unix(st.Expiry, 0)) {
@@ -173,7 +170,7 @@ func (p *Pages) SignIn(w http.ResponseWriter, r *http.Request) {
 
 // person is the browser's signed-in person, if its session is valid.
 func (p *Pages) person(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie(p.cookieName(sessionCookie))
+	cookie, err := r.Cookie(sessionCookie)
 	if err != nil {
 		return "", false
 	}
@@ -210,16 +207,9 @@ func (p *Pages) signIn(w http.ResponseWriter, r *http.Request) {
 // setCookie sets an HttpOnly cookie for the whole host. SameSite Lax,
 // because the identity provider's and the provider's redirects are
 // cross-site top-level navigations that must carry it.
-func (p *Pages) setCookie(w http.ResponseWriter, name, value string, maxAge int) {
-	http.SetCookie(w, &http.Cookie{Name: p.cookieName(name), Value: value, Path: "/", MaxAge: maxAge,
-		HttpOnly: true, Secure: p.secure, SameSite: http.SameSiteLaxMode})
-}
-
-func (p *Pages) cookieName(name string) string {
-	if p.secure {
-		return hostPrefix + name
-	}
-	return name
+func (*Pages) setCookie(w http.ResponseWriter, name, value string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 }
 
 var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
