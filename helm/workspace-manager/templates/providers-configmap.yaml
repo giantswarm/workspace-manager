@@ -1,0 +1,16 @@
+{{- if .Values.providers }}
+{{- /*
+The provider instances, read by the server at start (`--providers-config`).
+It names Secrets, never holds their values.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "workspace-manager.fullname" . }}-providers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "workspace-manager.labels" . | nindent 4 }}
+data:
+  providers.yaml: |
+    {{- dict "providers" .Values.providers | toYaml | nindent 4 }}
+{{- end }}

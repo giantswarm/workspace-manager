@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/provider"
 )
 
 const tracerName = "github.com/giantswarm/workspace-manager"
@@ -25,6 +26,8 @@ type Config struct {
 	Kube kube.Client
 	// Namespace is where the workspaces and everything they own live.
 	Namespace string
+	// Providers are the installation's provider instances.
+	Providers []provider.Instance
 }
 
 // genAIToolName labels the mcp.tools/call server span with the called tool
