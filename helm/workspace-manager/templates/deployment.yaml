@@ -51,6 +51,10 @@ spec:
             - --listen=:8080
             - --in-cluster=true
             - --namespace={{ .Values.workspaces.namespace }}
+            {{- with .Values.storage.storageClassName }}
+            {{- /* Empty claims no volume: the controller names the value in every Workspace's condition. */}}
+            - --storage-class={{ . }}
+            {{- end }}
             - --mcp-path={{ .Values.mcp.path }}
             {{- range $org, $o := .Values.organizations }}
             - --organization={{ $org }}={{ join "," $o.memberGroups }}

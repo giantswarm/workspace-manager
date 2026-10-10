@@ -6,7 +6,7 @@ release:
   name: workspace-manager
   namespace: agent-platform
 tests:
-  - it: lets the manager's ServiceAccount write Workspaces in the workspaces' namespace
+  - it: lets the manager's ServiceAccount write Workspaces and claim their volumes in the workspaces' namespace
     template: templates/rbac.yaml
     asserts:
       - hasDocuments:
@@ -28,6 +28,10 @@ tests:
             - apiGroups: [workspace-manager.giantswarm.io]
               resources: [workspaces/status]
               verbs: [get, update, patch]
+            # The claim is made, never deleted: it goes with its Workspace.
+            - apiGroups: [""]
+              resources: [persistentvolumeclaims]
+              verbs: [get, create]
       - documentIndex: 1
         equal:
           path: subjects
@@ -56,17 +60,13 @@ tests:
           path: subjects[0].kind
           value: ServiceAccount
 
-  - it: grants no right on PVCs or Jobs
+  # The claim's verbs are pinned above: get and create, never delete.
+  - it: grants no right on Jobs
     documentSelector:
       path: kind
       value: Role
       matchMany: true
     asserts:
-      - notContains:
-          path: rules
-          content:
-            resources: [persistentvolumeclaims]
-          any: true
       - notContains:
           path: rules
           content:

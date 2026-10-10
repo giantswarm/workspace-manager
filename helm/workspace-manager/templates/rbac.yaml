@@ -21,6 +21,14 @@ rules:
   - apiGroups: [workspace-manager.giantswarm.io]
     resources: [workspaces/status]
     verbs: [get, update, patch]
+  {{- /*
+  The workspace's volume: the controller claims it from storage.storageClassName
+  and never deletes it; the claim is the Workspace's, by its owner reference,
+  and goes with it.
+  */}}
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

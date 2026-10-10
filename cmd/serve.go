@@ -15,9 +15,11 @@ import (
 	"github.com/giantswarm/mcp-toolkit/tracing"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/connect"
+	"github.com/giantswarm/workspace-manager/internal/controller"
 	"github.com/giantswarm/workspace-manager/internal/exchange"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
@@ -51,6 +53,7 @@ type serveOptions struct {
 
 	namespace     string
 	organizations []string
+	storageClass  string
 
 	mcpPath string
 
@@ -91,6 +94,7 @@ environment variable named next to it; flags win over the environment.`,
 	o.kube.add(f)
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
+	f.StringVar(&o.storageClass, "storage-class", envOr("WORKSPACE_MANAGER_STORAGE_CLASS", ""), "The read-write-many StorageClass every workspace's volume is claimed from; empty claims none: each Workspace's VolumeClaimed condition names the missing value, and the cluster's default class is never used in its place (WORKSPACE_MANAGER_STORAGE_CLASS)")
 	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
 	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace: provider Secrets, the sealing keys and the sign-ins live there (POD_NAMESPACE)")
 	f.StringVar(&o.signInKeysSecret, "signin-keys-secret", envOr("WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET", ""), "Secret in the manager's namespace with the sign-in sealing keys, each data entry a key id and its 32 raw bytes; required with providers and OAuth (WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET)")
@@ -148,6 +152,12 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	if err != nil {
 		return fmt.Errorf("workspace-manager needs Kubernetes access: %w", err)
 	}
+	// The controller claims each Workspace's volume; without a class it
+	// claims none and says so in every Workspace's condition.
+	if o.storageClass == "" {
+		log.Warn("no StorageClass: no workspace volume is claimed until --storage-class (the chart's storage.storageClassName) names the installation's read-write-many class")
+	}
+	ctl := controller.New(controller.Config{Dynamic: clients.Dynamic(), Core: clients.Typed(), Namespace: o.namespace, StorageClass: o.storageClass, Logger: log})
 
 	srvCfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
 	if o.oauthEnabled {
@@ -186,11 +196,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		return err
 	}
 	log.Info("workspace-manager starting", "version", build.Version, "commit", build.Commit, "listen", o.listen,
-		"mcp", o.mcpPath, "oauth", o.oauthEnabled, "namespace", o.namespace, "organizations", len(orgs))
+		"mcp", o.mcpPath, "oauth", o.oauthEnabled, "namespace", o.namespace, "organizations", len(orgs), "storageClass", o.storageClass)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return srv.Run(ctx)
+	// The server and the controller stop together: on a signal, or when one
+	// of them fails.
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return srv.Run(ctx) })
+	g.Go(func() error { return ctl.Run(ctx) })
+	return g.Wait()
 }
 
 // signIns are the person's provider sign-ins as serve wires them.

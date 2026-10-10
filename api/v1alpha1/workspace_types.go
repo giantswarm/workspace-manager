@@ -212,7 +212,9 @@ const (
 
 // WorkspaceStatus is what the workspace-manager observed.
 type WorkspaceStatus struct {
-	// Conditions are the workspace's conditions (Ready, Synced).
+	// Conditions are the workspace's conditions: VolumeClaimed (the volume is
+	// claimed from the installation's StorageClass; False names the missing
+	// class), Ready and Synced.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
