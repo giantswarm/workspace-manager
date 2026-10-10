@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -19,9 +20,14 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/provider"
 )
 
+// tokenRenewal is how long before its expiry an installation token is
+// replaced, so no call goes out on one about to expire.
+const tokenRenewal = 5 * time.Minute
+
 // SyncCredential implements provider.Kind: the App's installation token on
-// owner, renewed shortly before it expires. The private key is read once, here,
-// so a missing Secret fails the first sync of the owner with its name.
+// owner, minted from the App's private key and renewed tokenRenewal before it
+// expires. The key is read once, here, so a missing Secret fails the first
+// sync of the owner with its name.
 func (k *Kind) SyncCredential(ctx context.Context, secrets provider.Secrets, owner string) (oauth2.TokenSource, error) {
 	pemKey, err := secrets.Value(ctx, k.v.App.PrivateKey)
 	if err != nil {
@@ -36,8 +42,7 @@ func (k *Kind) SyncCredential(ctx context.Context, secrets provider.Secrets, own
 		return nil, err
 	}
 	// The token source outlives the call that built it.
-	src := &installationTokens{k: k, signer: signer, owner: owner, ctx: context.WithoutCancel(ctx)}
-	return oauth2.ReuseTokenSourceWithExpiry(nil, src, time.Minute), nil
+	return &installationTokens{k: k, signer: signer, owner: owner, ctx: context.WithoutCancel(ctx)}, nil
 }
 
 func parsePrivateKey(data []byte) (*rsa.PrivateKey, error) {
@@ -59,18 +64,28 @@ func parsePrivateKey(data []byte) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-// installationTokens mints an installation token per call; ReuseTokenSource
-// calls it only when the last one is about to expire.
+// installationTokens is the token source of one owner: it holds the current
+// installation token and mints the next one when the current nears expiry.
 type installationTokens struct {
 	k      *Kind
 	signer jose.Signer
 	owner  string
 	ctx    context.Context
+
+	mu    sync.Mutex
+	token *oauth2.Token
 }
 
+// Token implements oauth2.TokenSource.
 func (s *installationTokens) Token() (*oauth2.Token, error) {
-	now := s.k.now()
-	// Backdated against clock drift; GitHub accepts at most ten minutes.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.k.clock.Now()
+	if s.token != nil && now.Add(tokenRenewal).Before(s.token.Expiry) {
+		return s.token, nil
+	}
+	// The App's own JWT, backdated against clock drift; GitHub accepts at
+	// most ten minutes.
 	appJWT, err := jwt.Signed(s.signer).Claims(jwt.Claims{
 		Issuer:   s.k.v.App.ID,
 		IssuedAt: jwt.NewNumericDate(now.Add(-time.Minute)),
@@ -79,21 +94,13 @@ func (s *installationTokens) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	app := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: appJWT})
-
-	var inst struct {
-		ID int64 `json:"id"`
-	}
-	if err := s.k.get(s.ctx, app, "/users/"+url.PathEscape(s.owner)+"/installation", &inst); err != nil {
-		var se *statusError
-		if errors.As(err, &se) && se.status == http.StatusNotFound {
-			return nil, fmt.Errorf("the GitHub App %s is not installed on %s", s.k.v.App.ID, s.owner)
-		}
-		return nil, fmt.Errorf("installation on %s: %w", s.owner, err)
+	id, err := s.installation(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: appJWT}))
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(s.ctx, http.MethodPost,
-		s.k.api.String()+"/app/installations/"+strconv.FormatInt(inst.ID, 10)+"/access_tokens", nil)
+		s.k.api.String()+"/app/installations/"+strconv.FormatInt(id, 10)+"/access_tokens", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -105,5 +112,26 @@ func (s *installationTokens) Token() (*oauth2.Token, error) {
 	if _, err := s.k.do(req, http.StatusCreated, &tok); err != nil {
 		return nil, fmt.Errorf("installation token on %s: %w", s.owner, err)
 	}
-	return &oauth2.Token{AccessToken: tok.Token, TokenType: "Bearer", Expiry: tok.ExpiresAt}, nil
+	s.token = &oauth2.Token{AccessToken: tok.Token, TokenType: "Bearer", Expiry: tok.ExpiresAt}
+	return s.token, nil
+}
+
+// installation looks the App's installation on the owner up: an
+// organization's, else a user account's.
+func (s *installationTokens) installation(app oauth2.TokenSource) (int64, error) {
+	owner := url.PathEscape(s.owner)
+	for _, path := range []string{"/orgs/" + owner + "/installation", "/users/" + owner + "/installation"} {
+		var inst struct {
+			ID int64 `json:"id"`
+		}
+		err := s.k.get(s.ctx, app, path, &inst)
+		if err == nil {
+			return inst.ID, nil
+		}
+		var se *statusError
+		if !errors.As(err, &se) || se.status != http.StatusNotFound {
+			return 0, fmt.Errorf("installation on %s: %w", s.owner, err)
+		}
+	}
+	return 0, fmt.Errorf("the GitHub App %s is not installed on %s", s.k.v.App.ID, s.owner)
 }

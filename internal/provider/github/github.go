@@ -1,17 +1,21 @@
 // Package github is the GitHub provider kind: github.com or a GitHub
 // Enterprise Server. A GitHub App is the provider on an installation: its
-// installation token is the sync credential, and its user-to-server sign-in is
-// the person's sign-in. Only internal/provider/kinds imports this package.
+// installation token on an owner is the sync credential, the installation's
+// repositories are the listing, and its user-to-server sign-in is the person's
+// sign-in. Only internal/provider/kinds imports this package.
 package github
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +30,7 @@ const KindName = "github"
 // Values are an instance's settings.
 type Values struct {
 	// URL is the web URL: https://github.com (the default) or a GitHub
-	// Enterprise Server's.
+	// Enterprise Server's. It is the git host.
 	URL string `json:"url,omitempty"`
 	// APIURL is the REST API's base URL. Empty derives it from URL:
 	// https://api.github.com for github.com, `<url>/api/v3` otherwise.
@@ -51,9 +55,17 @@ type OAuthValues struct {
 	ClientSecret provider.SecretRef `json:"clientSecret"`
 }
 
-// Factory builds a GitHub instance; http is the client the API calls use (nil
-// for http.DefaultClient).
-func Factory(hc *http.Client) provider.Factory {
+// Options are an instance's dependencies beyond its Values.
+type Options struct {
+	// HTTP is the client the API calls use; nil for http.DefaultClient.
+	HTTP *http.Client
+	// Clock is what the instance tells time and waits by; nil for the wall
+	// clock.
+	Clock provider.Clock
+}
+
+// Factory builds GitHub instances with o.
+func Factory(o Options) provider.Factory {
 	return func(raw json.RawMessage) (provider.Kind, error) {
 		var v Values
 		dec := json.NewDecoder(bytes.NewReader(raw))
@@ -61,21 +73,22 @@ func Factory(hc *http.Client) provider.Factory {
 		if err := dec.Decode(&v); err != nil {
 			return nil, fmt.Errorf("values: %w", err)
 		}
-		return New(v, hc)
+		return New(v, o)
 	}
 }
 
 // Kind is a configured GitHub instance.
 type Kind struct {
-	v    Values
-	web  *url.URL
-	api  *url.URL
-	http *http.Client
-	now  func() time.Time
+	v     Values
+	web   *url.URL
+	api   *url.URL
+	http  *http.Client
+	clock provider.Clock
+	cache *provider.ListingCache
 }
 
 // New validates v and builds the instance.
-func New(v Values, hc *http.Client) (*Kind, error) {
+func New(v Values, o Options) (*Kind, error) {
 	if v.URL == "" {
 		v.URL = "https://github.com"
 	}
@@ -111,10 +124,13 @@ func New(v Values, hc *http.Client) (*Kind, error) {
 		slices.Sort(missing)
 		return nil, fmt.Errorf("values: %s required", strings.Join(missing, ", "))
 	}
-	if hc == nil {
-		hc = http.DefaultClient
+	if o.HTTP == nil {
+		o.HTTP = http.DefaultClient
 	}
-	return &Kind{v: v, web: web, api: api, http: hc, now: time.Now}, nil
+	if o.Clock == nil {
+		o.Clock = provider.RealClock{}
+	}
+	return &Kind{v: v, web: web, api: api, http: o.HTTP, clock: o.Clock, cache: provider.NewListingCache(o.Clock)}, nil
 }
 
 func parseBase(field, raw string) (*url.URL, error) {
@@ -157,27 +173,28 @@ func (k *Kind) Hosts() provider.Hosts {
 	return h
 }
 
-// List implements provider.Kind over the owner's repositories, an
-// organization's or a user account's.
+// List implements provider.Kind: the repositories of the App's installation
+// on owner, which is what cred, the owner's SyncCredential, can see and the
+// sync can fetch; from the listing cache within provider.ListingFreshness.
 func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
-	var account struct {
-		Type string `json:"type"`
-	}
-	if err := k.get(ctx, cred, "/users/"+url.PathEscape(owner), &account); err != nil {
-		return nil, fmt.Errorf("owner %s: %w", owner, err)
-	}
-	path := "/users/" + url.PathEscape(owner) + "/repos?type=owner&per_page=100"
-	if account.Type == "Organization" {
-		path = "/orgs/" + url.PathEscape(owner) + "/repos?type=all&per_page=100"
-	}
+	return k.cache.Get(owner, func() ([]provider.Item, error) { return k.list(ctx, cred, owner) })
+}
+
+// list pages through the installation's repositories, 100 a call.
+func (k *Kind) list(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
 	var items []provider.Item
-	for next := k.api.String() + path; next != ""; {
-		var page []repository
+	for next := k.api.String() + "/installation/repositories?per_page=100"; next != ""; {
+		var page struct {
+			Repositories []repository `json:"repositories"`
+		}
 		var err error
 		if next, err = k.getPage(ctx, cred, next, &page); err != nil {
 			return nil, fmt.Errorf("listing %s: %w", owner, err)
 		}
-		for _, r := range page {
+		for _, r := range page.Repositories {
+			if !strings.EqualFold(r.Owner.Login, owner) {
+				return nil, fmt.Errorf("listing %s: the credential is the App's installation on %s", owner, r.Owner.Login)
+			}
 			items = append(items, provider.Item{
 				Owner:         owner,
 				Name:          r.Name,
@@ -186,6 +203,7 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 				Archived:      r.Archived,
 				Fork:          r.Fork,
 				LastChange:    r.PushedAt,
+				SizeKiB:       r.Size,
 				CloneURL:      r.CloneURL,
 				DefaultBranch: r.DefaultBranch,
 			})
@@ -194,13 +212,18 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 	return items, nil
 }
 
+// repository is what the listing reads of a repository; `size` is in KiB.
 type repository struct {
-	Name          string    `json:"name"`
+	Name  string `json:"name"`
+	Owner struct {
+		Login string `json:"login"`
+	} `json:"owner"`
 	Language      string    `json:"language"`
 	Topics        []string  `json:"topics"`
 	Archived      bool      `json:"archived"`
 	Fork          bool      `json:"fork"`
 	PushedAt      time.Time `json:"pushed_at"`
+	Size          int64     `json:"size"`
 	CloneURL      string    `json:"clone_url"`
 	DefaultBranch string    `json:"default_branch"`
 }
@@ -231,8 +254,31 @@ func (k *Kind) getPage(ctx context.Context, cred oauth2.TokenSource, u string, o
 	return nextLink(header.Get("Link")), nil
 }
 
-// do sends req and decodes a response of status want into out.
+// A rate limit is waited out as GitHub says: `Retry-After` on a secondary
+// limit, the primary limit's reset time once `x-ratelimit-remaining` is 0,
+// else a minute. A wait beyond maxRateLimitWait, or more than rateLimitRetries
+// of them, fails the call with the limit instead, for the caller's next cycle.
+const (
+	maxRateLimitWait = 5 * time.Minute
+	rateLimitRetries = 3
+)
+
+// do sends req (which carries no body, so it is sent again after a rate
+// limit's wait) and decodes an answer of status want into out.
 func (k *Kind) do(req *http.Request, want int, out any) (http.Header, error) {
+	for attempt := 0; ; attempt++ {
+		header, err := k.once(req, want, out)
+		var se *statusError
+		if !errors.As(err, &se) || !se.limited || attempt == rateLimitRetries || se.resetIn > maxRateLimitWait {
+			return header, err
+		}
+		if err := k.clock.Sleep(req.Context(), se.resetIn); err != nil {
+			return nil, fmt.Errorf("%w (while waiting out a rate limit: %w)", err, se)
+		}
+	}
+}
+
+func (k *Kind) once(req *http.Request, want int, out any) (http.Header, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := k.http.Do(req)
@@ -244,10 +290,33 @@ func (k *Kind) do(req *http.Request, want int, out any) (http.Header, error) {
 		var e struct {
 			Message string `json:"message"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&e)
-		return nil, &statusError{method: req.Method, path: req.URL.Path, status: resp.StatusCode, message: e.Message}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&e)
+		se := &statusError{method: req.Method, path: req.URL.Path, status: resp.StatusCode, message: e.Message}
+		se.resetIn, se.limited = rateLimitWait(resp, e.Message, k.clock.Now())
+		return nil, se
 	}
 	return resp.Header, json.NewDecoder(resp.Body).Decode(out)
+}
+
+// rateLimitWait reads a rate-limited answer's wait: false for any other
+// answer.
+func rateLimitWait(resp *http.Response, message string, now time.Time) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return 0, false
+	}
+	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
+		return time.Duration(s) * time.Second, true
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+			// A second past the reset, so the retry lands after it.
+			return max(time.Unix(reset, 0).Sub(now), 0) + time.Second, true
+		}
+	}
+	if strings.Contains(strings.ToLower(message), "rate limit") {
+		return time.Minute, true
+	}
+	return 0, false
 }
 
 // nextLink extracts rel="next" from a Link header.
@@ -266,13 +335,20 @@ func nextLink(header string) string {
 	return ""
 }
 
-// statusError is an API answer other than the one expected.
+// statusError is an API answer other than the one expected; a rate limit
+// says when it resets.
 type statusError struct {
 	method, path string
 	status       int
 	message      string
+	limited      bool
+	resetIn      time.Duration
 }
 
 func (e *statusError) Error() string {
-	return fmt.Sprintf("%s %s: %d %s %s", e.method, e.path, e.status, http.StatusText(e.status), e.message)
+	s := fmt.Sprintf("%s %s: %d %s %s", e.method, e.path, e.status, http.StatusText(e.status), e.message)
+	if e.limited {
+		s += fmt.Sprintf(" (rate limit resets in %s)", e.resetIn)
+	}
+	return s
 }
