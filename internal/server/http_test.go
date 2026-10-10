@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,4 +51,25 @@ func TestSessionMovesBetweenReplicas(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 	resp = postMCP(t, b.URL, session, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// Without provider sign-ins the browser pages answer that none is configured
+// instead of a bare 404.
+func TestPagesWithoutProvider(t *testing.T) {
+	ts := newTestServer(t)
+	for _, path := range []string{"/signin", "/connect/github", "/callback/github"} {
+		t.Run(path, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
+			require.NoError(t, err)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+			assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+			assert.Contains(t, string(body), "No provider configured")
+		})
+	}
 }

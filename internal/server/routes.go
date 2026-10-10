@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/giantswarm/workspace-manager/internal/connect"
 )
 
 // Pages are the person's browser pages for connecting a provider
@@ -28,12 +30,15 @@ func (s *Server) routes(mux *http.ServeMux, cfg Config, mcpSrv *mcpserver.MCPSer
 	}
 
 	// The browser's pages authenticate the person themselves (a Dex sign-in
-	// of their own), never with a bearer token.
+	// of their own), never with a bearer token. Without provider sign-ins
+	// they answer that none is configured.
+	connectPage, callbackPage, signInPage := connect.NotConfigured, connect.NotConfigured, connect.NotConfigured
 	if cfg.Pages != nil {
-		mux.HandleFunc("GET /connect/{instance}", cfg.Pages.Connect)
-		mux.HandleFunc("GET /callback/{instance}", cfg.Pages.Callback)
-		mux.HandleFunc("GET /signin", cfg.Pages.SignIn)
+		connectPage, callbackPage, signInPage = cfg.Pages.Connect, cfg.Pages.Callback, cfg.Pages.SignIn
 	}
+	mux.HandleFunc("GET /connect/{instance}", connectPage)
+	mux.HandleFunc("GET /callback/{instance}", callbackPage)
+	mux.HandleFunc("GET "+connect.SignInPath, signInPage)
 
 	// The token exchange authenticates its client itself (client_secret_basic
 	// or client_secret_post) and validates the subject token in the form,

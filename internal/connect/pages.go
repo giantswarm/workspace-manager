@@ -76,7 +76,7 @@ type signInState struct {
 func (p *Pages) Connect(w http.ResponseWriter, r *http.Request) {
 	instance := r.PathValue("instance")
 	if _, err := p.c.instance(instance); err != nil {
-		p.page(w, http.StatusNotFound, "Unknown provider", "This installation has no provider named "+instance+".")
+		page(w, http.StatusNotFound, "Unknown provider", "This installation has no provider named "+instance+".")
 		return
 	}
 	person, ok := p.person(r)
@@ -87,7 +87,7 @@ func (p *Pages) Connect(w http.ResponseWriter, r *http.Request) {
 	u, _, err := p.c.AuthorizationURL(r.Context(), person, instance)
 	if err != nil {
 		p.c.log.ErrorContext(r.Context(), "connect page", "instance", instance, "error", err)
-		p.page(w, http.StatusInternalServerError, "Cannot connect "+instance, "The provider's sign-in cannot start right now.")
+		page(w, http.StatusInternalServerError, "Cannot connect "+instance, "The provider's sign-in cannot start right now.")
 		return
 	}
 	http.Redirect(w, r, u, http.StatusSeeOther)
@@ -98,17 +98,17 @@ func (p *Pages) Callback(w http.ResponseWriter, r *http.Request) {
 	instance := r.PathValue("instance")
 	q := r.URL.Query()
 	if _, err := p.c.instance(instance); err != nil {
-		p.page(w, http.StatusNotFound, "Unknown provider", "This installation has no provider named "+instance+".")
+		page(w, http.StatusNotFound, "Unknown provider", "This installation has no provider named "+instance+".")
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		p.page(w, http.StatusBadRequest, instance+" is not connected", "The provider answered: "+e+".")
+		page(w, http.StatusBadRequest, instance+" is not connected", "The provider answered: "+e+".")
 		return
 	}
 	// The state is checked before the browser is sent to sign in, so a
 	// forged or stale link goes nowhere.
 	if _, err := p.c.CheckState(instance, q.Get("state")); err != nil {
-		p.page(w, http.StatusBadRequest, instance+" is not connected", "This sign-in link is invalid or has expired. Start again from the connect link.")
+		page(w, http.StatusBadRequest, instance+" is not connected", "This sign-in link is invalid or has expired. Start again from the connect link.")
 		return
 	}
 	person, ok := p.person(r)
@@ -119,14 +119,14 @@ func (p *Pages) Callback(w http.ResponseWriter, r *http.Request) {
 	err := p.c.Complete(r.Context(), person, instance, q.Get("state"), q.Get("code"))
 	switch {
 	case err == nil:
-		p.page(w, http.StatusOK, instance+" connected", "Your agents can now use "+instance+" as you. You can close this page.")
+		page(w, http.StatusOK, instance+" connected", "Your agents can now use "+instance+" as you. You can close this page.")
 	case errors.Is(err, ErrInvalidState):
-		p.page(w, http.StatusBadRequest, instance+" is not connected", "This sign-in link is invalid or has expired. Start again from the connect link.")
+		page(w, http.StatusBadRequest, instance+" is not connected", "This sign-in link is invalid or has expired. Start again from the connect link.")
 	case errors.Is(err, ErrOtherPerson):
-		p.page(w, http.StatusForbidden, instance+" is not connected", "This sign-in link was made for another person. Start from your own connect link.")
+		page(w, http.StatusForbidden, instance+" is not connected", "This sign-in link was made for another person. Start from your own connect link.")
 	default:
 		p.c.log.WarnContext(r.Context(), "sign-in not completed", "instance", instance, "error", err)
-		p.page(w, http.StatusBadGateway, instance+" is not connected", "The provider did not complete the sign-in. Start again from the connect link.")
+		page(w, http.StatusBadGateway, instance+" is not connected", "The provider did not complete the sign-in. Start again from the connect link.")
 	}
 }
 
@@ -140,28 +140,28 @@ func (p *Pages) SignIn(w http.ResponseWriter, r *http.Request) {
 	if err != nil || open(p.c.keyring, signInContext, q.Get("state"), &st) != nil ||
 		subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(st.Nonce)) != 1 ||
 		!p.c.now().Before(time.Unix(st.Expiry, 0)) {
-		p.page(w, http.StatusBadRequest, "Sign-in failed", "This sign-in is invalid or has expired. Open the connect link again.")
+		page(w, http.StatusBadRequest, "Sign-in failed", "This sign-in is invalid or has expired. Open the connect link again.")
 		return
 	}
 	p.setCookie(w, signInCookie, "", -1)
 	if e := q.Get("error"); e != "" {
-		p.page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider answered: "+e+".")
+		page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider answered: "+e+".")
 		return
 	}
 	tok, err := p.idp.ExchangeCode(r.Context(), q.Get("code"), st.Verifier)
 	if err != nil {
 		p.c.log.WarnContext(r.Context(), "page sign-in: code not redeemed", "error", providerError(err))
-		p.page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider did not complete the sign-in. Open the connect link again.")
+		page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider did not complete the sign-in. Open the connect link again.")
 		return
 	}
 	info, err := p.idp.ValidateToken(r.Context(), tok.AccessToken)
 	if err != nil || info == nil || info.ID == "" {
-		p.page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider did not name you. Open the connect link again.")
+		page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider did not name you. Open the connect link again.")
 		return
 	}
 	value, err := seal(p.c.keyring, sessionContext, session{Person: info.ID, Expiry: p.c.now().Add(p.ttl).Unix()})
 	if err != nil {
-		p.page(w, http.StatusInternalServerError, "Sign-in failed", "The session cannot be kept right now.")
+		page(w, http.StatusInternalServerError, "Sign-in failed", "The session cannot be kept right now.")
 		return
 	}
 	p.setCookie(w, sessionCookie, value, int(p.ttl.Seconds()))
@@ -186,7 +186,7 @@ func (p *Pages) person(r *http.Request) (string, bool) {
 func (p *Pages) signIn(w http.ResponseWriter, r *http.Request) {
 	nonce := make([]byte, 24)
 	if _, err := rand.Read(nonce); err != nil {
-		p.page(w, http.StatusInternalServerError, "Sign-in failed", "The sign-in cannot start right now.")
+		page(w, http.StatusInternalServerError, "Sign-in failed", "The sign-in cannot start right now.")
 		return
 	}
 	st := signInState{
@@ -197,7 +197,7 @@ func (p *Pages) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := seal(p.c.keyring, signInContext, st)
 	if err != nil {
-		p.page(w, http.StatusInternalServerError, "Sign-in failed", "The sign-in cannot start right now.")
+		page(w, http.StatusInternalServerError, "Sign-in failed", "The sign-in cannot start right now.")
 		return
 	}
 	p.setCookie(w, signInCookie, st.Nonce, int(p.c.ttl.Seconds()))
@@ -219,7 +219,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 </head><body><h1>{{.Title}}</h1><p>{{.Message}}</p></body></html>
 `))
 
-func (p *Pages) page(w http.ResponseWriter, status int, title, message string) {
+func page(w http.ResponseWriter, status int, title, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	// A callback's URL carries the code: no page passes it on.
@@ -227,4 +227,12 @@ func (p *Pages) page(w http.ResponseWriter, status int, title, message string) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 	w.WriteHeader(status)
 	_ = pageTemplate.Execute(w, struct{ Title, Message string }{title, message})
+}
+
+// NotConfigured serves the pages' routes when the manager has no provider
+// sign-in: no provider instance, or no --enable-oauth to name the person. A
+// person following a connect link learns why instead of reading a 404.
+func NotConfigured(w http.ResponseWriter, _ *http.Request) {
+	page(w, http.StatusServiceUnavailable, "No provider configured",
+		"This workspace-manager has no provider sign-in: it needs at least one provider instance (--providers-config) and --enable-oauth.")
 }
