@@ -187,6 +187,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 				assert.True(t, u.IsAbs() && u.Host != "", "%s URL %q is absolute", name, raw)
 			}
 		}
+		assert.Contains(t, []provider.Revocation{"", provider.RevokeRFC7009, provider.RevokeGrant}, s.Revocation, "revocation method")
 		assert.NotEmpty(t, s.ClientID)
 		assert.Contains(t, k.SecretRefs(), s.ClientSecret, "the client secret is one of the instance's Secret references")
 	})

@@ -97,6 +97,8 @@ type SignIn struct {
 	TokenURL string
 	// RevocationURL revokes a person's grant when they disconnect.
 	RevocationURL string
+	// Revocation is how RevocationURL is called; empty is RevokeRFC7009.
+	Revocation Revocation
 	// ClientID is the OAuth client's public identifier.
 	ClientID string
 	// ClientSecret is the OAuth client's secret.
@@ -105,6 +107,20 @@ type SignIn struct {
 	// permissions (a GitHub App).
 	Scopes []string
 }
+
+// Revocation is how a provider revokes a person's grant. Both authenticate
+// with the client's Basic credentials.
+type Revocation string
+
+const (
+	// RevokeRFC7009 POSTs the token as a form (`token`, `token_type_hint`),
+	// the refresh token where there is one: OAuth 2.0 Token Revocation.
+	RevokeRFC7009 Revocation = "rfc7009"
+	// RevokeGrant DELETEs with a JSON body `{"access_token": …}`, which
+	// revokes the whole grant the token belongs to: a GitHub App's
+	// `DELETE /applications/{client_id}/grant`.
+	RevokeGrant Revocation = "grant"
+)
 
 // Scheme is how a token is set on a host.
 type Scheme string

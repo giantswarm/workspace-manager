@@ -27,6 +27,8 @@ type Config struct {
 	// this server's own, and every call carries the caller's identity and
 	// Dex token.
 	OAuth *OAuthConfig
+	// Pages, when set, serves the person's provider connect pages.
+	Pages Pages
 }
 
 // Server is the assembled HTTP server.
@@ -44,26 +46,16 @@ func New(cfg Config, mcpSrv *mcpserver.MCPServer, log *slog.Logger) (*Server, er
 	if cfg.MCPPath == "" {
 		cfg.MCPPath = "/mcp"
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", ok)
-	// Readiness does not track the API server or Dex: the endpoint must stay
-	// reachable so clients read a failure from the tool result instead of an
-	// unready Service.
-	mux.HandleFunc("GET /readyz", ok)
-
 	s := &Server{log: log}
 	if cfg.OAuth != nil {
 		o, err := newOAuth(*cfg.OAuth, cfg.MCPPath, log)
 		if err != nil {
 			return nil, err
 		}
-		o.register(mux)
 		s.oauth = o
 	}
-
-	// mcp-go's default session manager issues session IDs without keeping
-	// them, so any replica answers any request of a session.
-	mux.Handle(cfg.MCPPath, s.guard(mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))))
+	mux := http.NewServeMux()
+	s.routes(mux, cfg, mcpSrv)
 	s.http = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           traced(mux),

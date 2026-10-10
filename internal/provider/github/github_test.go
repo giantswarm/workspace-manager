@@ -82,6 +82,7 @@ func TestEnterpriseServer(t *testing.T) {
 	assert.Equal(t, "https://ghe.example.com/login/oauth/authorize", s.AuthURL)
 	assert.Equal(t, "https://ghe.example.com/login/oauth/access_token", s.TokenURL)
 	assert.Equal(t, "https://ghe.example.com/api/v3/applications/c/grant", s.RevocationURL)
+	assert.Equal(t, provider.RevokeGrant, s.Revocation)
 }
 
 func TestRefusesInvalidValues(t *testing.T) {
