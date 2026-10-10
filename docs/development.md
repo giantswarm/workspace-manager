@@ -7,7 +7,11 @@
 - `make test-envtest`: the tests behind the `envtest` build tag, against a
   real kube-apiserver and etcd that setup-envtest fetches (the `envtest` CI
   job): the sign-in store's refresh, single-flighted across two replicas
-  (`internal/signin/envtest_test.go`).
+  (`internal/signin/envtest_test.go`), and the chart's Workspace CRD, its CEL
+  rules and the Workspace store (`internal/workspace/envtest_test.go`).
+- `make generate`: the API's deepcopy functions and the CRD in
+  `helm/workspace-manager/files/crds` from `api/` (controller-gen);
+  `make verify-generate` fails when they are stale (in the `envtest` job).
 - `make lint`: golangci-lint.
 - `make helm-test`: `helm lint` and the helm-unittest suites in
   `helm/workspace-manager/tests/` (the `chart-test` CI job).

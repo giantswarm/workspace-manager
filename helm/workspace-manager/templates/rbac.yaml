@@ -2,9 +2,10 @@
 {{- /*
 The ServiceAccount's permissions in the workspaces' namespace: the manager
 writes the workspace objects, the volume and the jobs itself, once the
-caller's Organization is checked. The Role carries no rules yet; each workspace
-operation adds the rules it writes with. The sync Job's account is in
-sync-rbac.yaml.
+caller's Organization is checked. Only the ServiceAccount is bound: a member
+of an Organization gets no right here, on Workspaces, PVCs or Jobs alike.
+Each workspace operation adds the rules it writes with. The sync Job's
+account is in sync-rbac.yaml.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -13,7 +14,13 @@ metadata:
   namespace: {{ .Values.workspaces.namespace }}
   labels:
     {{- include "workspace-manager.labels" . | nindent 4 }}
-rules: []
+rules:
+  - apiGroups: [workspace-manager.giantswarm.io]
+    resources: [workspaces]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [workspace-manager.giantswarm.io]
+    resources: [workspaces/status]
+    verbs: [get, update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

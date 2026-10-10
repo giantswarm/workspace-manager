@@ -39,6 +39,16 @@
         "clusterID": {
             "type": "string"
         },
+        "crds": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "install": {
+                    "type": "boolean",
+                    "description": "Install the `Workspace` CRD (`workspaces.workspace-manager.giantswarm.io`). Kept on uninstall, so removing the chart never deletes a workspace."
+                }
+            }
+        },
         "extraArgs": {
             "type": "array",
             "description": "Extra container arguments."
@@ -342,6 +352,27 @@
                 }
             }
         },
+        "organizations": {
+            "type": "object",
+            "description": "The Organizations whose members manage workspaces, each with its member groups: a caller whose forwarded identity carries any of an Organization's groups reads and writes its workspaces, nobody else does. An Organization not listed has no members. Members are bound to nothing in `workspaces.namespace`; the manager writes as its ServiceAccount. For example `{giantswarm: {memberGroups: [giantswarm-ad:developers]}}`.",
+            "additionalProperties": {
+                "type": "object",
+                "required": [
+                    "memberGroups"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                    "memberGroups": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "minItems": 1
+                    }
+                }
+            }
+        },
         "podAnnotations": {
             "type": "object",
             "description": "Annotations on the pod.",
@@ -409,7 +440,7 @@
             "properties": {
                 "create": {
                     "type": "boolean",
-                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace`, and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). The manager's Role carries no rules yet: each workspace operation brings the rules it writes with."
+                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace` (the manager writes the Workspaces), and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). No person or group is bound to anything."
                 }
             }
         },
@@ -587,7 +618,7 @@
             "properties": {
                 "namespace": {
                     "type": "string",
-                    "description": "Namespace the workspaces and everything they own live in: the namespace kagent runs its sessions in. The placeholder Role (`rbac.create`) is rendered here."
+                    "description": "Namespace the workspaces and everything they own live in: the namespace kagent runs its sessions in. The manager's Role (`rbac.create`) is rendered here."
                 }
             }
         }

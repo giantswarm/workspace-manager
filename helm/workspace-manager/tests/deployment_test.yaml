@@ -30,6 +30,21 @@ tests:
             name: DEX_CLIENT_SECRET
           any: true
 
+  - it: passes each Organization's member groups
+    set:
+      organizations:
+        acme:
+          memberGroups: [acme-devs, acme-admins]
+        umbrella:
+          memberGroups: [umbrella-devs]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --organization=acme=acme-devs,acme-admins
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --organization=umbrella=umbrella-devs
+
   - it: runs non-root with a read-only root filesystem
     asserts:
       - equal:

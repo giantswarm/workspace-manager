@@ -1,0 +1,419 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: workspaces.workspace-manager.giantswarm.io
+spec:
+  group: workspace-manager.giantswarm.io
+  names:
+    kind: Workspace
+    listKind: WorkspaceList
+    plural: workspaces
+    shortNames:
+    - ws
+    singular: workspace
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.organization
+      name: Organization
+      type: string
+    - jsonPath: .status.lastSync.time
+      name: Last sync
+      type: date
+    - jsonPath: .status.lastSync.result
+      name: Result
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Workspace is a set of repositories, selected from one or more provider
+          sources, that agent Sessions work on. It belongs to an Organization, whose
+          members manage it; the workspace-manager writes the object, its volume and
+          its sync Jobs.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: WorkspaceSpec is what a member chooses.
+            properties:
+              organization:
+                description: |-
+                  Organization owns the workspace: only its members read and write it.
+                  It never changes, so a workspace cannot be moved out of an
+                  Organization's reach.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: organization is immutable
+                  rule: self == oldSelf
+              sizing:
+                description: |-
+                  Sizing overrides the computed size of the workspace's volume, where its
+                  StorageClass provisions a size. There is no cap.
+                properties:
+                  headroom:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Headroom replaces the computed headroom when larger.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: headroom must not be negative
+                      rule: '!quantity(string(self)).isLessThan(quantity(''0''))'
+                  minimum:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Minimum is the smallest size the volume gets.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: minimum must not be negative
+                      rule: '!quantity(string(self)).isLessThan(quantity(''0''))'
+                type: object
+              sources:
+                description: Sources select the workspace's repositories, one owner
+                  each.
+                items:
+                  description: |-
+                    Source is one owner's repositories on one provider instance. At least one
+                    selector picks repositories: names, a language filter or a topic filter.
+                  properties:
+                    exclude:
+                      description: Exclude names repositories the filters would otherwise
+                        select.
+                      items:
+                        maxLength: 255
+                        minLength: 1
+                        type: string
+                      maxItems: 1000
+                      type: array
+                      x-kubernetes-list-type: set
+                    filters:
+                      description: Filters select the owner's repositories by language
+                        and topics.
+                      properties:
+                        languages:
+                          description: Languages selects repositories whose primary
+                            language is any of these.
+                          items:
+                            maxLength: 64
+                            minLength: 1
+                            type: string
+                          maxItems: 64
+                          type: array
+                          x-kubernetes-list-type: set
+                        topics:
+                          description: Topics selects repositories by their topics.
+                          properties:
+                            match:
+                              default: any
+                              description: Match is any (the default) or all.
+                              enum:
+                              - any
+                              - all
+                              type: string
+                            names:
+                              description: Names are the topics.
+                              items:
+                                maxLength: 64
+                                minLength: 1
+                                type: string
+                              maxItems: 64
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
+                          required:
+                          - names
+                          type: object
+                      type: object
+                    includeArchived:
+                      default: false
+                      description: IncludeArchived lets the filters select archived
+                        repositories.
+                      type: boolean
+                    includeForks:
+                      default: false
+                      description: IncludeForks lets the filters select forks.
+                      type: boolean
+                    owner:
+                      description: 'Owner is the account on the provider: an organization
+                        or a user.'
+                      maxLength: 255
+                      minLength: 1
+                      type: string
+                    provider:
+                      description: Provider is the name of a provider instance the
+                        installation configures.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    repositories:
+                      description: |-
+                        Repositories are selected by name; a named repository counts even
+                        when archived or a fork.
+                      items:
+                        maxLength: 255
+                        minLength: 1
+                        type: string
+                      maxItems: 1000
+                      type: array
+                      x-kubernetes-list-type: set
+                  required:
+                  - owner
+                  - provider
+                  type: object
+                  x-kubernetes-validations:
+                  - message: 'a source needs at least one selector: repositories,
+                      filters.languages or filters.topics'
+                    rule: (has(self.repositories) && size(self.repositories) > 0)
+                      || (has(self.filters) && ((has(self.filters.languages) && size(self.filters.languages)
+                      > 0) || has(self.filters.topics)))
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+              sync:
+                default:
+                  schedule: nightly
+                description: Sync is when the mirrors are fetched.
+                properties:
+                  hour:
+                    description: Hour of the day, 0 to 23 UTC, a custom schedule syncs
+                      at.
+                    format: int32
+                    maximum: 23
+                    minimum: 0
+                    type: integer
+                  schedule:
+                    default: nightly
+                    description: Schedule is nightly, weekly, or custom (chosen weekdays
+                      at an hour).
+                    enum:
+                    - nightly
+                    - weekly
+                    - custom
+                    type: string
+                  weekdays:
+                    description: Weekdays a custom schedule syncs on.
+                    items:
+                      description: Weekday is a day of the week.
+                      enum:
+                      - monday
+                      - tuesday
+                      - wednesday
+                      - thursday
+                      - friday
+                      - saturday
+                      - sunday
+                      type: string
+                    maxItems: 7
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - schedule
+                type: object
+                x-kubernetes-validations:
+                - message: weekdays and hour are set for, and only for, a custom schedule
+                  rule: 'self.schedule == ''custom'' ? (has(self.weekdays) && size(self.weekdays)
+                    > 0 && has(self.hour)) : (!has(self.weekdays) && !has(self.hour))'
+            required:
+            - organization
+            - sources
+            type: object
+          status:
+            description: WorkspaceStatus is what the workspace-manager observed.
+            properties:
+              conditions:
+                description: Conditions are the workspace's conditions (Ready, Synced).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastSync:
+                description: LastSync is the last sync's time and result.
+                properties:
+                  message:
+                    description: Message says why a sync failed.
+                    type: string
+                  result:
+                    description: Result of the sync.
+                    enum:
+                    - Succeeded
+                    - Failed
+                    - NoChange
+                    type: string
+                  time:
+                    description: Time the sync ended.
+                    format: date-time
+                    type: string
+                required:
+                - result
+                - time
+                type: object
+              manifest:
+                description: Manifest names the ConfigMap holding the last sync's
+                  manifest.
+                type: string
+              neededSize:
+                anyOf:
+                - type: integer
+                - type: string
+                description: NeededSize is what the mirrors and the live session directories
+                  need.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              observedGeneration:
+                description: ObservedGeneration is the spec generation the status
+                  describes.
+                format: int64
+                type: integer
+              repositories:
+                description: |-
+                  Repositories are the repositories the last sync resolved, as
+                  `<owner>/<name>`.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              sessions:
+                description: Sessions are the session directories on the volume.
+                items:
+                  description: SessionDirectory is one Session's directory on the
+                    volume.
+                  properties:
+                    cleanupAfter:
+                      description: |-
+                        CleanupAfter is when the directory is deleted: 30 days after its
+                        Session's last turn.
+                      format: date-time
+                      type: string
+                    session:
+                      description: Session is the Session's name.
+                      type: string
+                    size:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: Size measured at the last sync.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                  required:
+                  - session
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - session
+                x-kubernetes-list-type: map
+              volume:
+                description: Volume is the workspace's read-write-many volume.
+                properties:
+                  claimName:
+                    description: ClaimName is the PersistentVolumeClaim's name.
+                    type: string
+                  driver:
+                    description: Driver is the CSI driver.
+                    type: string
+                  handle:
+                    description: Handle is the CSI volume handle.
+                    type: string
+                required:
+                - claimName
+                type: object
+              volumeSize:
+                anyOf:
+                - type: integer
+                - type: string
+                description: |-
+                  VolumeSize is the volume's provisioned size; empty where the
+                  StorageClass provisions none.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -23,6 +23,56 @@ from that identity and writes with its own ServiceAccount.
 
 Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
+## The Workspace API
+
+A `Workspace` (`workspace-manager.giantswarm.io/v1alpha1`, namespaced, short
+name `ws`) lives in the workspaces' namespace (`--namespace`, `kagent`) and
+belongs to an Organization:
+
+```yaml
+apiVersion: workspace-manager.giantswarm.io/v1alpha1
+kind: Workspace
+metadata: {name: platform, namespace: kagent}
+spec:
+  organization: acme          # immutable
+  sources:                    # one owner on one provider instance each
+  - provider: github          # a configured provider instance
+    owner: acme
+    repositories: [api, web]  # by name; counts even when archived or a fork
+  - provider: github
+    owner: acme-labs
+    filters:
+      languages: [Go]                         # primary language, any of
+      topics: {match: all, names: [agent]}    # any (default) or all
+    exclude: [legacy]
+    includeArchived: false    # the default
+    includeForks: false       # the default
+  sync: {schedule: custom, weekdays: [monday, thursday], hour: 2}  # or nightly (default), weekly
+  sizing: {headroom: 8Gi, minimum: 32Gi}   # optional, no cap
+```
+
+The status carries the conditions, the last sync's time and result, the
+resolved repositories, the needed and the provisioned size, the volume (claim,
+CSI driver and handle), the manifest's ConfigMap, the session directories
+(Session, size, cleanup date) and the observed generation.
+
+**Validation.** The CRD's schema and CEL rules refuse what needs no context:
+a source without a selector (no repository name, language or topic), an
+invalid weekday or an hour outside 0 to 23, weekdays or an hour on a
+schedule other than `custom`, a negative headroom or minimum, and a change of
+Organization. The manager refuses a Workspace naming a provider instance the
+installation does not configure, naming the instance.
+
+**Organization membership.** Every Workspace lives in one namespace, where no
+person or group is bound to anything; the chart binds only the manager's
+ServiceAccount, which writes the Workspaces (and their volume and Jobs). The
+manager checks membership on every read and write (`internal/workspace`): the
+caller's forwarded identity must carry one of the Organization's member
+groups, configured per Organization (`--organization
+<organization>=<group>[,<group>...]`, the chart's `organizations`). A listing
+shows only the caller's Organizations' Workspaces; an Organization not
+configured has no members.
+
 ## The workspace's volume and the sync Job
 
 Every workspace has one read-write-many volume, shared by the sync and every
@@ -77,6 +127,8 @@ volume mounted at `--volume`:
 - `cmd/`: the CLI (`serve`, `sync`, `version`); every flag also reads an environment variable.
 - `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request.
 - `internal/identity`: the caller and the caller's Dex token on the request context.
+- `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
+- `internal/workspace`: the Organization check, the provider validation and the Workspace store every tool reads and writes through.
 - `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server and its tracing and metrics middleware.
 - `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, and the provider instance list (`--providers-config`, the chart's `providers`).
