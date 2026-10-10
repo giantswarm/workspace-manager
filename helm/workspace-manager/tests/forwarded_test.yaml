@@ -1,0 +1,85 @@
+# The keys the agent-platform meta chart forwards: every one is declared in
+# values.yaml, so the strict schema takes the forwarded block, and each one
+# reaches the server as its flag.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: forwarded keys
+templates:
+  - templates/deployment.yaml
+  - templates/providers-configmap.yaml
+  - templates/oauth-secret.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+values:
+  - values/agent-platform-forwarded.yaml
+tests:
+  - it: renders the meta chart's forwarded block against the schema
+    template: templates/deployment.yaml
+    asserts:
+      - notFailedTemplate: {}
+      - isKind:
+          of: Deployment
+
+  - it: passes every forwarded key to the server
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --storage-class=efs-rwx
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --signin-keys-secret=workspace-manager-keys
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --signin-current-key=sign-in-store
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --grant-signing-key=workspace-manager-keys/grant
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sync-cycle=1h
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sessions-cleanup-after=168h
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-factor=2
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-headroom=10Gi
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-max-size=500Gi
+
+  - it: takes a string sizing factor
+    template: templates/deployment.yaml
+    set:
+      storage.sizing.factor: "1.25"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-factor=1.25
+
+  - it: refuses a sizing factor that is no number
+    template: templates/deployment.yaml
+    set:
+      storage.sizing.factor: lots
+    asserts:
+      - failedTemplate: {}
+
+  - it: refuses a key this chart does not take
+    template: templates/deployment.yaml
+    set:
+      signInStore:
+        encryptionKey: {name: workspace-manager-keys, key: sign-in-store}
+    asserts:
+      - failedTemplate: {}
+
+  - it: refuses a grant signing key without its key
+    template: templates/deployment.yaml
+    set:
+      grant.signingKey.key: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: grant.signingKey.key is required with grant.signingKey.name

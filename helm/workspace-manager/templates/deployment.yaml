@@ -55,6 +55,13 @@ spec:
             {{- /* Empty claims no volume: the controller names the value in every Workspace's condition. */}}
             - --storage-class={{ . }}
             {{- end }}
+            - --sync-cycle={{ .Values.sync.cycle }}
+            - --sessions-cleanup-after={{ .Values.sessions.cleanupAfter }}
+            - --sizing-factor={{ .Values.storage.sizing.factor }}
+            - --sizing-headroom={{ .Values.storage.sizing.headroom }}
+            {{- with .Values.storage.sizing.maxSize }}
+            - --sizing-max-size={{ . }}
+            {{- end }}
             - --mcp-path={{ .Values.mcp.path }}
             {{- range $org, $o := .Values.organizations }}
             - --organization={{ $org }}={{ join "," $o.memberGroups }}
@@ -86,6 +93,10 @@ spec:
             {{- /* The person's provider sign-ins, sealed with these keys. */}}
             - --signin-keys-secret={{ required "signin.keys.secretName is required with providers and oauth.enabled" .Values.signin.keys.secretName }}
             - --signin-current-key={{ required "signin.keys.current is required with providers and oauth.enabled" .Values.signin.keys.current }}
+            {{- with .Values.grant.signingKey.name }}
+            {{- /* The workspace grant's signing key, read at start. */}}
+            - --grant-signing-key={{ . }}/{{ required "grant.signingKey.key is required with grant.signingKey.name" $.Values.grant.signingKey.key }}
+            {{- end }}
             {{- with .Values.tokenExchange.clientID }}
             {{- /* POST /token for the installation's kagent client. */}}
             - --token-exchange-client-id={{ . }}

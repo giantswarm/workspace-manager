@@ -84,6 +84,25 @@
             "type": "object",
             "additionalProperties": true
         },
+        "grant": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "signingKey": {
+                    "type": "object",
+                    "description": "The key the workspace grant a Session carries is signed with: `{name, key}` of a Secret in the release namespace holding at least 32 random bytes, read at start (a missing or short key fails it); the chart never renders it. Empty signs no grant. Needs `providers` and `oauth.enabled`.",
+                    "additionalProperties": false,
+                    "properties": {
+                        "key": {
+                            "type": "string"
+                        },
+                        "name": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "image": {
             "type": "object",
             "additionalProperties": false,
@@ -249,7 +268,7 @@
                         },
                         "caSecret": {
                             "type": "object",
-                            "description": "Secret with the CA of a Dex that serves a private certificate; `global.identity.ca.secretName` / `global.identity.ca.key`.",
+                            "description": "Secret with the CA of a Dex that serves a private certificate; mounted and passed as the `dex-ca-file` flag. Empty name falls back to `global.identity.ca.secretName` / `global.identity.ca.key`.",
                             "additionalProperties": false,
                             "properties": {
                                 "key": {
@@ -584,6 +603,16 @@
                 }
             }
         },
+        "sessions": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "cleanupAfter": {
+                    "type": "string",
+                    "description": "How long a Session's directory on the workspace volume outlives the Session's last turn, a Go duration (`720h` is 30 days). Passed to `serve` as its `sessions-cleanup-after` flag."
+                }
+            }
+        },
         "signin": {
             "type": "object",
             "additionalProperties": false,
@@ -608,6 +637,28 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+                "sizing": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "factor": {
+                            "type": [
+                                "string",
+                                "number"
+                            ],
+                            "description": "Multiplier of the measured size, at least 1: a number or a string (`\"1.5\"`). Passed to `serve` as its `sizing-factor` flag.",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?$"
+                        },
+                        "headroom": {
+                            "type": "string",
+                            "description": "Added to the multiplied size, a Kubernetes quantity; a Workspace's larger `spec.sizing.headroom` replaces it. Passed to `serve` as its `sizing-headroom` flag."
+                        },
+                        "maxSize": {
+                            "type": "string",
+                            "description": "Ceiling of the size, a Kubernetes quantity, which wins over a Workspace's minimum. Empty sets none. Passed to `serve` as its `sizing-max-size` flag."
+                        }
+                    }
+                },
                 "storageClassName": {
                     "type": "string",
                     "description": "The read-write-many StorageClass every workspace's volume is claimed from (the PersistentVolumeClaim's `spec.storageClassName`, access mode ReadWriteMany): bare mirrors and a directory per Session, used by git, so the class keeps POSIX semantics (file modes, symbolic links): Amazon EFS, Azure Files over NFS, an NFS server. A cluster rarely has such a class by default, and the manager never falls back to the cluster's default class: empty, no volume is claimed and every Workspace's `VolumeClaimed` condition names this value. Passed to `serve` as its `storage-class` flag."
@@ -616,6 +667,16 @@
         },
         "subscriptionID": {
             "type": "string"
+        },
+        "sync": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "cycle": {
+                    "type": "string",
+                    "description": "How often the controller reconciles every Workspace without an event, a Go duration (`10m`, `1h`): a claim deleted out from under a Workspace is made again by then. Each Workspace's own `spec.sync` (nightly, weekly or custom) says when its mirrors are fetched. Passed to `serve` as its `sync-cycle` flag."
+                }
+            }
         },
         "tokenExchange": {
             "type": "object",

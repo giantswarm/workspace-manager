@@ -20,6 +20,10 @@ tests:
             - --listen=:8080
             - --in-cluster=true
             - --namespace=kagent
+            - --sync-cycle=10m
+            - --sessions-cleanup-after=720h
+            - --sizing-factor=1.5
+            - --sizing-headroom=5Gi
             - --mcp-path=/mcp
       - equal:
           path: spec.template.spec.containers[0].image

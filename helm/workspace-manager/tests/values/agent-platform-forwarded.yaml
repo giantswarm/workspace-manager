@@ -1,0 +1,70 @@
+# The block the agent-platform meta chart forwards to this release with
+# workspaces on: its tests/fixtures/workspaces-values.yaml, its own defaults
+# for this component (resolved as it renders them) and every optional key set.
+# The sign-in store's key is this chart's signin.keys: the fixture's
+# signInStore.encryptionKey {name, key} is secretName and current here.
+fullnameOverride: workspace-manager
+# The platform contract the meta chart provides as globals.
+global:
+  domain: example.com
+  identity:
+    issuerUrl: https://dex.example.com
+    clientId: platform
+    existingSecret: platform-dex
+workspaces:
+  namespace: kagent
+observability:
+  otel:
+    endpoint: http://otlp-gateway.kube-system.svc:4317
+    protocol: grpc
+    headers: X-Scope-OrgID=giantswarm
+oauth:
+  enabled: true
+  dex:
+    allowPrivateURLs: true
+  sso:
+    allowPrivateIPs: true
+muster:
+  mcpServer:
+    enabled: true
+    auth:
+      forwardToken: true
+providers:
+  - name: github
+    kind: github
+    values:
+      app:
+        id: "123"
+        privateKey: {name: workspace-github, key: private-key}
+      oauth:
+        clientID: Iv1.abc
+        clientSecret: {name: workspace-github, key: client-secret}
+  - name: gitlab
+    kind: gitlab
+    values:
+      url: https://gitlab.example.com:8443
+      token: {name: workspace-gitlab, key: token}
+      oauth:
+        clientID: abc
+        clientSecret: {name: workspace-gitlab, key: client-secret}
+signin:
+  keys:
+    secretName: workspace-manager-keys
+    current: sign-in-store
+grant:
+  signingKey: {name: workspace-manager-keys, key: grant}
+sync:
+  cycle: 1h
+sessions:
+  cleanupAfter: 168h
+storage:
+  storageClassName: efs-rwx
+  sizing:
+    factor: 2
+    headroom: 10Gi
+    maxSize: 500Gi
+serviceMonitor:
+  enabled: true
+  interval: 60s
+  labels:
+    observability.giantswarm.io/tenant: giantswarm

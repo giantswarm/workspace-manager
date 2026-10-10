@@ -257,3 +257,68 @@ func TestRunClaimsEveryWorkspace(t *testing.T) {
 		t.Fatal("Run did not stop with its context")
 	}
 }
+
+// TestSizingSize: the measured need times the factor plus the headroom, the
+// Workspace's larger headroom replacing the installation's, at least the
+// minimum, capped at the ceiling; the provisioned size wins over all of it.
+func TestSizingSize(t *testing.T) {
+	q := resource.MustParse
+	maxSize := q("100Gi")
+	s := Sizing{Factor: 1.5, Headroom: q("5Gi"), MaxSize: &maxSize}
+	for name, tc := range map[string]struct {
+		needed, provisioned, minimum, headroom string
+		want                                   string
+	}{
+		"nothing measured":        {want: "1Gi"},
+		"measured":                {needed: "10Gi", want: "20Gi"},
+		"workspace headroom":      {needed: "10Gi", headroom: "15Gi", want: "30Gi"},
+		"smaller ws headroom":     {needed: "10Gi", headroom: "1Gi", want: "20Gi"},
+		"minimum over computed":   {needed: "10Gi", minimum: "64Gi", want: "64Gi"},
+		"capped":                  {needed: "80Gi", want: "100Gi"},
+		"ceiling over minimum":    {minimum: "200Gi", want: "100Gi"},
+		"provisioned wins":        {needed: "80Gi", provisioned: "48Gi", want: "48Gi"},
+		"minimum, nothing needed": {minimum: "32Gi", want: "32Gi"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := workspace("sized")
+			if tc.needed != "" {
+				ws.Status.NeededSize = ptr.To(q(tc.needed))
+			}
+			if tc.provisioned != "" {
+				ws.Status.VolumeSize = ptr.To(q(tc.provisioned))
+			}
+			if tc.minimum != "" || tc.headroom != "" {
+				ws.Spec.Sizing = &v1alpha1.Sizing{}
+				if tc.minimum != "" {
+					ws.Spec.Sizing.Minimum = ptr.To(q(tc.minimum))
+				}
+				if tc.headroom != "" {
+					ws.Spec.Sizing.Headroom = ptr.To(q(tc.headroom))
+				}
+			}
+			got := s.Size(ws)
+			assert.Zero(t, got.Cmp(q(tc.want)), "got %s, want %s", got.String(), tc.want)
+		})
+	}
+
+	unbounded := Sizing{Factor: 1, Headroom: q("0")}
+	ws := workspace("unbounded")
+	ws.Status.NeededSize = ptr.To(q("1Ti"))
+	got := unbounded.Size(ws)
+	assert.Zero(t, got.Cmp(q("1Ti")), "no ceiling")
+}
+
+func TestSizingValidate(t *testing.T) {
+	q := resource.MustParse
+	require.NoError(t, DefaultSizing.Validate())
+	assert.Error(t, Sizing{Factor: 0.9, Headroom: q("1Gi")}.Validate())
+	assert.Error(t, Sizing{Factor: 1, Headroom: q("-1Gi")}.Validate())
+	assert.Error(t, Sizing{Factor: 1, MaxSize: ptr.To(q("0"))}.Validate())
+}
+
+// TestNewDefaults: an empty sizing and cleanup window take the defaults.
+func TestNewDefaults(t *testing.T) {
+	c, _ := newTestController(t, testClass)
+	assert.Equal(t, DefaultSizing, c.volumes.Sizing)
+	assert.Equal(t, DefaultSessionCleanupAfter, c.sessionCleanupAfter)
+}

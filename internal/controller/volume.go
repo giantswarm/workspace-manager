@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,37 @@ const LabelWorkspace = "workspace-manager.giantswarm.io/workspace"
 // Workspace's namespace.
 func ClaimName(ws *v1alpha1.Workspace) string { return "workspace-" + ws.Name }
 
+// Sizing is the installation's rule for the size a volume is created with,
+// where its StorageClass provisions one: the measured need times Factor, plus
+// Headroom, capped at MaxSize.
+type Sizing struct {
+	// Factor multiplies the measured need; below 1 is refused by Validate.
+	Factor float64
+	// Headroom is added to the multiplied need; a Workspace's own larger
+	// headroom replaces it.
+	Headroom resource.Quantity
+	// MaxSize caps the size; nil sets no ceiling.
+	MaxSize *resource.Quantity
+}
+
+// DefaultSizing is the sizing without the installation's own.
+var DefaultSizing = Sizing{Factor: 1.5, Headroom: resource.MustParse("5Gi")}
+
+// Validate refuses a factor below 1, a negative headroom and a ceiling that
+// is not positive.
+func (s Sizing) Validate() error {
+	if s.Factor < 1 || math.IsInf(s.Factor, 0) || math.IsNaN(s.Factor) {
+		return fmt.Errorf("sizing factor must be a number of at least 1, got %v", s.Factor)
+	}
+	if s.Headroom.Sign() < 0 {
+		return fmt.Errorf("sizing headroom must not be negative, got %s", s.Headroom.String())
+	}
+	if s.MaxSize != nil && s.MaxSize.Sign() <= 0 {
+		return fmt.Errorf("sizing maximum size must be positive, got %s", s.MaxSize.String())
+	}
+	return nil
+}
+
 // Volumes claims each Workspace's read-write-many volume from one
 // StorageClass, the installation's.
 type Volumes struct {
@@ -39,12 +71,13 @@ type Volumes struct {
 	// StorageClass is the class every claim names; empty refuses every claim
 	// with ErrNoStorageClass.
 	StorageClass string
+	// Sizing sizes a new claim.
+	Sizing Sizing
 }
 
 // Claim returns the Workspace's PersistentVolumeClaim, creating it when it
 // does not exist: ReadWriteMany from the StorageClass, owned by the Workspace
-// so it goes with it, sized by what the status reports, else the spec's
-// minimum, else NominalSize. An existing claim is returned as it is.
+// so it goes with it, sized by Size. An existing claim is returned as it is.
 func (v Volumes) Claim(ctx context.Context, ws *v1alpha1.Workspace) (*corev1.PersistentVolumeClaim, error) {
 	if v.StorageClass == "" {
 		return nil, ErrNoStorageClass
@@ -70,7 +103,7 @@ func (v Volumes) Claim(ctx context.Context, ws *v1alpha1.Workspace) (*corev1.Per
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 			StorageClassName: &class,
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: claimSize(ws)},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: v.Sizing.Size(ws)},
 			},
 		},
 	}
@@ -88,14 +121,29 @@ func (v Volumes) Claim(ctx context.Context, ws *v1alpha1.Workspace) (*corev1.Per
 	return created, nil
 }
 
-// claimSize is the volume's provisioned size where the status reports one,
-// else the spec's minimum, else NominalSize.
-func claimSize(ws *v1alpha1.Workspace) resource.Quantity {
-	if s := ws.Status.VolumeSize; s != nil && s.Sign() > 0 {
-		return *s
+// Size is the size a Workspace's volume is claimed with: the provisioned size
+// the status reports; else the measured need times the factor plus the
+// headroom (the larger of the installation's and the Workspace's), or
+// NominalSize while nothing is measured; at least the spec's minimum; capped
+// at MaxSize, which wins over the minimum.
+func (s Sizing) Size(ws *v1alpha1.Workspace) resource.Quantity {
+	if p := ws.Status.VolumeSize; p != nil && p.Sign() > 0 {
+		return *p
 	}
-	if ws.Spec.Sizing != nil && ws.Spec.Sizing.Minimum != nil && ws.Spec.Sizing.Minimum.Sign() > 0 {
-		return *ws.Spec.Sizing.Minimum
+	size := NominalSize.DeepCopy()
+	if need := ws.Status.NeededSize; need != nil && need.Sign() > 0 {
+		headroom := s.Headroom
+		if ws.Spec.Sizing != nil && ws.Spec.Sizing.Headroom != nil && ws.Spec.Sizing.Headroom.Cmp(headroom) > 0 {
+			headroom = *ws.Spec.Sizing.Headroom
+		}
+		size = *resource.NewQuantity(int64(math.Ceil(need.AsApproximateFloat64()*s.Factor)), resource.BinarySI)
+		size.Add(headroom)
 	}
-	return NominalSize
+	if ws.Spec.Sizing != nil && ws.Spec.Sizing.Minimum != nil && ws.Spec.Sizing.Minimum.Cmp(size) > 0 {
+		size = ws.Spec.Sizing.Minimum.DeepCopy()
+	}
+	if s.MaxSize != nil && size.Cmp(*s.MaxSize) > 0 {
+		size = s.MaxSize.DeepCopy()
+	}
+	return size
 }
