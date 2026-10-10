@@ -14,6 +14,6 @@ import (
 // API calls use (nil for http.DefaultClient).
 func Registry(hc *http.Client) provider.Registry {
 	return provider.Registry{
-		github.KindName: github.Factory(hc),
+		github.KindName: github.Factory(github.Options{HTTP: hc}),
 	}
 }
