@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
@@ -30,6 +31,8 @@ type Config struct {
 	// Organizations decides who may read and write an Organization's
 	// workspaces (workspace.Store checks it on every call).
 	Organizations workspace.Organizations
+	// Providers are the installation's provider instances.
+	Providers []provider.Instance
 }
 
 // genAIToolName labels the mcp.tools/call server span with the called tool

@@ -18,6 +18,8 @@ import (
 
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/provider"
+	"github.com/giantswarm/workspace-manager/internal/provider/kinds"
 	"github.com/giantswarm/workspace-manager/internal/server"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
@@ -49,6 +51,8 @@ type serveOptions struct {
 
 	mcpPath string
 
+	providersConfig string
+
 	oauthEnabled                  bool
 	oauthBaseURL                  string
 	dexIssuerURL                  string
@@ -77,6 +81,7 @@ environment variable named next to it; flags win over the environment.`,
 	o.kube.add(f)
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
+	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("WORKSPACE_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (WORKSPACE_MANAGER_OAUTH_BASE_URL)")
@@ -109,6 +114,14 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	defer flush(ctx, "metrics", shutdownMetrics, log)
 
+	// A configuration error fails the start, before anything else is built.
+	providers, err := loadProviders(o.providersConfig)
+	if err != nil {
+		return err
+	}
+	for _, p := range providers {
+		log.Info("provider configured", "name", p.Name, "kind", p.KindName)
+	}
 	orgs, err := workspace.ParseOrganizations(o.organizations)
 	if err != nil {
 		return err
@@ -135,7 +148,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		}
 	}
-	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: clients, Namespace: o.namespace, Organizations: orgs}, build.Version), log)
+	srv, err := server.New(srvCfg, api.NewMCPServer(api.Config{Kube: clients, Namespace: o.namespace, Providers: providers, Organizations: orgs}, build.Version), log)
 	if err != nil {
 		return err
 	}
@@ -145,6 +158,22 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return srv.Run(ctx)
+}
+
+// loadProviders reads and validates the provider instances.
+func loadProviders(path string) ([]provider.Instance, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is the operator's own flag.
+	if err != nil {
+		return nil, fmt.Errorf("provider configuration: %w", err)
+	}
+	instances, err := kinds.Registry(nil).Load(data)
+	if err != nil {
+		return nil, fmt.Errorf("provider configuration %s:\n%w", path, err)
+	}
+	return instances, nil
 }
 
 // flush runs an exporter's shutdown with a bounded timeout, after the server

@@ -3,9 +3,11 @@
 Manages the Agent Platform's workspaces, the sources agent sessions work on,
 and their provider sign-ins, as one MCP server behind muster.
 
-muster registers it like every other manager, unpinned with `forwardToken`: it
-forwards the person's Dex id_token, which workspace-manager validates as an
-OAuth 2.1 resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
+The chart registers it with muster like every other manager, through its own
+`MCPServer` (`muster.mcpServer.enabled`; the tools appear as
+`x_workspace-manager_<tool>`), unpinned with `forwardToken`: muster forwards
+the person's Dex id_token, which workspace-manager validates as an OAuth 2.1
+resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
 The caller's identity and Dex token travel with every request, and a request
 without one is refused with 401. The manager checks the caller's Organization
 from that identity and writes with its own ServiceAccount.
@@ -129,6 +131,8 @@ volume mounted at `--volume`:
 - `internal/workspace`: the Organization check, the provider validation and the Workspace store every tool reads and writes through.
 - `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server and its tracing and metrics middleware.
+- `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, and the provider instance list (`--providers-config`, the chart's `providers`).
+- `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes.
 - `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.
 - `internal/mirror`: the sync: the volume's layout, the mirrors, the manifest, the credential helper and the borrowed-objects rule.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).

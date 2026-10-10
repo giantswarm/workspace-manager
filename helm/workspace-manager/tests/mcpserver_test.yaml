@@ -1,0 +1,139 @@
+# The muster registration: off by default, one streamable-http MCPServer at
+# the Service, unpinned (no authorization server, no GitHub App), the auth
+# block only with OAuth, and the audiences the MCPServer requires are the same
+# ones the Deployment trusts (deployment_test.yaml).
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: mcpserver registration
+templates:
+  - templates/mcpserver.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+set:
+  muster:
+    mcpServer:
+      enabled: true
+      auth:
+        requiredAudiences:
+          - dex-k8s-authenticator
+  oauth:
+    enabled: true
+    existingSecret: platform-oauth
+  global:
+    domain: example.com
+    identity:
+      issuerUrl: https://dex.example.com
+      clientId: platform-client
+tests:
+  - it: registers nothing by default
+    set:
+      muster:
+        mcpServer:
+          enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: registers one streamable-http MCPServer at the Service, named for the tool prefix
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: MCPServer
+      - isAPIVersion:
+          of: muster.giantswarm.io/v1alpha1
+      - equal:
+          path: metadata.name
+          value: workspace-manager
+      - equal:
+          path: metadata.namespace
+          value: agent-platform
+      - equal:
+          path: spec.type
+          value: streamable-http
+      - equal:
+          path: spec.url
+          value: http://workspace-manager.agent-platform.svc.cluster.local:8080/mcp
+      - equal:
+          path: spec.autoStart
+          value: true
+
+  - it: forwards the session token, requires the apiserver's audience and pins no authorization server
+    asserts:
+      - equal:
+          path: spec.auth.type
+          value: oauth
+      - equal:
+          path: spec.auth.forwardToken
+          value: true
+      - equal:
+          path: spec.auth.requiredAudiences
+          value:
+            - dex-k8s-authenticator
+      - notExists:
+          path: spec.auth.authorizationServer
+      - notExists:
+          path: spec.auth.forwardIdentity
+
+  - it: connects anonymously without OAuth
+    set:
+      oauth:
+        enabled: false
+    asserts:
+      - notExists:
+          path: spec.auth
+
+  - it: carries the tool-group label next to the muster type label
+    asserts:
+      - equal:
+          path: metadata.labels["muster.giantswarm.io/type"]
+          value: workspace-manager
+      - equal:
+          path: metadata.labels["agent-platform.giantswarm.io/tool-group"]
+          value: agent-platform
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: workspace-manager
+
+  - it: lets muster.mcpServer.labels add and override labels
+    set:
+      muster:
+        mcpServer:
+          labels:
+            agent-platform.giantswarm.io/tool-group: infrastructure
+            example.com/extra: "yes"
+    asserts:
+      - equal:
+          path: metadata.labels["agent-platform.giantswarm.io/tool-group"]
+          value: infrastructure
+      - equal:
+          path: metadata.labels["example.com/extra"]
+          value: "yes"
+      - equal:
+          path: metadata.labels["muster.giantswarm.io/type"]
+          value: workspace-manager
+
+  - it: changes the tool prefix with a custom name, the URL staying the Service's
+    set:
+      muster:
+        mcpServer:
+          name: workspaces
+    asserts:
+      - equal:
+          path: metadata.name
+          value: workspaces
+      - equal:
+          path: spec.url
+          value: http://workspace-manager.agent-platform.svc.cluster.local:8080/mcp
+
+  - it: follows the Service port and the MCP path
+    set:
+      service:
+        port: 9090
+      mcp:
+        path: /api/mcp
+    asserts:
+      - equal:
+          path: spec.url
+          value: http://workspace-manager.agent-platform.svc.cluster.local:9090/api/mcp

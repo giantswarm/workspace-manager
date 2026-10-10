@@ -133,6 +133,46 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --oauth-trusted-audiences=platform-client,dex-k8s-authenticator
 
+  - it: trusts the audiences muster requires next to its own, without duplicates
+    set:
+      oauth:
+        enabled: true
+        baseURL: https://wm.example.com
+        existingSecret: oauth
+        trustedAudiences: [platform-client]
+        dex:
+          issuerURL: https://dex.example.com
+          clientID: platform-client
+      muster:
+        mcpServer:
+          enabled: true
+          auth:
+            requiredAudiences: [dex-k8s-authenticator, platform-client]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oauth-trusted-audiences=platform-client,dex-k8s-authenticator
+
+  - it: trusts the required audiences next to the platform client of the identity contract
+    set:
+      oauth:
+        enabled: true
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+          existingSecret: platform-oauth
+      muster:
+        mcpServer:
+          enabled: true
+          auth:
+            requiredAudiences: [kubernetes]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oauth-trusted-audiences=platform-client,kubernetes
+
   - it: refuses OAuth without a Dex issuer
     set:
       oauth:

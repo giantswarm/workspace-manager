@@ -139,6 +139,52 @@
                 }
             }
         },
+        "muster": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "mcpServer": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "description": {
+                            "type": "string",
+                            "description": "Human-readable description shown by muster."
+                        },
+                        "auth": {
+                            "type": "object",
+                            "description": "How muster authenticates to this server; rendered only with `oauth.enabled`. `forwardToken` makes muster forward the session's Dex id_token byte-identical (the SSO path this chart trusts through its trusted audiences). `requiredAudiences` are extra audiences that token must carry — the Dex cross-client audience the kube-apiserver trusts (`dex-k8s-authenticator` on Giant Swarm clusters; agentlab's is `kubernetes`); muster requests them at login, so users re-login after a change. They are trusted as bearer audiences by construction, since the server's trusted audiences are `oauth.trustedAudiences` plus this list. The registration is unpinned — no authorization server and no GitHub App: a provider sign-in is the workspace-manager's own business.",
+                            "additionalProperties": false,
+                            "properties": {
+                                "forwardToken": {
+                                    "type": "boolean"
+                                },
+                                "requiredAudiences": {
+                                    "type": "array"
+                                }
+                            }
+                        },
+                        "autoStart": {
+                            "type": "boolean",
+                            "description": "Start the server connection when muster initializes."
+                        },
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Register this server with muster by rendering an `mcpservers.muster.giantswarm.io` CR in the release namespace. Tools then appear as `x_<name>_<tool>`."
+                        },
+                        "labels": {
+                            "type": "object",
+                            "description": "Extra labels on the MCPServer CR.",
+                            "additionalProperties": true
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "MCPServer CR name (drives the tool prefix)."
+                        }
+                    }
+                }
+            }
+        },
         "nameOverride": {
             "type": "string",
             "description": "Override the chart name."
@@ -248,7 +294,7 @@
                 },
                 "trustedAudiences": {
                     "type": "array",
-                    "description": "OAuth client IDs whose Dex id_tokens are accepted as bearer tokens: the platform client and the audiences muster requires at login (what the kube-apiserver trusts). Empty falls back to `[global.identity.clientId]`."
+                    "description": "OAuth client IDs whose Dex id_tokens are accepted as bearer tokens (SSO token forwarding). Empty falls back to `[global.identity.clientId]`, the platform client MCP clients and the muster CLI log in with. The server trusts the union of this list and `muster.mcpServer.auth.requiredAudiences` (in that order, without duplicates): every token muster forwards carries the required audiences by construction and they are what the kube-apiserver trusts, so a portal session — whose id_token carries them but not the platform client — is accepted without listing its client here."
                 }
             }
         },
@@ -367,6 +413,26 @@
         },
         "provider": {
             "type": "string"
+        },
+        "providers": {
+            "type": "array",
+            "description": "The installation's workspace providers, several at once: each a unique `name` (a DNS label: the name workspaces and sign-ins refer to), a `kind` and the kind's `values`. A duplicate name, an unknown kind or invalid values fail the server's start with a message naming the instance. Kind `github` (github.com or a GitHub Enterprise Server) takes `url` (default `https://github.com`), `apiURL` (derived from `url`), `app.id`, `app.privateKey` and `oauth.clientID`, `oauth.clientSecret`; a Secret reference is `{name, key}` of a Secret in the release namespace, e.g. `{name: github, kind: github, values: {app: {id: \"123\", privateKey: {name: github-agents-app, key: private-key}}, oauth: {clientID: Iv1.abc, clientSecret: {name: github-agents-app, key: client-secret}}}}`.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "values": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                }
+            }
         },
         "rbac": {
             "type": "object",
