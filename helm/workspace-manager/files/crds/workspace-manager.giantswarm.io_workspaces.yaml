@@ -251,7 +251,10 @@ spec:
             description: WorkspaceStatus is what the workspace-manager observed.
             properties:
               conditions:
-                description: Conditions are the workspace's conditions (Ready, Synced).
+                description: |-
+                  Conditions are the workspace's conditions: VolumeClaimed (the volume is
+                  claimed from the installation's StorageClass; False names the missing
+                  class), Ready and Synced.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

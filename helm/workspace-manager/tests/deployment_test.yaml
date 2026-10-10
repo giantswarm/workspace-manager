@@ -45,6 +45,18 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --organization=umbrella=umbrella-devs
 
+  # The default arguments above carry no --storage-class: the controller then
+  # claims no volume and names the value in every Workspace's condition,
+  # never the cluster's default class.
+  - it: passes the StorageClass every workspace volume is claimed from
+    set:
+      storage:
+        storageClassName: efs-rwx
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --storage-class=efs-rwx
+
   - it: runs non-root with a read-only root filesystem
     asserts:
       - equal:

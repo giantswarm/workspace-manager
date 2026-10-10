@@ -124,7 +124,19 @@ configured has no members.
 ## The workspace's volume and the sync Job
 
 Every workspace has one read-write-many volume, shared by the sync and every
-session on the workspace:
+session on the workspace. The controller (`internal/controller`, part of
+`serve`) claims it as `workspace-<name>` in the workspaces' namespace from the
+installation's StorageClass (`--storage-class`, the chart's
+`storage.storageClassName`): access mode `ReadWriteMany`, owned by the
+Workspace so it goes with it, requesting the provisioned size the status
+reports, else `spec.sizing.minimum`, else a nominal 1Gi (a class that
+provisions no size, EFS or an NFS export, ignores it). The class must keep
+POSIX semantics (file modes, symbolic links) for git, which a cluster's
+default class rarely does, so there is no fall-back to it: without a class
+nothing is claimed and the Workspace's `VolumeClaimed` condition is `False`
+with reason `StorageClassMissing`, naming the flag and the chart value. The
+status names the claim (`status.volume.claimName`); the condition is `True`
+with reason `Claimed` once it exists.
 
 | Path | Written by | Holds |
 |---|---|---|
@@ -177,6 +189,7 @@ volume mounted at `--volume`:
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
 - `internal/workspace`: the Organization check, the provider validation and the Workspace store every tool reads and writes through.
+- `internal/controller`: the manager's controller, watching the Workspaces of the workspaces' namespace: it claims each one's volume from the installation's StorageClass and writes the Workspace's status (the claim, the `VolumeClaimed` condition), which nothing else writes.
 - `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server, its tools (`list_providers`, `connect_provider`, `disconnect_provider`) and its tracing and metrics middleware.
 - `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.

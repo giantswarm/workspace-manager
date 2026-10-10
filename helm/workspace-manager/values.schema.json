@@ -604,6 +604,16 @@
                 }
             }
         },
+        "storage": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "storageClassName": {
+                    "type": "string",
+                    "description": "The read-write-many StorageClass every workspace's volume is claimed from (the PersistentVolumeClaim's `spec.storageClassName`, access mode ReadWriteMany): bare mirrors and a directory per Session, used by git, so the class keeps POSIX semantics (file modes, symbolic links): Amazon EFS, Azure Files over NFS, an NFS server. A cluster rarely has such a class by default, and the manager never falls back to the cluster's default class: empty, no volume is claimed and every Workspace's `VolumeClaimed` condition names this value. Passed to `serve` as its `storage-class` flag."
+                }
+            }
+        },
         "subscriptionID": {
             "type": "string"
         },
