@@ -33,12 +33,12 @@ import (
 // Path is the token endpoint's path.
 const Path = "/token"
 
-// RFC 8693 identifiers.
+// RFC 8693 identifiers: names of token types, not credentials.
 const (
 	GrantType            = "urn:ietf:params:oauth:grant-type:token-exchange"
-	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
-	TokenTypeIDToken     = "urn:ietf:params:oauth:token-type:id_token"
-	TokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"
+	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token" //nolint:gosec // G101: an RFC 8693 token type URN
+	TokenTypeIDToken     = "urn:ietf:params:oauth:token-type:id_token"     //nolint:gosec // G101: an RFC 8693 token type URN
+	TokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"          //nolint:gosec // G101: an RFC 8693 token type URN
 )
 
 // subjectTokenTypes are what a Dex token is called by a client: an OpenID
