@@ -198,10 +198,7 @@ func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		id := &identity.Identity{Subject: info.ID, Email: info.Email, Name: info.Name, Groups: info.Groups, Source: identity.SourceOAuth}
-		if info.IsSSO() {
-			id.Source = identity.SourceSSO
-		}
+		id := identityOf(info)
 		tok := o.callerToken(ctx, r, info)
 		if tok == "" {
 			o.refuse(w, r, id)
@@ -289,7 +286,13 @@ func bearerToken(r *http.Request) string {
 }
 
 func (o *oauthRuntime) callerToken(ctx context.Context, r *http.Request, info *providers.UserInfo) string {
-	bearer := bearerToken(r)
+	return o.dexToken(ctx, bearerToken(r), info)
+}
+
+// dexToken is the caller's Dex token for a validated bearer: a forwarded
+// id_token is the bearer itself; for a token this server issued, Dex's
+// id_token is looked up in the store. "" when there is none.
+func (o *oauthRuntime) dexToken(ctx context.Context, bearer string, info *providers.UserInfo) string {
 	if bearer == "" {
 		return ""
 	}

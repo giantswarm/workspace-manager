@@ -216,42 +216,48 @@ func (s *KubeStore) Delete(ctx context.Context, person, instance string) error {
 	return nil
 }
 
-// AccessToken implements Store. Within the replica, concurrent calls for one
+// AccessToken implements Store.
+func (s *KubeStore) AccessToken(ctx context.Context, person, instance string) (string, error) {
+	a, err := s.Access(ctx, person, instance)
+	return a.Token, err
+}
+
+// Access implements Store. Within the replica, concurrent calls for one
 // sign-in share a single call; across replicas, the refresh lease lets one
 // replica redeem the refresh token while the others wait and read the token
 // it wrote.
-func (s *KubeStore) AccessToken(ctx context.Context, person, instance string) (string, error) {
+func (s *KubeStore) Access(ctx context.Context, person, instance string) (Access, error) {
 	in, err := s.signIn(person, instance)
 	if err != nil {
-		return "", err
+		return Access{}, err
 	}
 	v, err, _ := s.flight.Do(in.name, func() (any, error) {
-		return s.accessToken(ctx, in)
+		return s.access(ctx, in)
 	})
 	if err != nil {
-		return "", err
+		return Access{}, err
 	}
-	return v.(string), nil
+	return v.(Access), nil
 }
 
-func (s *KubeStore) accessToken(ctx context.Context, in signIn) (string, error) {
+func (s *KubeStore) access(ctx context.Context, in signIn) (Access, error) {
 	tok, _, err := s.read(ctx, in)
 	if err != nil {
-		return "", err
+		return Access{}, err
 	}
 	if s.fresh(tok) {
-		return tok.AccessToken, nil
+		return accessOf(tok), nil
 	}
 	held, err := s.lease.acquire(ctx, in.name, in.labels(), func() (bool, error) {
 		tok, _, err = s.read(ctx, in)
 		return err == nil && s.fresh(tok), err
 	})
 	if err != nil {
-		return "", err
+		return Access{}, err
 	}
 	if !held {
 		// Another replica refreshed while this one waited.
-		return tok.AccessToken, nil
+		return accessOf(tok), nil
 	}
 	defer func() {
 		// The lease goes even when the caller's context ended.
@@ -267,27 +273,27 @@ func (s *KubeStore) accessToken(ctx context.Context, in signIn) (string, error) 
 // refresh runs under the lease: it reads the sign-in once more (a replica
 // that held the lease before may have refreshed it), redeems the refresh
 // token and writes the result guarded by the resourceVersion it read.
-func (s *KubeStore) refresh(ctx context.Context, in signIn) (string, error) {
+func (s *KubeStore) refresh(ctx context.Context, in signIn) (Access, error) {
 	tok, secret, err := s.read(ctx, in)
 	if err != nil {
-		return "", err
+		return Access{}, err
 	}
 	if s.fresh(tok) {
-		return tok.AccessToken, nil
+		return accessOf(tok), nil
 	}
 	if tok.RefreshToken == "" {
-		return "", fmt.Errorf("sign-in %s: %w: no refresh token", in.name, ErrSignInExpired)
+		return Access{}, fmt.Errorf("sign-in %s: %w: no refresh token", in.name, ErrSignInExpired)
 	}
 	cfg, err := s.opts.OAuth2.OAuth2Config(ctx, in.instance)
 	if err != nil {
-		return "", fmt.Errorf("sign-in %s: OAuth 2.0 client: %w", in.name, err)
+		return Access{}, fmt.Errorf("sign-in %s: OAuth 2.0 client: %w", in.name, err)
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, s.opts.LeaseDuration/2)
 	defer cancel()
 	// A token with only the refresh token makes the source redeem it.
 	refreshed, err := cfg.TokenSource(reqCtx, &oauth2.Token{RefreshToken: tok.RefreshToken}).Token()
 	if err != nil {
-		return "", refreshError(in, err)
+		return Access{}, refreshError(in, err)
 	}
 	if refreshed.RefreshToken == "" {
 		// A provider that does not rotate keeps the refresh token valid.
@@ -295,17 +301,17 @@ func (s *KubeStore) refresh(ctx context.Context, in signIn) (string, error) {
 	}
 	sealed, err := s.seal(in, refreshed)
 	if err != nil {
-		return "", err
+		return Access{}, err
 	}
 	for {
 		err = s.write(ctx, secret, sealed)
 		if err == nil {
 			s.opts.Logger.InfoContext(ctx, "sign-in refreshed", "signin", in.name, "instance", in.instance,
 				"expiry", refreshed.Expiry.UTC().Format(time.RFC3339))
-			return refreshed.AccessToken, nil
+			return accessOf(refreshed), nil
 		}
 		if !apierrors.IsConflict(err) {
-			return "", err
+			return Access{}, err
 		}
 		// Written meanwhile: a new sign-in (Put) wins over the refresh;
 		// otherwise the redeemed refresh token is gone, so write the result
@@ -313,10 +319,10 @@ func (s *KubeStore) refresh(ctx context.Context, in signIn) (string, error) {
 		var current *oauth2.Token
 		current, secret, err = s.read(ctx, in)
 		if err != nil {
-			return "", err
+			return Access{}, err
 		}
 		if current.RefreshToken != tok.RefreshToken {
-			return current.AccessToken, nil
+			return accessOf(current), nil
 		}
 	}
 }

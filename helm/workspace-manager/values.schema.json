@@ -607,6 +607,30 @@
         "subscriptionID": {
             "type": "string"
         },
+        "tokenExchange": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "clientID": {
+                    "type": "string",
+                    "description": "The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers, with the person's access token for a provider instance. Empty serves no token exchange. Needs `providers` and `oauth.enabled`; kagent's namespace belongs in `networkPolicy.ingressNamespaces`."
+                },
+                "clientSecret": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Key of the client secret in that Secret."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Secret in the release namespace with the kagent client's secret, read on every exchange; the chart never renders it."
+                        }
+                    }
+                }
+            }
+        },
         "tolerations": {
             "type": "array",
             "description": "Tolerations.",

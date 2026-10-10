@@ -35,6 +35,13 @@ func (s *Server) routes(mux *http.ServeMux, cfg Config, mcpSrv *mcpserver.MCPSer
 		mux.HandleFunc("GET /signin", cfg.Pages.SignIn)
 	}
 
+	// The token exchange authenticates its client itself (client_secret_basic
+	// or client_secret_post) and validates the subject token in the form,
+	// never a bearer token.
+	if s.exchange != nil {
+		s.exchange.Register(mux)
+	}
+
 	// mcp-go's default session manager issues session IDs without keeping
 	// them, so any replica answers any request of a session.
 	mux.Handle(cfg.MCPPath, s.guard(mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))))

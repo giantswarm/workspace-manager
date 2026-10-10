@@ -1,0 +1,74 @@
+# The token exchange for the installation's kagent client: with a client ID,
+# the server gets the client and its Secret reference; without one, neither.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: token exchange
+templates:
+  - templates/deployment.yaml
+  - templates/providers-configmap.yaml
+  - templates/oauth-secret.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+set:
+  providers:
+    - name: github
+      kind: github
+      values:
+        app:
+          id: "123"
+          privateKey: {name: github-agents-app, key: private-key}
+        oauth:
+          clientID: Iv1.abc
+          clientSecret: {name: github-agents-app, key: client-secret}
+  oauth:
+    enabled: true
+    baseURL: https://workspace-manager.example.com
+    dex:
+      issuerURL: https://dex.example.com
+      clientID: workspace-manager
+      clientSecret: dex-secret
+  signin:
+    keys:
+      secretName: workspace-manager-signin-keys
+      current: k1
+  tokenExchange:
+    clientID: kagent
+    clientSecret:
+      name: kagent-token-exchange
+tests:
+  - it: passes the kagent client and its Secret reference to the server
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --token-exchange-client-id=kagent
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --token-exchange-client-secret=kagent-token-exchange/client-secret
+
+  - it: refuses a client ID without its Secret
+    template: templates/deployment.yaml
+    set:
+      tokenExchange.clientSecret.name: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: tokenExchange.clientSecret.name is required with tokenExchange.clientID
+
+  - it: serves no token exchange without a client ID
+    template: templates/deployment.yaml
+    set:
+      tokenExchange.clientID: ""
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --token-exchange-client-id=kagent
+
+  - it: serves no token exchange without OAuth
+    template: templates/deployment.yaml
+    set:
+      oauth.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --token-exchange-client-id=kagent
