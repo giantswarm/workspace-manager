@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -30,6 +31,10 @@ import (
 // event: a claim deleted out from under a Workspace is made again by then.
 const DefaultResync = 10 * time.Minute
 
+// DefaultSessionCleanupAfter is how long a Session's directory outlives the
+// Session's last turn: 30 days.
+const DefaultSessionCleanupAfter = 30 * 24 * time.Hour
+
 // Config is what the controller works with.
 type Config struct {
 	// Dynamic reads and watches the Workspaces and writes their status.
@@ -42,10 +47,16 @@ type Config struct {
 	// claimed from; empty claims none and every Workspace's VolumeClaimed
 	// condition names the missing value.
 	StorageClass string
-	// Resync is how often every Workspace is reconciled without an event;
-	// zero is DefaultResync.
+	// Resync is how often every Workspace is reconciled without an event
+	// (the chart's sync.cycle); zero is DefaultResync.
 	Resync time.Duration
-	Logger *slog.Logger
+	// Sizing sizes each new claim; the zero value is DefaultSizing.
+	Sizing Sizing
+	// SessionCleanupAfter is how long a Session's directory outlives the
+	// Session's last turn (the chart's sessions.cleanupAfter); zero is
+	// DefaultSessionCleanupAfter.
+	SessionCleanupAfter time.Duration
+	Logger              *slog.Logger
 }
 
 // Controller reconciles the Workspaces of one namespace.
@@ -54,7 +65,9 @@ type Controller struct {
 	informer cache.SharedIndexInformer
 	volumes  Volumes
 	status   *Status
-	log      *slog.Logger
+	// sessionCleanupAfter is the session directories' cleanup window.
+	sessionCleanupAfter time.Duration
+	log                 *slog.Logger
 }
 
 // New builds the controller; Run starts it.
@@ -65,13 +78,20 @@ func New(cfg Config) *Controller {
 	if cfg.Resync == 0 {
 		cfg.Resync = DefaultResync
 	}
+	if cfg.Sizing == (Sizing{}) {
+		cfg.Sizing = DefaultSizing
+	}
+	if cfg.SessionCleanupAfter == 0 {
+		cfg.SessionCleanupAfter = DefaultSessionCleanupAfter
+	}
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(cfg.Dynamic, cfg.Resync, cfg.Namespace, nil)
 	return &Controller{
-		factory:  factory,
-		informer: factory.ForResource(v1alpha1.WorkspaceResource).Informer(),
-		volumes:  Volumes{Client: cfg.Core, StorageClass: cfg.StorageClass},
-		status:   NewStatus(cfg.Dynamic, cfg.Namespace),
-		log:      cfg.Logger,
+		factory:             factory,
+		informer:            factory.ForResource(v1alpha1.WorkspaceResource).Informer(),
+		volumes:             Volumes{Client: cfg.Core, StorageClass: cfg.StorageClass, Sizing: cfg.Sizing},
+		status:              NewStatus(cfg.Dynamic, cfg.Namespace),
+		sessionCleanupAfter: cfg.SessionCleanupAfter,
+		log:                 cfg.Logger,
 	}
 }
 
@@ -99,7 +119,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
 		return nil
 	}
-	c.log.Info("controller started", "storageClass", c.volumes.StorageClass)
+	c.log.Info("controller started", "storageClass", c.volumes.StorageClass, "sizingFactor", c.volumes.Sizing.Factor,
+		"sizingHeadroom", c.volumes.Sizing.Headroom.String(), "sizingMaxSize", maxSizeString(c.volumes.Sizing.MaxSize),
+		"sessionCleanupAfter", c.sessionCleanupAfter)
 	go func() {
 		<-ctx.Done()
 		queue.ShutDown()
@@ -178,4 +200,12 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) erro
 		return errors.Join(err, werr)
 	}
 	return err
+}
+
+// maxSizeString is the sizing ceiling as logged: "none" without one.
+func maxSizeString(q *resource.Quantity) string {
+	if q == nil {
+		return "none"
+	}
+	return q.String()
 }

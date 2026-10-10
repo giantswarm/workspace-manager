@@ -50,6 +50,37 @@ storage:
   # empty, no volume is claimed and every Workspace's `VolumeClaimed`
   # condition names this value. Passed to `serve` as its `storage-class` flag.
   storageClassName: ""
+  # The size a workspace volume is created with where the StorageClass
+  # provisions a size (Amazon EFS and NFS ignore it): the mirrors' and session
+  # directories' measured size times `factor`, plus `headroom`, at least the
+  # Workspace's `spec.sizing.minimum`, capped at `maxSize`. Before a sync
+  # measured anything the claim asks for 1Gi.
+  sizing:
+    # -- Multiplier of the measured size, at least 1: a number or a string
+    # (`"1.5"`). Passed to `serve` as its `sizing-factor` flag.
+    factor: "1.5"  # @schema type: [string, number]; pattern: ^[0-9]+(\.[0-9]+)?$
+    # -- Added to the multiplied size, a Kubernetes quantity; a Workspace's
+    # larger `spec.sizing.headroom` replaces it. Passed to `serve` as its
+    # `sizing-headroom` flag.
+    headroom: 5Gi
+    # -- Ceiling of the size, a Kubernetes quantity, which wins over a
+    # Workspace's minimum. Empty sets none. Passed to `serve` as its
+    # `sizing-max-size` flag.
+    maxSize: ""
+
+sync:
+  # -- How often the controller reconciles every Workspace without an event,
+  # a Go duration (`10m`, `1h`): a claim deleted out from under a Workspace is
+  # made again by then. Each Workspace's own `spec.sync` (nightly, weekly or
+  # custom) says when its mirrors are fetched. Passed to `serve` as its
+  # `sync-cycle` flag.
+  cycle: 10m
+
+sessions:
+  # -- How long a Session's directory on the workspace volume outlives the
+  # Session's last turn, a Go duration (`720h` is 30 days). Passed to `serve`
+  # as its `sessions-cleanup-after` flag.
+  cleanupAfter: 720h
 
 crds:
   # -- Install the `Workspace` CRD (`workspaces.workspace-manager.giantswarm.io`).
@@ -88,6 +119,15 @@ signin:
     # sealed, so a key rotates by adding a new one, making it current and
     # dropping the old one once every sign-in was written again.
     current: ""
+
+grant:
+  # -- The key the workspace grant a Session carries is signed with: `{name,
+  # key}` of a Secret in the release namespace holding at least 32 random
+  # bytes, read at start (a missing or short key fails it); the chart never
+  # renders it. Empty signs no grant. Needs `providers` and `oauth.enabled`.
+  signingKey:
+    name: ""
+    key: ""
 
 tokenExchange:
   # -- The installation's kagent client: the only client the token exchange
@@ -132,7 +172,7 @@ oauth:
     # in-cluster Dex).
     allowPrivateURLs: false
     # -- Secret with the CA of a Dex that serves a private certificate;
-    # mounted and passed as `--dex-ca-file`. Empty name falls back to
+    # mounted and passed as the `dex-ca-file` flag. Empty name falls back to
     # `global.identity.ca.secretName` / `global.identity.ca.key`.
     caSecret:
       name: ""
