@@ -175,8 +175,16 @@ type Storage struct {
 
 // SessionDirectory is one Session's directory on the volume.
 type SessionDirectory struct {
-	Session      string     `json:"session"`
-	SizeBytes    int64      `json:"sizeBytes"`
+	// Session is the Session's id; Name, Creator and LastTurn are kagent's.
+	Session  string     `json:"session"`
+	Name     string     `json:"name,omitempty"`
+	Creator  string     `json:"creator,omitempty"`
+	LastTurn *time.Time `json:"lastTurn,omitempty"`
+	// Unknown marks a directory whose Session kagent does not list: it goes
+	// after the cleanup window from when a sync first found it.
+	Unknown   bool  `json:"unknown,omitempty"`
+	SizeBytes int64 `json:"sizeBytes"`
+	// CleanupAfter is when the directory is deleted.
 	CleanupAfter *time.Time `json:"cleanupAfter,omitempty"`
 }
 
@@ -459,7 +467,11 @@ func (t *workspaceTools) detail(ctx context.Context, ws *v1alpha1.Workspace) (*W
 		}
 	}
 	for _, s := range ws.Status.Sessions {
-		sd := SessionDirectory{Session: s.Session}
+		sd := SessionDirectory{Session: s.Session, Name: s.Name, Creator: s.Creator, Unknown: s.Unknown}
+		if s.LastTurn != nil {
+			at := s.LastTurn.UTC()
+			sd.LastTurn = &at
+		}
 		if s.Size != nil {
 			sd.SizeBytes = s.Size.Value()
 		}

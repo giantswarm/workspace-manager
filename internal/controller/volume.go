@@ -242,6 +242,16 @@ func (v Volumes) Grow(ctx context.Context, claim *corev1.PersistentVolumeClaim, 
 	return size, nil
 }
 
+// Delete deletes the Workspace's claim, the volume going with it by the
+// class's reclaim policy; a claim already gone is no error.
+func (v Volumes) Delete(ctx context.Context, claim *corev1.PersistentVolumeClaim) error {
+	err := v.Client.CoreV1().PersistentVolumeClaims(claim.Namespace).Delete(ctx, claim.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &claim.UID}})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete claim %s/%s: %w", claim.Namespace, claim.Name, err)
+	}
+	return nil
+}
+
 // Requested is the claim's storage request.
 func Requested(claim *corev1.PersistentVolumeClaim) resource.Quantity {
 	return claim.Spec.Resources.Requests[corev1.ResourceStorage]

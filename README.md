@@ -153,7 +153,8 @@ spec:
 The status carries the conditions, the last sync's time and result, the
 resolved repositories, the needed and the provisioned size, the volume (claim,
 CSI driver and handle), the manifest's ConfigMap, the session directories
-(Session, size, cleanup date) and the observed generation.
+(Session id, name, creator and last turn, size, cleanup date) and the
+observed generation.
 
 **Validation.** The CRD's schema and CEL rules refuse what needs no context:
 a source without a selector (no repository name, language or topic), an
@@ -185,7 +186,7 @@ caller, `invalid workspace` with the API server's or the manager's reason
 | Tool | Input | Result |
 |---|---|---|
 | `list_workspaces` | `organization` (optional, a member's) | `workspaces`: each workspace's view (below) |
-| `get_workspace` | `workspace` | `workspace` (the view); `mirrors`: the last sync's repositories (`provider`, `repository`, `defaultBranch`, `head`, `pushedAt`, measured `sizeBytes`, `droppedAt`); `storage` (`mirrorsBytes`, `sessionsBytes`, `neededSize`, `volumeSize`); `sessionDirectories` (`session`, `sizeBytes`, `cleanupAfter`) |
+| `get_workspace` | `workspace` | `workspace` (the view); `mirrors`: the last sync's repositories (`provider`, `repository`, `defaultBranch`, `head`, `pushedAt`, measured `sizeBytes`, `droppedAt`); `storage` (`mirrorsBytes`, `sessionsBytes`, `neededSize`, `volumeSize`); `sessionDirectories` (`session`, `name`, `creator`, `lastTurn`, `unknown`, `sizeBytes`, `cleanupAfter`) |
 | `create_workspace` | `name`, `organization`, `sources`, `sync` (default nightly), `sizing` (`headroom`, `minimum` as quantities) | the view |
 | `update_workspace` | `name`, `sources` (replaced), `sync` and `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
 | `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume |
@@ -252,7 +253,10 @@ compares the selection with the last sync's manifest, and sizes and claims
 or grows the volume (below). **The no-op check:** a selection equal to the
 manifest's live entries, none pushed to since and no default branch moved,
 is recorded as `NoChange` and starts no Job: the listing is the cycle's whole
-cost, and no mirror's origin is contacted. Otherwise the controller writes
+cost, and no mirror's origin is contacted. When the volume holds session
+directories or a dropped mirror, the cycle still starts the Job, which
+fetches nothing (`activeSync.cleanupOnly`, the result `NoChange`) and only
+cleans up (below). Otherwise the controller writes
 the selection (the ConfigMap `workspace-<name>-selection`: per repository
 its `pushedAt` as the provider lists it, which the sync compares with the
 manifest's to fetch only what moved), the credentials (the Secret
@@ -278,6 +282,48 @@ reason `Synced` or `NoChange`; `Unknown` with `Syncing`; `False` with
 `ListingFailed`, `SyncFailed`, `SizeCeiling` or `VolumeMissing`). A cycle
 that failed before its Job (the listing, the sizing, the claim) is tried
 again after `--sync-cycle`; a request or a change starts one sooner.
+
+## Session directories: cleanup and inventory
+
+Every Session on a workspace works in its own directory, `sessions/<session
+id>/`, on the workspace's volume. The sync Job cleans them up, from kagent's
+record of each Session's last turn:
+
+- **kagent's Sessions.** Each cycle, the controller lists every creator's
+  Sessions from kagent's API (`SessionService/ListSessions` with
+  `all_creators`, walked to the end; `--kagent-address`, the chart's
+  `kagent.address`), as its own ServiceAccount with a projected token for
+  kagent's audience (`--kagent-token-file`), keeps those whose workspace
+  volume is this workspace's (by CSI driver and handle) and hands them, with
+  the window `--sessions-cleanup-after` (the chart's
+  `sessions.cleanupAfter`, 720h), to the Job in its selection.
+- **The window.** A directory is deleted once its Session's last turn
+  (`last_turn_time`; its creation before the first turn) is older than the
+  window; every turn moves the date. A Session kagent listed at the previous
+  sync and no longer lists was deleted: its directory goes at once. A
+  directory whose Session kagent does not know goes the window after the
+  sync that first found it. A directory is renamed aside before it is
+  removed, so no half-removed tree is ever seen as a Session's.
+- **Fails safe.** Without kagent, while kagent's listing fails (an
+  incomplete listing is a failure) or while the volume's CSI handle is not
+  known, no directory is deleted; the Job only measures them. The condition
+  `SessionsCleanedUp` says which (`Listed`, `KagentNotConfigured`,
+  `KagentUnavailable`, `VolumePending`).
+- **Dropped mirrors.** After the cleanup, a mirror the sync marked dropped
+  is deleted once no session directory borrows from it (its clones'
+  `objects/info/alternates`); one still borrowed stays, the manifest naming
+  its borrowers (`borrowedBy`).
+- **Inventory.** The manifest records each directory left (`sessions`: its
+  Session's id, name, creator and last turn, the size measured by this sync,
+  the cleanup date), and the status lists them (`status.sessions`), which
+  `get_workspace` shows and the volume's sizing counts.
+- **A deleted workspace.** The Workspace carries the finalizer
+  `workspace-manager.giantswarm.io/volume`. Once deleted, its sync stops and
+  no Session starts on it; its cycles (trigger `deletion`) only clean up the
+  session directories, at its schedule or at the earliest cleanup date,
+  whichever comes first. When a cycle since the deletion leaves no
+  directory, the controller deletes the volume's claim and removes the
+  finalizer, and everything else the workspace owns goes with it.
 
 ## The workspace's volume and the sync Job
 
@@ -319,6 +365,7 @@ volume's size the same way from the providers' reported sizes.
 | Path | Written by | Holds |
 |---|---|---|
 | `mirrors/<owner>/<name>.git` | the sync | a bare mirror of each selected repository (every branch and tag) |
+| `sessions/` | the sync | the session directories; the runtime refuses a Session's mount while it is missing |
 | `sessions/<session>/` | that session | the session's clones, borrowing their objects from the mirrors (git alternates), and its work |
 | `manifest.json` | the sync | what the volume holds: each mirror's head commit, last push time and measured size |
 
@@ -342,7 +389,7 @@ volume mounted at `--volume`:
   `pushedAt` is newer than the manifest's is fetched (`--prune`, so deleted
   branches go); any other is not contacted. A repository that left the
   selection keeps its mirror, marked `droppedAt` in the manifest, until no
-  session directory borrows from it; the cleanup removes it then.
+  session directory borrows from it; the sync deletes it then.
 - **Borrowed objects:** a session's clone borrows the mirror's objects, so
   a mirror never loses an object such a clone may need, even after a
   force-push or a deleted branch upstream. Each mirror is cloned with
@@ -369,7 +416,8 @@ volume mounted at `--volume`:
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
 - `internal/workspace`: the Organization check, the provider validation, the Workspace store every tool reads and writes through, the selection a workspace's sources resolve to from the providers' listings (with why each repository is in), the last sync's manifest, the volume's CSI handle and the sync schedule.
-- `internal/controller`: the manager's controller, leader-elected among the replicas, watching the Workspaces of the workspaces' namespace and their sync Jobs: it runs each Workspace's sync cycle (the triggers, the no-op check, the selection and the credentials, the Job from the chart's template, the outcome from the manifest), sizes, claims and grows the volume from the installation's StorageClass, and writes the Workspace's status, which nothing else writes.
+- `internal/controller`: the manager's controller, leader-elected among the replicas, watching the Workspaces of the workspaces' namespace and their sync Jobs: it runs each Workspace's sync cycle (the triggers, the no-op check, the selection and the credentials, the Job from the chart's template, the outcome from the manifest), sizes, claims and grows the volume from the installation's StorageClass, hands the Job kagent's Sessions for the session directories' cleanup, runs a deleted Workspace's cleanup to its last directory before its volume goes, and writes the Workspace's status, which nothing else writes.
+- `internal/kagent`: kagent's Sessions for the cleanup (`SessionService/ListSessions` over every creator), from the stubs in `internal/kagent/gen` that `make generate-kagent` makes from the protos pinned in `hack/kagent-proto`; `internal/kagent/kagenttest` is a fake kagent for tests.
 - `internal/kube`: the manager's Kubernetes clients.
 - `internal/api`: the MCP server, its tools (`list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace`, `delete_workspace`, `sync_workspace`, `list_repositories`, `preview_workspace`, `list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
 - `internal/authorize`: the access check at a Session's start: the manifest against what the person reads at each provider, the volume's CSI handle, and the grant.
@@ -379,7 +427,7 @@ volume mounted at `--volume`:
 - `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes. The `github` kind lists a GitHub App installation's repositories (name, language, topics, archived, fork, last push, size in KiB) with the installation token it mints per owner and renews before expiry, and waits out a rate limit as GitHub asks (`Retry-After`, the primary limit's reset, else a minute).
 - `internal/exchange`: the token exchange `POST /token` (RFC 8693) for the installation's kagent client.
 - `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.
-- `internal/mirror`: the sync: the volume's layout, the mirrors, the manifest, the credential helper and the borrowed-objects rule.
+- `internal/mirror`: the sync: the volume's layout, the mirrors, the session directories' cleanup and inventory, the manifest, the credential helper and the borrowed-objects rule.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).
 
 See [docs/development.md](docs/development.md) for building and testing.

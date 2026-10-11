@@ -27,6 +27,7 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/controller"
 	"github.com/giantswarm/workspace-manager/internal/exchange"
 	"github.com/giantswarm/workspace-manager/internal/grant"
+	"github.com/giantswarm/workspace-manager/internal/kagent"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/kinds"
@@ -63,6 +64,8 @@ type serveOptions struct {
 
 	syncCycle           time.Duration
 	sessionCleanupAfter time.Duration
+	kagentAddress       string
+	kagentTokenFile     string
 	sizingFactor        float64
 	sizingHeadroom      string
 	sizingHeadroomShare float64
@@ -121,7 +124,9 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
 	f.StringVar(&o.storageClass, "storage-class", envOr("WORKSPACE_MANAGER_STORAGE_CLASS", ""), "The read-write-many StorageClass every workspace's volume is claimed from; empty claims none: each Workspace's VolumeClaimed condition names the missing value, and the cluster's default class is never used in its place (WORKSPACE_MANAGER_STORAGE_CLASS)")
 	f.DurationVar(&o.syncCycle, "sync-cycle", envDuration("WORKSPACE_MANAGER_SYNC_CYCLE", controller.DefaultResync), "How often the controller reconciles every Workspace without an event, and how long after a failed sync cycle it tries again, a Go duration (WORKSPACE_MANAGER_SYNC_CYCLE)")
-	f.DurationVar(&o.sessionCleanupAfter, "sessions-cleanup-after", envDuration("WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER", controller.DefaultSessionCleanupAfter), "How long a Session's directory outlives the Session's last turn, a Go duration (WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER)")
+	f.DurationVar(&o.sessionCleanupAfter, "sessions-cleanup-after", envDuration("WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER", controller.DefaultSessionCleanupAfter), "How long a Session's directory outlives the Session's last turn, a Go duration; a directory whose Session kagent does not know outlives the sync that first found it as long (WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER)")
+	f.StringVar(&o.kagentAddress, "kagent-address", envOr("WORKSPACE_MANAGER_KAGENT_ADDRESS", ""), "The kagent controller's gRPC API, grpc://host:port or grpcs://host[:port], whose Sessions' last turns the session directories' cleanup works from; empty cleans up no session directory, and a deleted workspace keeps its volume (WORKSPACE_MANAGER_KAGENT_ADDRESS)")
+	f.StringVar(&o.kagentTokenFile, "kagent-token-file", envOr("WORKSPACE_MANAGER_KAGENT_TOKEN_FILE", ""), "File with the token the manager calls kagent with, read per call: a projected ServiceAccount token for kagent's audience; empty sends none (WORKSPACE_MANAGER_KAGENT_TOKEN_FILE)")
 	f.Float64Var(&o.sizingFactor, "sizing-factor", envFloat("WORKSPACE_MANAGER_SIZING_FACTOR", controller.DefaultSizing.Factor), "What a repository not yet mirrored counts towards its workspace volume's need: this factor, at least 1, times the size its provider reports; a mirrored one counts its measured size (WORKSPACE_MANAGER_SIZING_FACTOR)")
 	f.StringVar(&o.sizingHeadroom, "sizing-headroom", envOr("WORKSPACE_MANAGER_SIZING_HEADROOM", controller.DefaultSizing.HeadroomFloor.String()), "The least headroom a workspace volume keeps over its need, a Kubernetes quantity; the headroom is the larger of this, the headroom share of the need and the Workspace's own spec.sizing.headroom (WORKSPACE_MANAGER_SIZING_HEADROOM)")
 	f.Float64Var(&o.sizingHeadroomShare, "sizing-headroom-share", envFloat("WORKSPACE_MANAGER_SIZING_HEADROOM_SHARE", controller.DefaultSizing.HeadroomShare), "The headroom as a share of a workspace volume's need, 0.5 for half of it; the larger of it and --sizing-headroom applies (WORKSPACE_MANAGER_SIZING_HEADROOM_SHARE)")
@@ -214,10 +219,19 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	} else if len(providers) > 0 {
 		log.Warn("the sync cycle is off: it reads the providers' Secrets in --manager-namespace (POD_NAMESPACE); every cycle fails until it is set")
 	}
+	// The session directories' cleanup reads every Session's last turn from
+	// kagent; without it, no directory is cleaned up.
+	if o.kagentAddress != "" {
+		sessions, err := kagent.Dial(o.kagentAddress, o.kagentTokenFile)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = sessions.Close() }()
+		ctlCfg.Sessions = sessions
+	} else {
+		log.Warn("no kagent: no session directory is cleaned up, and a deleted workspace keeps its volume, until --kagent-address (the chart's kagent.address) names kagent's API", "sessionsCleanupAfter", o.sessionCleanupAfter)
+	}
 	ctl := controller.New(ctlCfg)
-	// Accepted from the chart, which the agent-platform meta chart forwards
-	// it to, ahead of the cleanup that uses it.
-	log.Warn("sessions.cleanupAfter is accepted, not yet in effect: no session directory is cleaned up yet", "sessionsCleanupAfter", o.sessionCleanupAfter)
 
 	srvCfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
 	if o.oauthEnabled {

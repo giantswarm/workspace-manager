@@ -83,6 +83,9 @@ type Config struct {
 	// Session's last turn (the chart's sessions.cleanupAfter); zero is
 	// DefaultSessionCleanupAfter.
 	SessionCleanupAfter time.Duration
+	// Sessions lists kagent's Sessions, whose last turns the session
+	// directories' cleanup works from; nil cleans up no directory.
+	Sessions Sessions
 	// Listings resolve a workspace's sources; nil fails every cycle.
 	Listings Listings
 	// Instances are the installation's provider instances, whose sync
@@ -118,6 +121,7 @@ type Controller struct {
 	sizing    Sizing
 	jobs      Jobs
 	listings  Listings
+	sessions  Sessions
 	instances map[string]provider.Instance
 	secrets   provider.Secrets
 	status    *Status
@@ -165,6 +169,7 @@ func New(cfg Config) *Controller {
 		sizing:              cfg.Sizing,
 		jobs:                Jobs{Client: cfg.Core, Template: cfg.SyncJobTemplate, Image: cfg.SyncImage, ImagePullPolicy: cfg.SyncImagePullPolicy, Roots: cfg.SyncRoots},
 		listings:            cfg.Listings,
+		sessions:            cfg.Sessions,
 		instances:           instances,
 		secrets:             cfg.Secrets,
 		status:              NewStatus(cfg.Dynamic, cfg.Namespace),
@@ -366,10 +371,15 @@ func (c *Controller) process(ctx context.Context, queue workqueue.TypedRateLimit
 // Reconcile runs the Workspace's sync cycle when one is due, or records the
 // outcome of the Job of the running one, and says how long until the next
 // one is due (zero for none). An error is the API server's: the caller
-// retries with backoff. A Workspace being deleted is left alone.
+// retries with backoff. A Workspace being deleted syncs no more; its cycles
+// only clean up its session directories until the last is gone
+// (reconcileDeleted).
 func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (time.Duration, error) {
 	if ws.DeletionTimestamp != nil {
-		return 0, nil
+		return c.reconcileDeleted(ctx, ws)
+	}
+	if err := c.ensureFinalizer(ctx, ws); err != nil {
+		return 0, err
 	}
 	if ws.Status.ActiveSync != nil {
 		done, err := c.finish(ctx, ws)
@@ -378,11 +388,7 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 		}
 		// The cycle is over; a request or a change made during it starts
 		// the next one now.
-		u, err := c.dynamic.Resource(v1alpha1.WorkspaceResource).Namespace(ws.Namespace).Get(ctx, ws.Name, metav1.GetOptions{})
-		if err != nil {
-			return 0, fmt.Errorf("get workspace %q: %w", ws.Name, err)
-		}
-		if ws, err = fromUnstructured(u); err != nil {
+		if ws, err = c.get(ctx, ws); err != nil {
 			return 0, err
 		}
 	}
@@ -396,4 +402,13 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 		return c.wake(ws, now), nil
 	}
 	return c.cycle(ctx, ws, trigger, claim)
+}
+
+// get reads the Workspace anew.
+func (c *Controller) get(ctx context.Context, ws *v1alpha1.Workspace) (*v1alpha1.Workspace, error) {
+	u, err := c.dynamic.Resource(v1alpha1.WorkspaceResource).Namespace(ws.Namespace).Get(ctx, ws.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get workspace %q: %w", ws.Name, err)
+	}
+	return fromUnstructured(u)
 }

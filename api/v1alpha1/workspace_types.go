@@ -211,7 +211,7 @@ const (
 )
 
 // SyncTrigger is what started a sync cycle.
-// +kubebuilder:validation:Enum=schedule;change;request;retry
+// +kubebuilder:validation:Enum=schedule;change;request;retry;deletion
 type SyncTrigger string
 
 const (
@@ -224,6 +224,10 @@ const (
 	TriggerRequest SyncTrigger = "request"
 	// TriggerRetry: the previous cycle failed.
 	TriggerRetry SyncTrigger = "retry"
+	// TriggerDeletion: the workspace is deleted; the cycle only cleans up
+	// its session directories, until the last is gone and the volume goes
+	// with the workspace.
+	TriggerDeletion SyncTrigger = "deletion"
 )
 
 // WorkspaceStatus is what the workspace-manager observed.
@@ -312,6 +316,10 @@ type ActiveSync struct {
 	// Trigger is what started the cycle.
 	// +optional
 	Trigger SyncTrigger `json:"trigger,omitempty"`
+	// CleanupOnly says the Job fetches nothing: the selection did not
+	// change, and it runs to clean up the session directories.
+	// +optional
+	CleanupOnly bool `json:"cleanupOnly,omitempty"`
 }
 
 // VolumeRef is the volume as its CSI driver knows it.
@@ -328,13 +336,28 @@ type VolumeRef struct {
 
 // SessionDirectory is one Session's directory on the volume.
 type SessionDirectory struct {
-	// Session is the Session's name.
+	// Session is the Session's id, the directory's name.
 	Session string `json:"session"`
+	// Name is the Session's display name in kagent.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Creator is the person who created the Session.
+	// +optional
+	Creator string `json:"creator,omitempty"`
+	// LastTurn is the Session's last turn in kagent; absent before its first
+	// turn and for a Session kagent does not know.
+	// +optional
+	LastTurn *metav1.Time `json:"lastTurn,omitempty"`
+	// Unknown is true for a directory whose Session kagent does not list:
+	// it goes after the cleanup window from when a sync first found it.
+	// +optional
+	Unknown bool `json:"unknown,omitempty"`
 	// Size measured at the last sync.
 	// +optional
 	Size *resource.Quantity `json:"size,omitempty"`
-	// CleanupAfter is when the directory is deleted: 30 days after its
-	// Session's last turn.
+	// CleanupAfter is when the directory is deleted: the cleanup window (30
+	// days by default) after its Session's last turn. A Session deleted in
+	// kagent loses its directory at the next sync.
 	// +optional
 	CleanupAfter *metav1.Time `json:"cleanupAfter,omitempty"`
 }

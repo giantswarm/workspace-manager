@@ -85,6 +85,16 @@ func (h *harness) mirror(owner, name string) string {
 	return filepath.Join(h.volume, MirrorsDir, owner, name+".git")
 }
 
+// borrow gives a session directory a clone borrowing the mirror's objects
+// (git alternates), as a Session's setup does.
+func (h *harness) borrow(session, owner, name string) string {
+	h.t.Helper()
+	dir := filepath.Join(h.volume, SessionsDir, session, name)
+	require.NoError(h.t, os.MkdirAll(filepath.Dir(dir), 0o700))
+	runGit(h.t, "", "clone", "--quiet", "--shared", "--no-checkout", h.mirror(owner, name), dir)
+	return dir
+}
+
 func (h *harness) manifest() *Manifest {
 	h.t.Helper()
 	m, err := ReadManifest(h.volume)
@@ -150,14 +160,17 @@ func TestSyncAddsFetchesAndDrops(t *testing.T) {
 	require.Positive(t, h.upstream.requestsFor("acme", "alpha"))
 	require.Zero(t, h.upstream.requestsFor("acme", "beta"), "an unchanged repository is not contacted")
 
-	// Drop: beta leaves the selection. Its mirror stays, marked; nothing is
-	// contacted.
+	// Drop: beta leaves the selection while a session directory borrows
+	// from it. Its mirror stays, marked; nothing is contacted.
 	h.upstream.resetRequests()
+	h.borrow("s1", "acme", "beta")
 	res = h.sync(h.repo("acme", "alpha", t1))
 	require.Equal(t, []string{"acme/beta"}, res.Dropped)
 	require.Equal(t, []string{"acme/alpha"}, res.Unchanged)
+	require.Empty(t, res.Deleted)
 	m = h.manifest()
 	require.NotNil(t, m.Entry("acme", "beta").DroppedAt)
+	require.Equal(t, []string{"s1"}, m.Entry("acme", "beta").BorrowedBy)
 	require.Equal(t, beta1, m.Entry("acme", "beta").Head)
 	require.DirExists(t, h.mirror("acme", "beta"))
 	require.Zero(t, h.upstream.requestsFor("acme", "alpha"))
@@ -168,6 +181,7 @@ func TestSyncAddsFetchesAndDrops(t *testing.T) {
 	res = h.sync(h.repo("acme", "alpha", t1), h.repo("acme", "beta", t0))
 	require.Equal(t, []string{"acme/alpha", "acme/beta"}, res.Unchanged)
 	require.Nil(t, h.manifest().Entry("acme", "beta").DroppedAt)
+	require.Empty(t, h.manifest().Entry("acme", "beta").BorrowedBy)
 	require.Zero(t, h.upstream.requestsFor("acme", "beta"))
 
 	// No token on the volume, in a mirror's configuration or in the logs.
@@ -300,7 +314,9 @@ func TestSyncRecordsAMirrorTheManifestNeverSaw(t *testing.T) {
 	h.sync(h.repo("acme", "alpha", t0), h.repo("acme", "beta", t0))
 
 	// A sync interrupted between the clone and the manifest leaves a mirror
-	// the manifest does not know; once unselected it is recorded as dropped.
+	// the manifest does not know; once unselected it is recorded as dropped,
+	// and kept while a session directory borrows from it.
+	h.borrow("s1", "acme", "beta")
 	require.NoError(t, (&Manifest{}).Write(h.volume))
 	res := h.sync(h.repo("acme", "alpha", t0))
 	require.Equal(t, []string{"acme/alpha"}, res.Fetched, "a mirror unknown to the manifest is fetched")
@@ -343,10 +359,12 @@ func TestSyncReportsTheRemovedMirror(t *testing.T) {
 	h.upstream.create("acme", "beta")
 	h.upstream.commit("acme", "beta", "README.md", "beta")
 	h.sync(h.repo("acme", "alpha", t0), h.repo("acme", "beta", t0))
+	h.borrow("s1", "acme", "beta")
 	h.sync(h.repo("acme", "alpha", t0))
 	require.NotNil(t, h.manifest().Entry("acme", "beta").DroppedAt)
 
-	// The cleanup removed the dropped mirror: the entry leaves the manifest.
+	// Something else removed the dropped mirror: the entry leaves the
+	// manifest.
 	require.NoError(t, os.RemoveAll(h.mirror("acme", "beta")))
 	res := h.sync(h.repo("acme", "alpha", t0))
 	require.Equal(t, []string{"acme/beta"}, res.Removed)

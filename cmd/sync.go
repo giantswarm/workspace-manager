@@ -30,11 +30,15 @@ func newSyncCmd() *cobra.Command {
 		Use:   "sync",
 		Short: "Mirror a workspace's repositories onto its volume (the sync Job)",
 		Long: `Run one sync of a workspace's volume, as the Job the controller starts per
-cycle: clone the repositories added to the selection as bare mirrors under
-mirrors/<owner>/<name>.git, fetch those pushed to since the last sync, leave
-the others untouched, mark the mirrors of repositories that left the
-selection, and write the manifest (head commits, push times, measured sizes)
-to the volume and, with --result-configmap, as the Job's result.
+cycle: clean up the session directories under sessions/ from the selection's
+cleanup (each Session's last turn as kagent lists it), clone the repositories
+added to the selection as bare mirrors under mirrors/<owner>/<name>.git, fetch
+those pushed to since the last sync, leave the others untouched, mark the
+mirrors of repositories that left the selection and delete the marked ones
+no session directory borrows from any more, and write the manifest (head
+commits, push times, measured sizes, the session directories left) to the
+volume and, with --result-configmap, as the Job's result. A stopped
+selection, a deleted workspace's, touches no mirror.
 
 The selection is the controller's ConfigMap mounted as a file. Each provider
 instance's credential is a directory under --credentials-dir with the files

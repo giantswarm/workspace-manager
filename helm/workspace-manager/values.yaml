@@ -120,10 +120,31 @@ sync:
 
 sessions:
   # -- How long a Session's directory on the workspace volume outlives the
-  # Session's last turn, a Go duration (`720h` is 30 days). Passed to `serve`
-  # as its `sessions-cleanup-after` flag. Accepted, not yet in effect: no
-  # session directory is cleaned up yet, and the manager logs it at start.
+  # Session's last turn, a Go duration (`720h` is 30 days); every turn moves
+  # the date, a Session deleted in kagent loses its directory at the next
+  # sync, and a directory whose Session kagent does not know goes this long
+  # after the sync that first found it. The sync Job cleans up, from kagent's
+  # record of each Session's last turn (`kagent.address`). Passed to `serve`
+  # as its `sessions-cleanup-after` flag.
   cleanupAfter: 720h
+
+kagent:
+  # -- The kagent controller's gRPC API, `grpc://host:port` (in-cluster
+  # h2c) or `grpcs://host[:port]`, which the controller lists every
+  # Session's last turn from (`SessionService/ListSessions` over all
+  # creators) for the session directories' cleanup. Empty cleans up no
+  # session directory, and a deleted workspace keeps its volume. Passed to
+  # `serve` as its `kagent-address` flag.
+  address: ""
+  # -- The audience of the projected ServiceAccount token the manager calls
+  # kagent with, mounted only with `address`.
+  tokenAudience: kagent
+  # -- The namespace kagent's API runs in, which the NetworkPolicy lets the
+  # manager reach with `address`.
+  namespace: kagent
+  # -- The port kagent's API listens on, which the NetworkPolicy lets the
+  # manager reach with `address`.
+  port: 8083
 
 crds:
   # -- Install the `Workspace` CRD (`workspaces.workspace-manager.giantswarm.io`).

@@ -55,6 +55,25 @@ tests:
               - protocol: TCP
                 port: 4317
 
+  - it: opens egress to kagent's API with kagent.address
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        enabled: true
+      kagent:
+        address: grpc://kagent-controller.kagent:8083
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kagent
+            ports:
+              - protocol: TCP
+                port: 8083
+
   - it: scrapes the metrics port with the tenant label
     template: templates/servicemonitor.yaml
     set:

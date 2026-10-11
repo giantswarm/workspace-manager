@@ -48,7 +48,9 @@ type Syncer struct {
 	Git string
 	// Parallel bounds the clones and fetches run at once; 0 is DefaultParallel.
 	Parallel int
-	Log      *slog.Logger
+	// Now is the clock; nil is time.Now.
+	Now func() time.Time
+	Log *slog.Logger
 }
 
 // Result is what a sync did, by repository key.
@@ -60,6 +62,11 @@ type Result struct {
 	Dropped   []string
 	// Removed are manifest entries whose mirror is gone from the volume.
 	Removed []string
+	// Deleted are the dropped mirrors this sync deleted, no session
+	// directory borrowing from them any more.
+	Deleted []string
+	// CleanedUp are the session directories this sync deleted.
+	CleanedUp []string
 }
 
 type action int
@@ -70,11 +77,13 @@ const (
 	actionUnchanged
 )
 
-// Run brings the volume's mirrors to the selection: it clones the added
-// repositories, fetches those whose last push is newer than the manifest's,
-// leaves the others untouched and marks the mirrors of repositories that left
-// the selection. A failed clone or fetch fails the run before the manifest is
-// written, so the previous manifest stays in place.
+// Run cleans up the session directories, then brings the volume's mirrors to
+// the selection: it clones the added repositories, fetches those whose last
+// push is newer than the manifest's, leaves the others untouched, marks the
+// mirrors of repositories that left the selection and deletes the marked ones
+// no session directory borrows from any more. A stopped selection (a deleted
+// workspace) touches no mirror. A failed clone or fetch fails the run before
+// the manifest is written, so the previous manifest stays in place.
 func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 	if err := sel.validate(); err != nil {
 		return nil, err
@@ -87,12 +96,44 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	now := s.now().UTC().Truncate(time.Second)
+	// The session directories go first, so a directory cleaned up borrows
+	// nothing from the mirrors this sync repacks or deletes.
+	sessions, cleaned, err := s.cleanSessions(sel.Cleanup, prev, now)
+	if err != nil {
+		return nil, err
+	}
+	res := &Result{Manifest: &Manifest{SyncedAt: now, Sessions: sessions}, CleanedUp: cleaned}
+	if sel.Stopped {
+		s.log().Info("the workspace's sync is stopped: no mirror is fetched")
+		res.Manifest.Repositories = prev.Repositories
+	} else if err := s.syncMirrors(ctx, g, sel, prev, res); err != nil {
+		return nil, err
+	}
+	if res.Manifest.Repositories, res.Deleted, err = s.removeUnborrowed(res.Manifest.Repositories); err != nil {
+		return nil, err
+	}
+	for _, list := range []*[]string{&res.Added, &res.Fetched, &res.Unchanged, &res.Dropped, &res.Removed, &res.Deleted} {
+		sort.Strings(*list)
+	}
+	if err := res.Manifest.Write(s.Volume); err != nil {
+		return nil, err
+	}
+	s.log().Info("sync done", "added", len(res.Added), "fetched", len(res.Fetched), "unchanged", len(res.Unchanged),
+		"dropped", len(res.Dropped), "removed", len(res.Removed), "mirrorsDeleted", len(res.Deleted),
+		"sessionDirectories", len(res.Manifest.Sessions), "sessionDirectoriesCleanedUp", len(res.CleanedUp))
+	return res, nil
+}
+
+// syncMirrors brings the mirrors to the selection and records them in the
+// result's manifest.
+func (s *Syncer) syncMirrors(ctx context.Context, g *git, sel *Selection, prev *Manifest, res *Result) error {
 	if err := os.MkdirAll(filepath.Join(s.Volume, MirrorsDir), 0o755); err != nil { //nolint:gosec // the mirrors are shared with the sessions
-		return nil, fmt.Errorf("create mirrors directory: %w", err)
+		return fmt.Errorf("create mirrors directory: %w", err)
 	}
 	existing, err := s.listMirrors()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	entries := make([]Entry, len(sel.Repositories))
@@ -119,10 +160,9 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 		})
 	}
 	if err := eg.Wait(); err != nil {
-		return nil, err
+		return err
 	}
 
-	res := &Result{Manifest: &Manifest{SyncedAt: time.Now().UTC().Truncate(time.Second)}}
 	for i, r := range sel.Repositories {
 		switch actions[i] {
 		case actionAdd:
@@ -145,7 +185,7 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 		}
 		e, err := s.dropped(ctx, g, key, prev, res.Manifest.SyncedAt)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		res.Manifest.Repositories = append(res.Manifest.Repositories, e)
 		res.Dropped = append(res.Dropped, key)
@@ -156,15 +196,7 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 			s.log().Info("mirror gone from the volume", "repository", e.Key())
 		}
 	}
-	for _, list := range []*[]string{&res.Added, &res.Fetched, &res.Unchanged, &res.Dropped, &res.Removed} {
-		sort.Strings(*list)
-	}
-	if err := res.Manifest.Write(s.Volume); err != nil {
-		return nil, err
-	}
-	s.log().Info("sync done", "added", len(res.Added), "fetched", len(res.Fetched), "unchanged", len(res.Unchanged),
-		"dropped", len(res.Dropped), "removed", len(res.Removed))
-	return res, nil
+	return nil
 }
 
 func (s *Syncer) apply(ctx context.Context, g *git, a action, r Repository, prevEntry *Entry) (Entry, error) {
@@ -332,11 +364,11 @@ func (s *Syncer) listMirrors() (map[string]bool, error) {
 		for _, repo := range repos {
 			switch {
 			case !repo.IsDir():
-			case strings.HasPrefix(repo.Name(), tmpPrefix):
+			case strings.HasPrefix(repo.Name(), tmpPrefix), strings.HasPrefix(repo.Name(), deletedPrefix):
 				leftover := filepath.Join(root, owner.Name(), repo.Name())
-				s.log().Warn("removing the leftover of an interrupted clone", "path", leftover)
+				s.log().Warn("removing the leftover of an interrupted clone or deletion", "path", leftover)
 				if err := os.RemoveAll(leftover); err != nil {
-					return nil, fmt.Errorf("remove leftover clone: %w", err)
+					return nil, fmt.Errorf("remove leftover mirror: %w", err)
 				}
 			case strings.HasSuffix(repo.Name(), ".git") && !strings.HasPrefix(repo.Name(), "."):
 				out[owner.Name()+"/"+strings.TrimSuffix(repo.Name(), ".git")] = true
@@ -366,6 +398,13 @@ func (s *Syncer) parallel() int {
 		return DefaultParallel
 	}
 	return s.Parallel
+}
+
+func (s *Syncer) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
 }
 
 func (s *Syncer) log() *slog.Logger {

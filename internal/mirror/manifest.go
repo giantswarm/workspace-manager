@@ -20,11 +20,41 @@ const ManifestFile = "manifest.json"
 const ErrorKey = "error"
 
 // Manifest records what the volume holds after a sync: every mirror with its
-// head commit, last-push time and measured size. The next sync compares the
-// selection with it, and the controller sizes a provisioned share from it.
+// head commit, last-push time and measured size, and every session directory
+// with its Session, size and cleanup date. The next sync compares the
+// selection with it, and the controller sizes a provisioned share from it and
+// lists the session directories in the Workspace's status.
 type Manifest struct {
 	SyncedAt     time.Time `json:"syncedAt"`
 	Repositories []Entry   `json:"repositories"`
+	// Sessions are the session directories the sync left on the volume.
+	Sessions []SessionDirectory `json:"sessions,omitempty"`
+}
+
+// SessionDirectory is one directory under sessions/, named by its Session's
+// id.
+type SessionDirectory struct {
+	Session string `json:"session"`
+	// Name and Creator are the Session's, as kagent listed it.
+	Name    string `json:"name,omitempty"`
+	Creator string `json:"creator,omitempty"`
+	// LastTurn is the Session's last turn as kagent listed it; nil before
+	// its first turn and for a Session kagent does not know.
+	LastTurn *time.Time `json:"lastTurn,omitempty"`
+	// Known says kagent listed the Session at this sync: a known Session
+	// missing from a later listing was deleted, and its directory goes at
+	// once.
+	Known bool `json:"known,omitempty"`
+	// FirstSeen is when a sync first found the directory, from which a
+	// directory whose Session kagent does not know is cleaned up.
+	FirstSeen time.Time `json:"firstSeen"`
+	// SizeBytes is the directory's size as measured by this sync.
+	SizeBytes int64 `json:"sizeBytes"`
+	// CleanupAfter is when the directory goes: the cleanup window after the
+	// Session's last turn (its creation before the first), or after
+	// FirstSeen for a Session kagent does not know. Zero when the sync had
+	// no cleanup window.
+	CleanupAfter time.Time `json:"cleanupAfter,omitzero"`
 }
 
 // Entry is one mirror on the volume.
@@ -43,6 +73,9 @@ type Entry struct {
 	// DroppedAt is set once the repository left the selection; the mirror
 	// stays until no session directory borrows from it.
 	DroppedAt *time.Time `json:"droppedAt,omitempty"`
+	// BorrowedBy are the session directories that kept a dropped mirror on
+	// the volume at this sync.
+	BorrowedBy []string `json:"borrowedBy,omitempty"`
 }
 
 // Key identifies the entry on the volume: owner/name.
@@ -86,6 +119,7 @@ func (m *Manifest) Write(volume string) error {
 // JSON renders the manifest with its entries in a stable order.
 func (m *Manifest) JSON() ([]byte, error) {
 	sort.Slice(m.Repositories, func(i, j int) bool { return m.Repositories[i].Key() < m.Repositories[j].Key() })
+	sort.Slice(m.Sessions, func(i, j int) bool { return m.Sessions[i].Session < m.Sessions[j].Session })
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode manifest: %w", err)

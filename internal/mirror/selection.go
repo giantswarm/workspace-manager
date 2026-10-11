@@ -15,7 +15,39 @@ import (
 // Job mounts.
 type Selection struct {
 	Repositories []Repository `json:"repositories"`
+	// Stopped is the selection of a deleted workspace: its sync stopped, so
+	// no mirror is cloned, fetched or dropped, and only the session
+	// directories are cleaned up until the last is gone.
+	Stopped bool `json:"stopped,omitempty"`
+	// Cleanup is the session directories' cleanup; nil deletes no session
+	// directory and only measures them (the controller could not read
+	// kagent's Sessions this cycle, or runs without kagent).
+	Cleanup *Cleanup `json:"cleanup,omitempty"`
 }
+
+// Cleanup is what the session directories' cleanup works from.
+type Cleanup struct {
+	// AfterSeconds is how long a directory outlives its Session's last
+	// turn; a directory whose Session kagent does not know outlives the
+	// sync that first found it as long.
+	AfterSeconds int64 `json:"afterSeconds"`
+	// Sessions are kagent's Sessions on the workspace's volume, by id, the
+	// complete listing: a directory whose Session the previous sync found
+	// listed and this one does not lost its Session, and goes at once.
+	Sessions map[string]Session `json:"sessions,omitempty"`
+}
+
+// Session is a kagent Session as the cleanup reads it.
+type Session struct {
+	Name      string    `json:"name,omitempty"`
+	Creator   string    `json:"creator,omitempty"`
+	CreatedAt time.Time `json:"createdAt,omitzero"`
+	// LastTurn is zero before the Session's first turn.
+	LastTurn time.Time `json:"lastTurn,omitzero"`
+}
+
+// After is the cleanup window.
+func (c *Cleanup) After() time.Duration { return time.Duration(c.AfterSeconds) * time.Second }
 
 // Repository is one selected repository as its provider listed it.
 type Repository struct {
@@ -56,6 +88,12 @@ func ReadSelection(path string) (*Selection, error) {
 }
 
 func (s *Selection) validate() error {
+	if s.Cleanup != nil && s.Cleanup.AfterSeconds <= 0 {
+		return fmt.Errorf("cleanup: afterSeconds must be positive, got %d", s.Cleanup.AfterSeconds)
+	}
+	if s.Stopped && len(s.Repositories) > 0 {
+		return fmt.Errorf("a stopped selection lists no repositories")
+	}
 	seen := make(map[string]bool, len(s.Repositories))
 	for i, r := range s.Repositories {
 		if err := r.validate(); err != nil {
