@@ -916,6 +916,17 @@ func TestLeaderElectionRunsOneController(t *testing.T) {
 	b := New(Config{Dynamic: f.dyn, Core: f.core, Namespace: testNamespace, StorageClass: testClass, Resync: time.Hour,
 		Listings: f.listings, Instances: []provider.Instance{{Name: testProvider, KindName: "stub", Kind: stubKind{}}}, Now: f.clock,
 		LeaderElection: election("replica-b")})
+	// The third holder's conflicts, armed later: the reactor is in place
+	// before any replica renews, since the fake's reactor chain is read
+	// without a lock.
+	var taken atomic.Bool
+	leases := coordinationv1.SchemeGroupVersion.WithResource("leases")
+	f.core.PrependReactor("update", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if taken.Load() {
+			return true, nil, apierrors.NewConflict(coordinationv1.Resource("leases"), DefaultLease, errors.New("another holder"))
+		}
+		return false, nil, nil
+	})
 	ctxA, cancelA := context.WithCancel(ctx)
 	defer cancelA()
 	doneA, doneB := make(chan error, 1), make(chan error, 1)
@@ -942,15 +953,7 @@ func TestLeaderElectionRunsOneController(t *testing.T) {
 
 	// Another holder takes the lease from under the leader, whose renewals
 	// the API server then refuses as conflicts: ErrLeadershipLost. (The
-	// fake checks no resourceVersion, so the conflict is a reactor's.)
-	var taken atomic.Bool
-	leases := coordinationv1.SchemeGroupVersion.WithResource("leases")
-	f.core.PrependReactor("update", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
-		if taken.Load() {
-			return true, nil, apierrors.NewConflict(coordinationv1.Resource("leases"), DefaultLease, errors.New("another holder"))
-		}
-		return false, nil, nil
-	})
+	// fake checks no resourceVersion, so the conflict is the reactor's.)
 	obj, err := f.core.Tracker().Get(leases, testNamespace, DefaultLease)
 	require.NoError(t, err)
 	lease := obj.(*coordinationv1.Lease)
