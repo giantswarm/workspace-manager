@@ -47,6 +47,15 @@ func cleanup(sessions map[string]Session) *Cleanup {
 	return &Cleanup{AfterSeconds: int64(window / time.Second), Sessions: sessions}
 }
 
+func TestTheSyncLaysOutTheSessionsDirectory(t *testing.T) {
+	h := newHarness(t)
+	h.run(t2, &Selection{})
+
+	info, err := os.Stat(filepath.Join(h.volume, SessionsDir))
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
+}
+
 func TestCleanupDeletesAnOldDirectoryAndKeepsANewer(t *testing.T) {
 	h := newHarness(t)
 	old := h.sessionDir("old", 10)

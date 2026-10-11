@@ -24,11 +24,13 @@ const deletedPrefix = ".deleted-"
 // when kagent lists the workspace's Sessions and no longer lists one it
 // listed at the previous sync. Without a cleanup every directory stays.
 func (s *Syncer) cleanSessions(c *Cleanup, prev *Manifest, now time.Time) ([]SessionDirectory, []string, error) {
+	// The sync lays out sessions/: the runtime creates only a Session's own
+	// directory under it and refuses the mount when its parent is missing.
 	root := filepath.Join(s.Volume, SessionsDir)
-	dirs, err := os.ReadDir(root)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, nil
+	if err := os.MkdirAll(root, 0o755); err != nil { //nolint:gosec // the runtime creates the sessions' directories under it
+		return nil, nil, fmt.Errorf("create sessions directory: %w", err)
 	}
+	dirs, err := os.ReadDir(root)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list session directories: %w", err)
 	}

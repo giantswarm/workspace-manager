@@ -365,6 +365,7 @@ volume's size the same way from the providers' reported sizes.
 | Path | Written by | Holds |
 |---|---|---|
 | `mirrors/<owner>/<name>.git` | the sync | a bare mirror of each selected repository (every branch and tag) |
+| `sessions/` | the sync | the session directories; the runtime refuses a Session's mount while it is missing |
 | `sessions/<session>/` | that session | the session's clones, borrowing their objects from the mirrors (git alternates), and its work |
 | `manifest.json` | the sync | what the volume holds: each mirror's head commit, last push time and measured size |
 
