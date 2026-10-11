@@ -188,7 +188,9 @@ spec:
 		list, err = s.List(caller("umbrella-devs"))
 		require.NoError(t, err)
 		require.Empty(t, list)
-		require.ErrorIs(t, s.Delete(caller("umbrella-devs"), "platform"), ErrForbidden)
-		require.NoError(t, s.Delete(caller("acme-devs"), "platform"))
+		_, err = s.Delete(caller("umbrella-devs"), "platform")
+		require.ErrorIs(t, err, ErrForbidden)
+		_, err = s.Delete(caller("acme-devs"), "platform")
+		require.NoError(t, err)
 	})
 }

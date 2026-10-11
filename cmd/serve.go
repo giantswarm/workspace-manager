@@ -204,7 +204,14 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		}
 	}
-	apiCfg := api.Config{Kube: clients, Namespace: o.namespace, Providers: providers, Organizations: orgs}
+	apiCfg := api.Config{Kube: clients, Namespace: o.namespace, Providers: providers, Organizations: orgs, Sizing: ctlCfg.Sizing}
+	if o.managerNamespace != "" {
+		// The provider instances' Secrets: their sync credentials list an
+		// owner's repositories for list_repositories and preview_workspace.
+		apiCfg.Secrets = kube.Secrets{Client: clients.Typed(), Namespace: o.managerNamespace}
+	} else if len(providers) > 0 {
+		log.Warn("list_repositories and preview_workspace are off: they read the providers' Secrets in --manager-namespace (POD_NAMESPACE)")
+	}
 	if len(providers) > 0 {
 		if srvCfg.OAuth == nil {
 			log.Warn("provider sign-ins are off: they need --enable-oauth, which names the person")

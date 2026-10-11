@@ -72,10 +72,12 @@ func TestMembersOnly(t *testing.T) {
 	require.ErrorIs(t, err, ErrForbidden, "a member of acme cannot hand a workspace to umbrella")
 
 	// Delete.
-	require.ErrorIs(t, s.Delete(outsider, "acme-ws"), ErrForbidden)
+	_, err = s.Delete(outsider, "acme-ws")
+	require.ErrorIs(t, err, ErrForbidden)
 	_, err = s.Get(member, "acme-ws")
 	require.NoError(t, err, "still there")
-	require.NoError(t, s.Delete(member, "acme-ws"))
+	_, err = s.Delete(member, "acme-ws")
+	require.NoError(t, err)
 	_, err = s.Get(member, "acme-ws")
 	require.True(t, apierrors.IsNotFound(err), "%v", err)
 }
