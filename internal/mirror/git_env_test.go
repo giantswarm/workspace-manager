@@ -24,8 +24,8 @@ func TestGitEnvironHandsTheRootsToGit(t *testing.T) {
 	// t.Setenv restores both at the end; unset, not empty, for this check.
 	t.Setenv("SSL_CERT_FILE", "")
 	t.Setenv("GIT_SSL_CAINFO", "")
-	os.Unsetenv("SSL_CERT_FILE")
-	os.Unsetenv("GIT_SSL_CAINFO")
+	_ = os.Unsetenv("SSL_CERT_FILE")
+	_ = os.Unsetenv("GIT_SSL_CAINFO")
 	for _, e := range gitEnviron() {
 		assert.False(t, strings.HasPrefix(e, "GIT_SSL_CAINFO="), "no roots named: %s", e)
 	}
