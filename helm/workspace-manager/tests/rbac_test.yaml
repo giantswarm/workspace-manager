@@ -34,14 +34,27 @@ tests:
             - apiGroups: [workspace-manager.giantswarm.io]
               resources: [workspaces/finalizers]
               verbs: [update]
-            # The claim is made, never deleted: it goes with its Workspace.
+            # The claim is made and grown, never deleted: it goes with its
+            # Workspace.
             - apiGroups: [""]
               resources: [persistentvolumeclaims]
-              verbs: [get, create]
-            # The last sync's manifest.
+              verbs: [get, create, patch]
+            # The sync Job's selection and the last sync's manifest.
             - apiGroups: [""]
               resources: [configmaps]
-              verbs: [get]
+              verbs: [get, create, update]
+            # The Job's credentials, server-side applied: never read.
+            - apiGroups: [""]
+              resources: [secrets]
+              verbs: [create, patch]
+            # The sync Jobs: started and watched, never deleted.
+            - apiGroups: [batch]
+              resources: [jobs]
+              verbs: [get, list, watch, create]
+            # The controller's election among the replicas.
+            - apiGroups: [coordination.k8s.io]
+              resources: [leases]
+              verbs: [get, create, update]
       - documentIndex: 1
         equal:
           path: subjects
@@ -50,7 +63,7 @@ tests:
               name: workspace-manager
               namespace: agent-platform
 
-  - it: lets the manager read the PersistentVolumes, and nothing else cluster-wide
+  - it: lets the manager read the PersistentVolumes and the StorageClass, and nothing else cluster-wide
     template: templates/rbac.yaml
     asserts:
       - hasDocuments:
@@ -64,6 +77,9 @@ tests:
           value:
             - apiGroups: [""]
               resources: [persistentvolumes]
+              verbs: [get]
+            - apiGroups: [storage.k8s.io]
+              resources: [storageclasses]
               verbs: [get]
       - documentIndex: 3
         equal:
@@ -93,8 +109,10 @@ tests:
           path: subjects[0].kind
           value: ServiceAccount
 
-  # The claim's verbs are pinned above: get and create, never delete.
-  - it: grants no right on Jobs
+  # The verbs are pinned above; what the manager owns it never deletes (a
+  # claim, a Job: they go with their Workspace) and what it writes for the
+  # Job it never reads back (the credentials Secret).
+  - it: deletes nothing and reads no Secret
     documentSelector:
       path: kind
       value: Role
@@ -103,7 +121,13 @@ tests:
       - notContains:
           path: rules
           content:
-            resources: [jobs]
+            verbs: [delete]
+          any: true
+      - notContains:
+          path: rules
+          content:
+            resources: [secrets]
+            verbs: [get]
           any: true
 
   - it: renders nothing without rbac.create

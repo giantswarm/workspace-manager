@@ -471,7 +471,7 @@
             "properties": {
                 "create": {
                     "type": "boolean",
-                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace` (the manager writes the Workspaces), and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). No person or group is bound to anything."
+                    "description": "Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace` (the manager writes the Workspaces, their volume claims, the sync Jobs and their input, and the controller's election Lease), its ClusterRole (it reads PersistentVolumes and the StorageClass), and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). No person or group is bound to anything."
                 }
             }
         },
@@ -658,16 +658,24 @@
                                 "string",
                                 "number"
                             ],
-                            "description": "Multiplier of the measured size, at least 1: a number or a string (`\"1.5\"`). Passed to `serve` as its `sizing-factor` flag.",
+                            "description": "What a repository not yet mirrored counts: this multiplier, at least 1, of the size its provider reports (a number or a string, `\"1.5\"`). Passed to `serve` as its `sizing-factor` flag.",
                             "pattern": "^[0-9]+(\\.[0-9]+)?$"
                         },
                         "headroom": {
                             "type": "string",
-                            "description": "Added to the multiplied size, a Kubernetes quantity; a Workspace's larger `spec.sizing.headroom` replaces it. Passed to `serve` as its `sizing-headroom` flag."
+                            "description": "The least headroom over the need, a Kubernetes quantity. Passed to `serve` as its `sizing-headroom` flag."
+                        },
+                        "headroomShare": {
+                            "type": [
+                                "string",
+                                "number"
+                            ],
+                            "description": "The headroom as a share of the need, `0.5` for half of it, the larger of it and `headroom` applying (a number or a string). Passed to `serve` as its `sizing-headroom-share` flag.",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?$"
                         },
                         "maxSize": {
                             "type": "string",
-                            "description": "Ceiling of the size, a Kubernetes quantity, which wins over a Workspace's minimum. Empty sets none. Passed to `serve` as its `sizing-max-size` flag."
+                            "description": "Ceiling of the size, a Kubernetes quantity: a sync cycle that would pass it fails, naming the size it needs, and keeps the mirrors it has. Empty sets none. Passed to `serve` as its `sizing-max-size` flag."
                         }
                     }
                 },
@@ -686,7 +694,72 @@
             "properties": {
                 "cycle": {
                     "type": "string",
-                    "description": "How often the controller reconciles every Workspace without an event, a Go duration (`10m`, `1h`): a claim deleted out from under a Workspace is made again by then. Each Workspace's own `spec.sync` (nightly, weekly or custom) says when its mirrors are fetched. Passed to `serve` as its `sync-cycle` flag."
+                    "description": "How often the controller reconciles every Workspace without an event, and how long after a failed sync cycle it tries again, a Go duration (`10m`, `1h`): a claim deleted out from under a Workspace is made again by then. Each Workspace's own `spec.sync` (nightly, weekly or custom) says when its mirrors are fetched. Passed to `serve` as its `sync-cycle` flag."
+                },
+                "job": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "activeDeadlineSeconds": {
+                            "type": "integer",
+                            "description": "How long a sync may run before it fails, in seconds: two hours."
+                        },
+                        "parallel": {
+                            "type": "integer",
+                            "description": "Clones and fetches run at once by one sync."
+                        },
+                        "podAnnotations": {
+                            "type": "object",
+                            "description": "Annotations on the sync pod.",
+                            "additionalProperties": true
+                        },
+                        "podLabels": {
+                            "type": "object",
+                            "description": "Labels on the sync pod, beside the chart's.",
+                            "additionalProperties": true
+                        },
+                        "resources": {
+                            "type": "object",
+                            "description": "The sync container's resources: git clones and repacks in memory and under `/tmp`, an emptyDir.",
+                            "additionalProperties": false,
+                            "properties": {
+                                "limits": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "cpu": {
+                                            "type": "string"
+                                        },
+                                        "ephemeral-storage": {
+                                            "type": "string"
+                                        },
+                                        "memory": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "requests": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "cpu": {
+                                            "type": "string"
+                                        },
+                                        "ephemeral-storage": {
+                                            "type": "string"
+                                        },
+                                        "memory": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "ttlSecondsAfterFinished": {
+                            "type": "integer",
+                            "description": "How long a finished Job and its pod stay for inspection, in seconds: a day. The controller reads the result from the manifest ConfigMap, so a Job gone earlier still counts."
+                        }
+                    }
                 }
             }
         },

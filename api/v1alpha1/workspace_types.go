@@ -210,23 +210,51 @@ const (
 	SyncNoChange SyncResult = "NoChange"
 )
 
+// SyncTrigger is what started a sync cycle.
+// +kubebuilder:validation:Enum=schedule;change;request;retry
+type SyncTrigger string
+
+const (
+	// TriggerSchedule: the workspace's sync cycle came due.
+	TriggerSchedule SyncTrigger = "schedule"
+	// TriggerChange: the workspace's spec changed, or its volume was claimed
+	// anew.
+	TriggerChange SyncTrigger = "change"
+	// TriggerRequest: sync_workspace asked for it.
+	TriggerRequest SyncTrigger = "request"
+	// TriggerRetry: the previous cycle failed.
+	TriggerRetry SyncTrigger = "retry"
+)
+
 // WorkspaceStatus is what the workspace-manager observed.
 type WorkspaceStatus struct {
 	// Conditions are the workspace's conditions: VolumeClaimed (the volume is
 	// claimed from the installation's StorageClass; False names the missing
-	// class), Ready and Synced.
+	// class) and Synced (the last sync cycle's outcome; Unknown while one
+	// runs).
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// ObservedGeneration is the spec generation the status describes.
+	// ObservedGeneration is the spec generation the last sync cycle started
+	// for.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// LastSync is the last sync's time and result.
+	// LastSync is the last sync cycle's time and result.
 	// +optional
 	LastSync *LastSync `json:"lastSync,omitempty"`
+
+	// NextSync is when the schedule starts the next cycle, computed from the
+	// last one; absent for a custom schedule without a day. A change of the
+	// workspace and sync_workspace start one before.
+	// +optional
+	NextSync *metav1.Time `json:"nextSync,omitempty"`
+
+	// ActiveSync is the sync Job running now.
+	// +optional
+	ActiveSync *ActiveSync `json:"activeSync,omitempty"`
 
 	// Repositories are the repositories the last sync resolved, as
 	// `<owner>/<name>`.
@@ -258,15 +286,32 @@ type WorkspaceStatus struct {
 	Sessions []SessionDirectory `json:"sessions,omitempty"`
 }
 
-// LastSync is a sync's outcome.
+// LastSync is a sync cycle's outcome.
 type LastSync struct {
-	// Time the sync ended.
+	// Time the cycle ended.
 	Time metav1.Time `json:"time"`
-	// Result of the sync.
+	// Result of the cycle.
 	Result SyncResult `json:"result"`
-	// Message says why a sync failed.
+	// Trigger is what started the cycle.
+	// +optional
+	Trigger SyncTrigger `json:"trigger,omitempty"`
+	// Job is the sync Job the cycle ran, empty for a cycle that ran none.
+	// +optional
+	Job string `json:"job,omitempty"`
+	// Message says why a cycle failed.
 	// +optional
 	Message string `json:"message,omitempty"`
+}
+
+// ActiveSync is a running sync Job.
+type ActiveSync struct {
+	// Job is the sync Job's name, in the workspace's namespace.
+	Job string `json:"job"`
+	// StartedAt is when the controller started it.
+	StartedAt metav1.Time `json:"startedAt"`
+	// Trigger is what started the cycle.
+	// +optional
+	Trigger SyncTrigger `json:"trigger,omitempty"`
 }
 
 // VolumeRef is the volume as its CSI driver knows it.

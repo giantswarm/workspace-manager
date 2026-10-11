@@ -59,10 +59,14 @@ type Workspace struct {
 	// Deleting is true once the workspace is being deleted: no new Session
 	// starts on it.
 	Deleting bool `json:"deleting,omitempty"`
-	// LastSync is the last sync's time and result; NextSync the next
-	// scheduled one.
-	LastSync *LastSync `json:"lastSync,omitempty"`
-	NextSync time.Time `json:"nextSync,omitzero"`
+	// LastSync is the last sync cycle's time and result; NextSync when the
+	// schedule starts the next one, the time the controller's timer is set
+	// for; ActiveSync the sync Job running now; SyncRequest a sync_workspace
+	// request the controller has not taken up yet.
+	LastSync    *LastSync    `json:"lastSync,omitempty"`
+	NextSync    time.Time    `json:"nextSync,omitzero"`
+	ActiveSync  *ActiveSync  `json:"activeSync,omitempty"`
+	SyncRequest *SyncRequest `json:"syncRequest,omitempty"`
 	// Repositories is the number of repositories the last sync resolved.
 	Repositories int `json:"repositories"`
 	// Volume is the workspace's volume, by its claim and CSI handle once
@@ -77,11 +81,39 @@ type Workspace struct {
 	Conditions []Condition `json:"conditions,omitempty"`
 }
 
-// LastSync is a sync's outcome.
+// LastSync is a sync cycle's outcome.
 type LastSync struct {
-	Time    time.Time `json:"time"`
-	Result  string    `json:"result"`
-	Message string    `json:"message,omitempty"`
+	Time   time.Time `json:"time"`
+	Result string    `json:"result"`
+	// Trigger is what started the cycle: schedule, change, request or retry.
+	Trigger string `json:"trigger,omitempty"`
+	// Job is the sync Job the cycle ran; empty for a cycle that ran none.
+	Job     string `json:"job,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// ActiveSync is the sync Job running now.
+type ActiveSync struct {
+	Job       string    `json:"job"`
+	StartedAt time.Time `json:"startedAt"`
+	Trigger   string    `json:"trigger,omitempty"`
+}
+
+// SyncRequest is a sync requested through sync_workspace, until the
+// controller starts its cycle.
+type SyncRequest struct {
+	RequestedAt time.Time `json:"requestedAt"`
+	RequestedBy string    `json:"requestedBy,omitempty"`
+}
+
+// SyncResult is sync_workspace's result.
+type SyncResult struct {
+	Workspace   string    `json:"workspace"`
+	RequestedAt time.Time `json:"requestedAt"`
+	RequestedBy string    `json:"requestedBy,omitempty"`
+	// ActiveSync is the sync Job running at the request, after which the
+	// requested cycle starts.
+	ActiveSync *ActiveSync `json:"activeSync,omitempty"`
 }
 
 // Volume is the workspace's volume.
@@ -325,6 +357,32 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		}
 		return mcp.NewToolResultStructured(res, text), nil
 	})
+
+	s.AddTool(mcp.NewTool("sync_workspace",
+		mcp.WithDescription("Sync a workspace of your Organization now, ahead of its cycle: the controller lists its sources, fetches what changed since the last sync and grows its volume where its StorageClass provisions a size; nothing changed costs no fetch. A request made while a sync runs is served after it. get_workspace shows the request, the running sync Job and the outcome."),
+		nameArg,
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithOutputSchema[SyncResult](),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name, err := req.RequireString("workspace")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		ws, err := t.store.RequestSync(ctx, name, t.now())
+		if err != nil {
+			return toolError("sync workspace", err), nil
+		}
+		res := SyncResult{Workspace: name, RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy], ActiveSync: activeSyncOf(ws.Status.ActiveSync)}
+		res.RequestedAt, _ = time.Parse(time.RFC3339, ws.Annotations[v1alpha1.AnnotationSyncRequested])
+		slog.InfoContext(ctx, "workspace sync requested", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization)
+		text := fmt.Sprintf("Sync of workspace %s requested: the controller starts its cycle now.", name)
+		if res.ActiveSync != nil {
+			text = fmt.Sprintf("Sync of workspace %s requested: sync job %s runs, and the requested cycle starts after it.", name, res.ActiveSync.Job)
+		}
+		return mcp.NewToolResultStructured(res, text), nil
+	})
 }
 
 // view is a workspace as the tools return it, its volume's CSI handle read
@@ -347,11 +405,21 @@ func (t *workspaceTools) view(ctx context.Context, ws *v1alpha1.Workspace) (Work
 	if w.Sources == nil {
 		w.Sources = []v1alpha1.Source{}
 	}
-	if !w.Deleting {
+	// The controller's own timer, set from the last cycle's end; before the
+	// first cycle, the schedule's next time from now.
+	switch {
+	case w.Deleting:
+	case ws.Status.NextSync != nil:
+		w.NextSync = ws.Status.NextSync.UTC()
+	default:
 		w.NextSync = workspace.NextSync(ws.Spec.Sync, t.now())
 	}
 	if ls := ws.Status.LastSync; ls != nil {
-		w.LastSync = &LastSync{Time: ls.Time.UTC(), Result: string(ls.Result), Message: ls.Message}
+		w.LastSync = &LastSync{Time: ls.Time.UTC(), Result: string(ls.Result), Trigger: string(ls.Trigger), Job: ls.Job, Message: ls.Message}
+	}
+	w.ActiveSync = activeSyncOf(ws.Status.ActiveSync)
+	if at, err := time.Parse(time.RFC3339, ws.Annotations[v1alpha1.AnnotationSyncRequested]); err == nil {
+		w.SyncRequest = &SyncRequest{RequestedAt: at.UTC(), RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy]}
 	}
 	for _, c := range ws.Status.Conditions {
 		w.Conditions = append(w.Conditions, Condition{Type: c.Type, Status: string(c.Status), Reason: c.Reason, Message: c.Message})
@@ -428,6 +496,13 @@ func (s *Sizing) spec() (*v1alpha1.Sizing, error) {
 		return nil, nil
 	}
 	return out, nil
+}
+
+func activeSyncOf(a *v1alpha1.ActiveSync) *ActiveSync {
+	if a == nil {
+		return nil
+	}
+	return &ActiveSync{Job: a.Job, StartedAt: a.StartedAt.UTC(), Trigger: string(a.Trigger)}
 }
 
 func sizingOf(s *v1alpha1.Sizing) *Sizing {

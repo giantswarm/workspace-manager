@@ -1,0 +1,144 @@
+# The sync Job template the controller makes every cycle's Job from: this
+# image as the Job's own account, hardened like the manager, one attempt, a
+# deadline and a TTL; never the Deployment's selector labels.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: sync job template
+templates:
+  - templates/sync-job.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+chart:
+  appVersion: 1.2.3
+tests:
+  - it: renders a Job the controller completes per cycle
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: workspace-manager-sync-job
+      - equal:
+          path: metadata.namespace
+          value: agent-platform
+      - isNotEmpty:
+          path: data["job.yaml"]
+
+  # helm-unittest sees the ConfigMap, not the Job inside: the Job is parsed
+  # from its data and checked field by field.
+  - it: runs this image once as the sync account, hardened, with the deadline and the TTL
+    asserts:
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "kind: Job"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "backoffLimit: 0"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "activeDeadlineSeconds: 7200"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "ttlSecondsAfterFinished: 86400"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "serviceAccountName: workspace-manager-sync"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "restartPolicy: Never"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "- name: sync\n"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: 'image: "gsoci.azurecr.io/giantswarm/workspace-manager:1.2.3"'
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "- --parallel=4"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "readOnlyRootFilesystem: true"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "runAsNonRoot: true"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "fsGroup: 1000"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "name: HOME\n\\s+value: /tmp"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "ephemeral-storage: 4Gi"
+
+  - it: labels the pod apart from the Deployment's selector
+    asserts:
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: 'app.kubernetes.io/name: "workspace-manager-sync"'
+      - notMatchRegex:
+          path: data["job.yaml"]
+          pattern: 'app.kubernetes.io/name: "workspace-manager"\n'
+
+  # The Job runs in the workspaces' namespace, where the manager's CA Secret
+  # is out of reach: the controller hands the sync the roots in its input,
+  # and the manager's environment stays the manager's.
+  - it: mounts nothing of the release namespace with a private CA configured
+    set:
+      oauth:
+        enabled: true
+        baseURL: https://wm.example.com
+        existingSecret: oauth
+        dex:
+          issuerURL: https://dex.example.com
+          clientID: platform-client
+          caSecret:
+            name: dex-ca
+            key: ca.pem
+      extraEnv:
+        - name: SSL_CERT_FILE
+          value: /etc/workspace-manager/idp-ca/ca.pem
+    asserts:
+      - notMatchRegex:
+          path: data["job.yaml"]
+          pattern: "idp-ca"
+      - notMatchRegex:
+          path: data["job.yaml"]
+          pattern: "dex-ca"
+      - notMatchRegex:
+          path: data["job.yaml"]
+          pattern: "SSL_CERT_FILE"
+
+  - it: takes the Job's own values
+    set:
+      sync:
+        job:
+          activeDeadlineSeconds: 600
+          ttlSecondsAfterFinished: 3600
+          parallel: 8
+          podLabels:
+            team: bumblebee
+          podAnnotations:
+            sidecar.istio.io/inject: "false"
+      logging:
+        verbose: true
+    asserts:
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "activeDeadlineSeconds: 600"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "ttlSecondsAfterFinished: 3600"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "- --parallel=8"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "- --verbose"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: "team: bumblebee"
+      - matchRegex:
+          path: data["job.yaml"]
+          pattern: 'sidecar.istio.io/inject: "false"'

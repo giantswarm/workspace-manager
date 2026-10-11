@@ -250,11 +250,34 @@ spec:
           status:
             description: WorkspaceStatus is what the workspace-manager observed.
             properties:
+              activeSync:
+                description: ActiveSync is the sync Job running now.
+                properties:
+                  job:
+                    description: Job is the sync Job's name, in the workspace's namespace.
+                    type: string
+                  startedAt:
+                    description: StartedAt is when the controller started it.
+                    format: date-time
+                    type: string
+                  trigger:
+                    description: Trigger is what started the cycle.
+                    enum:
+                    - schedule
+                    - change
+                    - request
+                    - retry
+                    type: string
+                required:
+                - job
+                - startedAt
+                type: object
               conditions:
                 description: |-
                   Conditions are the workspace's conditions: VolumeClaimed (the volume is
                   claimed from the installation's StorageClass; False names the missing
-                  class), Ready and Synced.
+                  class) and Synced (the last sync cycle's outcome; Unknown while one
+                  runs).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -314,21 +337,33 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               lastSync:
-                description: LastSync is the last sync's time and result.
+                description: LastSync is the last sync cycle's time and result.
                 properties:
+                  job:
+                    description: Job is the sync Job the cycle ran, empty for a cycle
+                      that ran none.
+                    type: string
                   message:
-                    description: Message says why a sync failed.
+                    description: Message says why a cycle failed.
                     type: string
                   result:
-                    description: Result of the sync.
+                    description: Result of the cycle.
                     enum:
                     - Succeeded
                     - Failed
                     - NoChange
                     type: string
                   time:
-                    description: Time the sync ended.
+                    description: Time the cycle ended.
                     format: date-time
+                    type: string
+                  trigger:
+                    description: Trigger is what started the cycle.
+                    enum:
+                    - schedule
+                    - change
+                    - request
+                    - retry
                     type: string
                 required:
                 - result
@@ -346,9 +381,17 @@ spec:
                   need.
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
+              nextSync:
+                description: |-
+                  NextSync is when the schedule starts the next cycle, computed from the
+                  last one; absent for a custom schedule without a day. A change of the
+                  workspace and sync_workspace start one before.
+                format: date-time
+                type: string
               observedGeneration:
-                description: ObservedGeneration is the spec generation the status
-                  describes.
+                description: |-
+                  ObservedGeneration is the spec generation the last sync cycle started
+                  for.
                 format: int64
                 type: integer
               repositories:

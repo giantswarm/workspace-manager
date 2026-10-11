@@ -13,7 +13,6 @@ spec:
       {{- include "workspace-manager.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- if or .Values.podAnnotations .Values.providers }}
       annotations:
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -22,7 +21,12 @@ spec:
         {{- /* The server reads the providers at start only. */}}
         checksum/providers: {{ include (print $.Template.BasePath "/providers-configmap.yaml") . | sha256sum }}
         {{- end }}
-      {{- end }}
+        {{- /*
+        The controller reads the sync Job template at start only: a change
+        of the Job's own values rolls the pod; the template's other inputs
+        (image, security contexts, scheduling) are this pod's too.
+        */}}
+        checksum/sync-job: {{ toYaml .Values.sync.job | sha256sum }}
       labels:
         {{- include "workspace-manager.labels" . | nindent 8 }}
         {{- with .Values.podLabels }}
@@ -59,9 +63,11 @@ spec:
             - --sessions-cleanup-after={{ .Values.sessions.cleanupAfter }}
             - --sizing-factor={{ .Values.storage.sizing.factor }}
             - --sizing-headroom={{ .Values.storage.sizing.headroom }}
+            - --sizing-headroom-share={{ .Values.storage.sizing.headroomShare }}
             {{- with .Values.storage.sizing.maxSize }}
             - --sizing-max-size={{ . }}
             {{- end }}
+            - --sync-job-template=/etc/workspace-manager/sync-job/job.yaml
             - --mcp-path={{ .Values.mcp.path }}
             {{- range $org, $o := .Values.organizations }}
             - --organization={{ $org }}={{ join "," $o.memberGroups }}
@@ -122,6 +128,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- /* This replica's name in the controller's leader election. */}}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- if .Values.oauth.enabled }}
             - name: DEX_CLIENT_SECRET
               valueFrom:
@@ -216,6 +227,9 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: sync-job
+              mountPath: /etc/workspace-manager/sync-job
+              readOnly: true
             {{- if .Values.providers }}
             - name: providers
               mountPath: /etc/workspace-manager/providers
@@ -229,6 +243,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: sync-job
+          configMap:
+            name: {{ include "workspace-manager.fullname" . }}-sync-job
         {{- if .Values.providers }}
         - name: providers
           configMap:

@@ -1,0 +1,94 @@
+{{- /*
+The Job every sync cycle's Job is made from: the pod's shape (the image,
+the Job's own ServiceAccount from sync-rbac.yaml, the security contexts,
+the resources, the deadline and the TTL). The controller reads it at start
+(`--sync-job-template`) and adds per cycle what only it knows: the Job's
+name and owner, the workspace's volume, the selection, the credentials and
+the roots. The pod carries no selector label of the Deployment: the
+manager's NetworkPolicy and Service never match a sync pod. It mounts
+nothing of the release namespace, which a Job in `workspaces.namespace`
+cannot reach: a provider behind a private CA (a GitHub Enterprise Server) is
+fetched with the roots the manager verifies with, which the controller
+hands every sync Job in its input (`--sync-ca-file`, the manager's own
+SSL_CERT_FILE).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "workspace-manager.fullname" . }}-sync-job
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "workspace-manager.labels" . | nindent 4 }}
+data:
+  job.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      labels:
+        helm.sh/chart: {{ include "workspace-manager.chart" . | quote }}
+        app.kubernetes.io/name: {{ printf "%s-sync" (include "workspace-manager.name" .) | quote }}
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+        app.kubernetes.io/component: sync
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+        app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+        application.giantswarm.io/team: {{ index .Chart.Annotations "io.giantswarm.application.team" | quote }}
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.sync.job.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ .Values.sync.job.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ printf "%s-sync" (include "workspace-manager.name" .) | quote }}
+            app.kubernetes.io/instance: {{ .Release.Name | quote }}
+            app.kubernetes.io/component: sync
+          {{- with .Values.sync.job.podLabels }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.sync.job.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "workspace-manager.fullname" . }}-sync
+          {{- /* The sync writes its result ConfigMap as its account. */}}
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: sync
+              image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              args:
+                - sync
+                - --parallel={{ .Values.sync.job.parallel }}
+                {{- if .Values.logging.verbose }}
+                - --verbose
+                {{- end }}
+              env:
+                {{- /* git writes its temporary files under HOME; /tmp is the one writable path. */}}
+                - name: HOME
+                  value: /tmp
+              resources:
+                {{- toYaml .Values.sync.job.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

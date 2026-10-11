@@ -182,17 +182,29 @@ caller, `invalid workspace` with the API server's or the manager's reason
 | `create_workspace` | `name`, `organization`, `sources`, `sync` (default nightly), `sizing` (`headroom`, `minimum` as quantities) | the view |
 | `update_workspace` | `name`, `sources` (replaced), `sync` and `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
 | `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume |
+| `sync_workspace` | `workspace` | `workspace`, `requestedAt`, `requestedBy`; `activeSync` when a sync Job runs at the request, after which the requested cycle starts |
 | `list_repositories` | `organization` (a member's), `provider`, `owner`, `search` (name, ignoring case), `languages` (any of), `topics` (any of), `archived` and `fork` (`true` only those, `false` none, unset both), `page`, `pageSize` (50, at most 200) | `total` matching, `ownerTotal`, `page`, `pageSize`, `repositories` (`name`, `language`, `topics`, `archived`, `fork`, `lastPush`, `sizeKiB`), and every `languages` and `topics` value of the owner for the picker's filters |
 | `preview_workspace` | `workspace` (an existing one), or a draft's `organization`, `sources` and `sizing`; `search` (`owner/name`), `page`, `pageSize` | `total` selected now, `excluded`, `skippedArchived` and `skippedForks` (what a selector matched and those rules left out), `providerSizeKiB`, `estimatedVolumeSize`, `matching` the search, and the page's `repositories` (`provider`, `repository`, `language`, `topics`, `lastPush`, `sizeKiB`, `why`: `name`, `language <l>`, `topic <t>`) |
 
 The view of a workspace: `name`, `organization`, `sources`, `sync`,
 `sizing`, `resourceVersion`, `createdAt`, `deleting`, `lastSync` (`time`,
-`result`, `message`), `nextSync`, the number of `repositories` and
-`sessions`, `volume` (`claimName`, and the CSI `driver` and `handle` read from
-the bound PersistentVolume, which a Session's volume reference names; else
-`pending` says why), `neededSize`, `volumeSize` and the `conditions`.
-`nextSync` is the next scheduled sync, in UTC: nightly at 03:00, weekly on
-Sunday at 03:00, custom on its weekdays at its hour.
+`result`, `trigger`, `job`, `message`), `nextSync`, `activeSync` (the sync
+Job running now: `job`, `startedAt`, `trigger`), `syncRequest` (a
+`sync_workspace` request the controller has not taken up yet: `requestedAt`,
+`requestedBy`), the number of `repositories` and `sessions`, `volume`
+(`claimName`, and the CSI `driver` and `handle` read from the bound
+PersistentVolume, which a Session's volume reference names; else `pending`
+says why), `neededSize`, `volumeSize` and the `conditions`. `nextSync` is
+the time the controller's timer is set for, `status.nextSync`: the schedule's
+next time after the last cycle, in UTC (nightly at 03:00, weekly on Sunday at
+03:00, custom on its weekdays at its hour), or the retry of a failed cycle;
+before the first cycle, the schedule's next time from now.
+
+`sync_workspace` asks for a cycle now, ahead of the schedule: it records the
+request and the caller as annotations on the Workspace
+(`workspace-manager.giantswarm.io/sync-requested`, `-by`), which the
+controller serves and removes. A request made while a sync Job runs is served
+after it; nothing changed since the last sync costs no fetch.
 
 `list_repositories` and `preview_workspace` read the owner's listing with the
 provider instance's own sync credential (on GitHub the `-agents` App's
@@ -204,28 +216,98 @@ Session's start. The preview selects as the sync does: named repositories
 count even when archived or a fork, the filters' matches unless archived or
 forks (unless included), exclusions over everything; its
 `estimatedVolumeSize` is the size a new volume is claimed with for the
-providers' reported sizes, where the StorageClass provisions one.
+providers' reported sizes (the sizing rule below, nothing mirrored yet),
+where the StorageClass provisions one.
 
 `delete_workspace` deletes the Workspace: `authorize_workspace` refuses it
 from then on, so no new Session starts on it, and its volume claim goes with
 it by its owner reference once no running Session mounts it.
 
+## The sync cycle
+
+The controller (`internal/controller`, part of `serve`) watches the
+Workspaces of the workspaces' namespace and runs each one's sync cycle. One
+replica runs it, elected through the Lease `workspace-manager-controller` in
+that namespace (`--leader-election`, on by default; the replica's name is
+`--leader-election-identity`, the chart's `POD_NAME`); a replica that loses
+the lease exits and competes again. A cycle starts, in this order of
+precedence, for a `sync_workspace` request (trigger `request`), a changed
+spec or a first sync (`change`), a volume claimed anew (`change`: every
+repository is cloned again), a retry of a failed cycle once `--sync-cycle`
+(the chart's `sync.cycle`, 10m) has passed (`retry`), or the schedule come
+due (`schedule`). Nothing else wakes a cycle: every Workspace is reconciled
+every `--sync-cycle` besides, which only re-makes a claim deleted out from
+under it.
+
+A cycle lists each source's owner once with the provider instance's own sync
+credential (one listing per owner within a minute, shared with the pickers),
+compares the selection with the last sync's manifest, and sizes and claims
+or grows the volume (below). **The no-op check:** a selection equal to the
+manifest's live entries, none pushed to since and no default branch moved,
+is recorded as `NoChange` and starts no Job: the listing is the cycle's whole
+cost, and no mirror's origin is contacted. Otherwise the controller writes
+the selection (the ConfigMap `workspace-<name>-selection`: per repository
+its `pushedAt` as the provider lists it, which the sync compares with the
+manifest's to fetch only what moved), the credentials (the Secret
+`workspace-<name>-sync-credentials`, server-side applied, one entry per
+provider and owner, emptied once the Job ended; the manager never reads a
+Secret of the namespace) and starts the Job `workspace-<name>-sync-<id>`
+from the chart's template (the ConfigMap `<fullname>-sync-job`, passed as
+`--sync-job-template`: this image as the Job's own ServiceAccount
+`<fullname>-sync`, the pod and container security contexts, resources,
+`activeDeadlineSeconds` and `ttlSecondsAfterFinished`, the chart's
+`sync.job`); everything is owned by the Workspace and goes with it. The
+Job's end wakes the controller: its manifest (the ConfigMap
+`workspace-<name>-manifest`, the Job's result) is the cycle's outcome, so a
+Job gone before its end was seen (its TTL, a restart) still counts by its
+manifest; a failed Job leaves the previous manifest and its error beside it,
+which the status carries.
+
+The status records it all, and nothing else writes it: `lastSync` (`time`,
+`result` `Succeeded`, `NoChange` or `Failed`, `trigger`, `job`, `message`),
+`activeSync` while a Job runs, `nextSync`, `repositories`, `neededSize`,
+`volumeSize`, and the conditions `VolumeClaimed` and `Synced` (`True` with
+reason `Synced` or `NoChange`; `Unknown` with `Syncing`; `False` with
+`ListingFailed`, `SyncFailed`, `SizeCeiling` or `VolumeMissing`). A cycle
+that failed before its Job (the listing, the sizing, the claim) is tried
+again after `--sync-cycle`; a request or a change starts one sooner.
+
 ## The workspace's volume and the sync Job
 
 Every workspace has one read-write-many volume, shared by the sync and every
-session on the workspace. The controller (`internal/controller`, part of
-`serve`) claims it as `workspace-<name>` in the workspaces' namespace from the
-installation's StorageClass (`--storage-class`, the chart's
-`storage.storageClassName`): access mode `ReadWriteMany`, owned by the
-Workspace so it goes with it, requesting the provisioned size the status
-reports, else `spec.sizing.minimum`, else a nominal 1Gi (a class that
-provisions no size, EFS or an NFS export, ignores it). The class must keep
-POSIX semantics (file modes, symbolic links) for git, which a cluster's
+session on the workspace. The controller claims it as `workspace-<name>` in
+the workspaces' namespace from the installation's StorageClass
+(`--storage-class`, the chart's `storage.storageClassName`): access mode
+`ReadWriteMany`, owned by the Workspace so it goes with it. The class must
+keep POSIX semantics (file modes, symbolic links) for git, which a cluster's
 default class rarely does, so there is no fall-back to it: without a class
 nothing is claimed and the Workspace's `VolumeClaimed` condition is `False`
 with reason `StorageClassMissing`, naming the flag and the chart value. The
 status names the claim (`status.volume.claimName`); the condition is `True`
 with reason `Claimed` once it exists.
+
+**Sizing.** A class that provisions a size and allows expansion
+(`allowVolumeExpansion`: Azure Files, an NFS server on block storage) is
+sized by the rule below and grown; a class that does not (EFS, an NFS
+export) is elastic: the claim requests a nominal 1Gi and nothing is sized.
+The flags are the chart's `storage.sizing`.
+
+```
+need     = Σ measured size of the mirrors the manifest records
+         + Σ factor × reported size of each selected repository not yet mirrored   (--sizing-factor, 1.5)
+         + Σ size of the live session directories
+headroom = max(--sizing-headroom (4Gi), --sizing-headroom-share (0.5) × need, spec.sizing.headroom)
+size     = max(need + headroom, spec.sizing.minimum), rounded up to the GiB
+```
+
+A new claim requests `size`; before a Job that adds repositories the claim
+is grown to it, so the clones have room, and after a Job it is grown to what
+the measured mirrors need; a claim is never shrunk, since the volume holds
+live session directories. `--sizing-max-size` (empty by default) is the
+installation's ceiling: a cycle that would pass it fails with reason
+`SizeCeiling`, naming the size it needs, and keeps the mirrors it has; a
+Workspace's minimum never passes it. `preview_workspace` estimates a new
+volume's size the same way from the providers' reported sizes.
 
 | Path | Written by | Holds |
 |---|---|---|
@@ -268,8 +350,10 @@ volume mounted at `--volume`:
   ServiceAccount `<fullname>-sync` in the workspaces' namespace, allowed to
   write it. The controller sizes a provisioned share from the measured sizes.
 - **Fails closed:** a clone or fetch error fails the Job before the manifest
-  is written, so the previous manifest stays; an interrupted clone leaves
-  only a temporary directory, which the next sync removes.
+  is written, so the previous manifest stays and the error goes beside it
+  (the ConfigMap's `error` key, the Workspace's `Synced` message); an
+  interrupted clone leaves only a temporary directory, which the next sync
+  removes.
 
 ## Layout
 
@@ -278,9 +362,9 @@ volume mounted at `--volume`:
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
 - `internal/workspace`: the Organization check, the provider validation, the Workspace store every tool reads and writes through, the selection a workspace's sources resolve to from the providers' listings (with why each repository is in), the last sync's manifest, the volume's CSI handle and the sync schedule.
-- `internal/controller`: the manager's controller, watching the Workspaces of the workspaces' namespace: it claims each one's volume from the installation's StorageClass and writes the Workspace's status (the claim, the `VolumeClaimed` condition), which nothing else writes.
+- `internal/controller`: the manager's controller, leader-elected among the replicas, watching the Workspaces of the workspaces' namespace and their sync Jobs: it runs each Workspace's sync cycle (the triggers, the no-op check, the selection and the credentials, the Job from the chart's template, the outcome from the manifest), sizes, claims and grows the volume from the installation's StorageClass, and writes the Workspace's status, which nothing else writes.
 - `internal/kube`: the manager's Kubernetes clients.
-- `internal/api`: the MCP server, its tools (`list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace`, `delete_workspace`, `list_repositories`, `preview_workspace`, `list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
+- `internal/api`: the MCP server, its tools (`list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace`, `delete_workspace`, `sync_workspace`, `list_repositories`, `preview_workspace`, `list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
 - `internal/authorize`: the access check at a Session's start: the manifest against what the person reads at each provider, the volume's CSI handle, and the grant.
 - `internal/grant`: the workspace grant: its claims, the signing keys from their Secret and the JWKS.
 - `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.

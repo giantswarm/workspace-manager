@@ -90,6 +90,13 @@ func runSync(ctx context.Context, o *syncOptions) error {
 	defer stop()
 	res, err := s.Run(ctx, sel)
 	if err != nil {
+		if clients != nil {
+			// The error goes beside the previous manifest, which stays: the
+			// controller reports it as the cycle's failure.
+			if werr := kube.MergeConfigMap(context.WithoutCancel(ctx), clients.Typed(), o.namespace, o.resultConfigMap, map[string]string{mirror.ErrorKey: err.Error()}); werr != nil {
+				log.Warn("sync error not written as the Job's result", "configmap", o.namespace+"/"+o.resultConfigMap, "error", werr)
+			}
+		}
 		return err
 	}
 	if clients != nil {
@@ -97,6 +104,7 @@ func runSync(ctx context.Context, o *syncOptions) error {
 		if err != nil {
 			return err
 		}
+		// Replaces the data, so a previous run's error goes.
 		if err := kube.WriteConfigMap(ctx, clients.Typed(), o.namespace, o.resultConfigMap, map[string]string{mirror.ManifestFile: string(raw)}); err != nil {
 			return err
 		}
