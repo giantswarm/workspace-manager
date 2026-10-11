@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,7 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
+
+	"github.com/giantswarm/workspace-manager/internal/mirror"
 )
 
 // chartTemplate is a Job template as the chart renders it: the pod's shape,
@@ -110,6 +114,9 @@ func TestJobsBuildFromTemplate(t *testing.T) {
 	assert.Equal(t, "HOME", c.Env[0].Name)
 	assert.Contains(t, c.Env, corev1.EnvVar{Name: "WORKSPACE_MANAGER_NAMESPACE", Value: testNamespace})
 	assert.Contains(t, c.Env, corev1.EnvVar{Name: "KUBERNETES_IN_CLUSTER", Value: "true"})
+	for _, e := range c.Env {
+		assert.NotEqual(t, "SSL_CERT_FILE", e.Name, "no roots: the image's apply")
+	}
 	assert.Equal(t, "tmp", c.VolumeMounts[0].Name, "the template's mounts stay")
 	assert.Len(t, c.VolumeMounts, 4)
 	assert.Len(t, pod.Volumes, 4)
@@ -119,11 +126,37 @@ func TestJobsBuildFromTemplate(t *testing.T) {
 	assert.Len(t, tpl.Spec.Template.Spec.Volumes, 1)
 
 	j.Image, j.ImagePullPolicy = "workspace-manager:dev", corev1.PullNever
+	j.Roots = []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
 	job, err = j.build(ws, "cd34", owner, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "workspace-manager:dev", job.Spec.Template.Spec.Containers[0].Image)
 	assert.Equal(t, corev1.PullNever, job.Spec.Template.Spec.Containers[0].ImagePullPolicy)
+	assert.Contains(t, job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: "SSL_CERT_FILE", Value: "/etc/workspace-sync/ca.crt"},
+		"the roots the manager verifies with, where the selection ConfigMap puts them")
 
 	_, err = Jobs{}.build(ws, "x", owner, nil)
 	assert.ErrorContains(t, err, "no sync job template")
+}
+
+// TestJobsStartCarriesRoots: the roots travel in the selection ConfigMap of
+// the Workspace's namespace, where the Job reads them; without roots the
+// ConfigMap carries the selection alone.
+func TestJobsStartCarriesRoots(t *testing.T) {
+	ws := workspaceNamed("platform")
+	roots := []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync"), Roots: roots}
+	job, err := j.Start(context.Background(), ws, "ab12", &mirror.Selection{}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: "SSL_CERT_FILE", Value: "/etc/workspace-sync/ca.crt"})
+	cm, err := j.Client.CoreV1().ConfigMaps(testNamespace).Get(context.Background(), SelectionName(ws), metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, string(roots), cm.Data[rootsFile])
+	assert.NotEmpty(t, cm.Data[selectionFile])
+
+	j.Roots = nil
+	_, err = j.Start(context.Background(), ws, "cd34", &mirror.Selection{}, nil)
+	require.NoError(t, err)
+	cm, err = j.Client.CoreV1().ConfigMaps(testNamespace).Get(context.Background(), SelectionName(ws), metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, cm.Data, rootsFile, "the roots of the last cycle go with the selection's rewrite")
 }

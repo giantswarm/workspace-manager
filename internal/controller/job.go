@@ -34,12 +34,14 @@ const FieldManager = "workspace-manager"
 // credentials into it.
 const SyncContainer = "sync"
 
-// Where the sync Job finds its input: the sync subcommand's defaults.
+// Where the sync Job finds its input: the sync subcommand's defaults. The
+// selection ConfigMap carries the roots beside the selection.
 const (
 	volumeMountPath      = "/workspace"
 	selectionMountPath   = "/etc/workspace-sync"
 	credentialsMountPath = "/var/run/secrets/workspace-sync" //nolint:gosec // G101: a mount path, not a credential
 	selectionFile        = "selection.json"
+	rootsFile            = "ca.crt"
 )
 
 // The names of what a Workspace's sync cycle uses, in the Workspace's
@@ -61,8 +63,8 @@ type Credential struct {
 
 // Jobs starts a cycle's sync Job, from the template the chart renders: the
 // pod's shape (image, account, security contexts, resources, deadline, TTL)
-// is the template's; the cycle adds the volume, the selection and the
-// credentials.
+// is the template's; the cycle adds the volume, the selection, the roots and
+// the credentials.
 type Jobs struct {
 	Client kubernetes.Interface
 	// Template is the Job every cycle's Job is made from; nil is
@@ -72,6 +74,12 @@ type Jobs struct {
 	Image string
 	// ImagePullPolicy goes with Image.
 	ImagePullPolicy corev1.PullPolicy
+	// Roots is the PEM bundle the sync verifies the providers' git hosts
+	// with, the manager's own: it travels in the cycle's input, since a
+	// Secret of the manager's namespace is out of the Job's reach, and the
+	// sync container gets it as its SSL_CERT_FILE. Empty hands none and the
+	// image's roots apply.
+	Roots []byte
 }
 
 // DefaultJobTemplate is the Job without the chart's template: the sync
@@ -130,9 +138,9 @@ func syncContainer(pod *corev1.PodSpec) (int, error) {
 
 // Start writes the cycle's input and creates its Job: the manifest ConfigMap
 // the Job writes its result into (made ahead, owned by the Workspace so it
-// stays with it), the selection ConfigMap, the credentials Secret (one per
-// Workspace, replaced per cycle and emptied after it) and the Job itself,
-// owned by the Workspace.
+// stays with it), the selection ConfigMap (the selection and the roots), the
+// credentials Secret (one per Workspace, replaced per cycle and emptied after
+// it) and the Job itself, owned by the Workspace.
 func (j Jobs) Start(ctx context.Context, ws *v1alpha1.Workspace, id string, sel *mirror.Selection, creds []Credential) (*batchv1.Job, error) {
 	owner := *metav1.NewControllerRef(ws, v1alpha1.GroupVersion.WithKind("Workspace"))
 	labels := map[string]string{LabelWorkspace: ws.Name}
@@ -149,6 +157,9 @@ func (j Jobs) Start(ctx context.Context, ws *v1alpha1.Workspace, id string, sel 
 	}
 	selection := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: SelectionName(ws), Namespace: ws.Namespace, Labels: labels, OwnerReferences: []metav1.OwnerReference{owner}},
 		Data: map[string]string{selectionFile: string(raw)}}
+	if len(j.Roots) > 0 {
+		selection.Data[rootsFile] = string(j.Roots)
+	}
 	if err := writeConfigMap(ctx, j.Client, selection); err != nil {
 		return nil, err
 	}
@@ -262,6 +273,10 @@ func (j Jobs) build(ws *v1alpha1.Workspace, id string, owner metav1.OwnerReferen
 		corev1.EnvVar{Name: "WORKSPACE_MANAGER_SYNC_RESULT_CONFIGMAP", Value: ManifestName(ws)},
 		corev1.EnvVar{Name: "KUBERNETES_IN_CLUSTER", Value: "true"},
 	)
+	if len(j.Roots) > 0 {
+		// The sync hands SSL_CERT_FILE to git (mirror.gitEnviron).
+		c.Env = append(c.Env, corev1.EnvVar{Name: "SSL_CERT_FILE", Value: path.Join(selectionMountPath, rootsFile)})
+	}
 	c.VolumeMounts = append(c.VolumeMounts,
 		corev1.VolumeMount{Name: "workspace", MountPath: volumeMountPath},
 		corev1.VolumeMount{Name: "selection", MountPath: selectionMountPath, ReadOnly: true},

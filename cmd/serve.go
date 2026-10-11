@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -71,6 +72,7 @@ type serveOptions struct {
 	syncServiceAccount  string
 	syncImage           string
 	syncImagePullPolicy string
+	syncCAFile          string
 	leaderElection      bool
 	leaderIdentity      string
 
@@ -128,6 +130,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.syncServiceAccount, "sync-service-account", envOr("WORKSPACE_MANAGER_SYNC_SERVICE_ACCOUNT", ""), "The ServiceAccount a sync Job runs as without a template, in the workspaces' namespace (WORKSPACE_MANAGER_SYNC_SERVICE_ACCOUNT)")
 	f.StringVar(&o.syncImage, "sync-image", envOr("WORKSPACE_MANAGER_SYNC_IMAGE", ""), "The image the sync Job runs, this binary's own; empty keeps the template's (WORKSPACE_MANAGER_SYNC_IMAGE)")
 	f.StringVar(&o.syncImagePullPolicy, "sync-image-pull-policy", envOr("WORKSPACE_MANAGER_SYNC_IMAGE_PULL_POLICY", ""), "The sync image's pull policy, with --sync-image (WORKSPACE_MANAGER_SYNC_IMAGE_PULL_POLICY)")
+	f.StringVar(&o.syncCAFile, "sync-ca-file", envOr("WORKSPACE_MANAGER_SYNC_CA_FILE", os.Getenv("SSL_CERT_FILE")), "PEM CA bundle the sync Job verifies the providers' git hosts with (a GitHub Enterprise Server behind a private CA), read at start and handed to every sync Job in its input: this process's own SSL_CERT_FILE unless set; empty hands none and the image's roots apply (WORKSPACE_MANAGER_SYNC_CA_FILE)")
 	f.BoolVar(&o.leaderElection, "leader-election", envBool("WORKSPACE_MANAGER_LEADER_ELECTION", true), "Elect one replica to run the controller, through the Lease `"+controller.DefaultLease+"` in the workspaces' namespace; off runs it in every replica, for a single local process only (WORKSPACE_MANAGER_LEADER_ELECTION)")
 	f.StringVar(&o.leaderIdentity, "leader-election-identity", envOr("POD_NAME", ""), "This replica's name in the election; empty takes the host name, the pod's (POD_NAME)")
 	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
@@ -364,6 +367,15 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 		// A template that cannot make a Job fails the start, not every cycle.
 		if cfg.SyncJobTemplate, err = controller.LoadJobTemplate(o.syncJobTemplate); err != nil {
 			return cfg, err
+		}
+	}
+	if o.syncCAFile != "" {
+		// Unreadable roots fail the start, not every fetch.
+		if cfg.SyncRoots, err = os.ReadFile(o.syncCAFile); err != nil { //nolint:gosec // the CA path is the operator's own flag
+			return cfg, fmt.Errorf("--sync-ca-file: %w", err)
+		}
+		if len(bytes.TrimSpace(cfg.SyncRoots)) == 0 {
+			return cfg, fmt.Errorf("--sync-ca-file %s is empty", o.syncCAFile)
 		}
 	}
 	if o.leaderElection {

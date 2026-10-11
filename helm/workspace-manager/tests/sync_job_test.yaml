@@ -81,9 +81,10 @@ tests:
           path: data["job.yaml"]
           pattern: 'app.kubernetes.io/name: "workspace-manager"\n'
 
-  # A provider behind a private CA is fetched with the roots it is listed
-  # with: the manager's extraEnv and its CA mount reach the sync container.
-  - it: hands the sync the manager's extra environment and the private CA
+  # The Job runs in the workspaces' namespace, where the manager's CA Secret
+  # is out of reach: the controller hands the sync the roots in its input,
+  # and the manager's environment stays the manager's.
+  - it: mounts nothing of the release namespace with a private CA configured
     set:
       oauth:
         enabled: true
@@ -99,21 +100,15 @@ tests:
         - name: SSL_CERT_FILE
           value: /etc/workspace-manager/idp-ca/ca.pem
     asserts:
-      - matchRegex:
-          path: data["job.yaml"]
-          pattern: "name: SSL_CERT_FILE\n\\s+value: /etc/workspace-manager/idp-ca/ca.pem"
-      - matchRegex:
-          path: data["job.yaml"]
-          pattern: "name: idp-ca\n\\s+mountPath: /etc/workspace-manager/idp-ca\n\\s+readOnly: true"
-      - matchRegex:
-          path: data["job.yaml"]
-          pattern: "secretName: dex-ca\n\\s+items:\n\\s+- key: ca.pem\n\\s+path: ca.pem"
-
-  - it: mounts no CA without one
-    asserts:
       - notMatchRegex:
           path: data["job.yaml"]
           pattern: "idp-ca"
+      - notMatchRegex:
+          path: data["job.yaml"]
+          pattern: "dex-ca"
+      - notMatchRegex:
+          path: data["job.yaml"]
+          pattern: "SSL_CERT_FILE"
 
   - it: takes the Job's own values
     set:

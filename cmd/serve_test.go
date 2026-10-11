@@ -149,6 +149,14 @@ func TestServeControllerConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg.SyncJobTemplate)
 	assert.Equal(t, "wm:1", cfg.SyncJobTemplate.Spec.Template.Spec.Containers[0].Image)
+	assert.Nil(t, cfg.SyncRoots, "no CA file: the sync fetches with the image's roots")
+
+	o = validServeOptions()
+	o.syncCAFile = filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(o.syncCAFile, []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"), 0o600))
+	cfg, err = o.controllerConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n", string(cfg.SyncRoots), "the CA file's bytes travel to the sync Jobs")
 }
 
 // TestServeControllerConfigFailsTheStart: a value out of range names its flag.
@@ -167,6 +175,8 @@ func TestServeControllerConfigFailsTheStart(t *testing.T) {
 		"zero max size":     {func(o *serveOptions) { o.sizingMaxSize = "0" }, "maximum size must be positive"},
 		"bad pull policy":   {func(o *serveOptions) { o.syncImagePullPolicy = "Sometimes" }, "--sync-image-pull-policy"},
 		"absent template":   {func(o *serveOptions) { o.syncJobTemplate = "/nonexistent/job.yaml" }, "sync job template"},
+		"absent CA file":    {func(o *serveOptions) { o.syncCAFile = "/nonexistent/ca.crt" }, "--sync-ca-file"},
+		"empty CA file":     {func(o *serveOptions) { o.syncCAFile = os.DevNull }, "is empty"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o := validServeOptions()

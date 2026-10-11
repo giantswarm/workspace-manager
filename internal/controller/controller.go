@@ -97,6 +97,9 @@ type Config struct {
 	// template's.
 	SyncImage           string
 	SyncImagePullPolicy corev1.PullPolicy
+	// SyncRoots is the PEM bundle the sync Job verifies the providers' git
+	// hosts with, the manager's own (Jobs.Roots); empty hands none.
+	SyncRoots []byte
 	// LeaderElection elects the replica running the controller; nil runs it
 	// in this one.
 	LeaderElection *LeaderElection
@@ -160,7 +163,7 @@ func New(cfg Config) *Controller {
 		resync:              cfg.Resync,
 		volumes:             Volumes{Client: cfg.Core, StorageClass: cfg.StorageClass},
 		sizing:              cfg.Sizing,
-		jobs:                Jobs{Client: cfg.Core, Template: cfg.SyncJobTemplate, Image: cfg.SyncImage, ImagePullPolicy: cfg.SyncImagePullPolicy},
+		jobs:                Jobs{Client: cfg.Core, Template: cfg.SyncJobTemplate, Image: cfg.SyncImage, ImagePullPolicy: cfg.SyncImagePullPolicy, Roots: cfg.SyncRoots},
 		listings:            cfg.Listings,
 		instances:           instances,
 		secrets:             cfg.Secrets,
