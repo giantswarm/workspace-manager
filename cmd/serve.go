@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/sync/errgroup"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/giantswarm/workspace-manager/internal/api"
@@ -63,7 +64,15 @@ type serveOptions struct {
 	sessionCleanupAfter time.Duration
 	sizingFactor        float64
 	sizingHeadroom      string
+	sizingHeadroomShare float64
 	sizingMaxSize       string
+
+	syncJobTemplate     string
+	syncServiceAccount  string
+	syncImage           string
+	syncImagePullPolicy string
+	leaderElection      bool
+	leaderIdentity      string
 
 	mcpPath string
 
@@ -109,11 +118,18 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
 	f.StringVar(&o.storageClass, "storage-class", envOr("WORKSPACE_MANAGER_STORAGE_CLASS", ""), "The read-write-many StorageClass every workspace's volume is claimed from; empty claims none: each Workspace's VolumeClaimed condition names the missing value, and the cluster's default class is never used in its place (WORKSPACE_MANAGER_STORAGE_CLASS)")
-	f.DurationVar(&o.syncCycle, "sync-cycle", envDuration("WORKSPACE_MANAGER_SYNC_CYCLE", controller.DefaultResync), "How often the controller reconciles every Workspace without an event, a Go duration (WORKSPACE_MANAGER_SYNC_CYCLE)")
+	f.DurationVar(&o.syncCycle, "sync-cycle", envDuration("WORKSPACE_MANAGER_SYNC_CYCLE", controller.DefaultResync), "How often the controller reconciles every Workspace without an event, and how long after a failed sync cycle it tries again, a Go duration (WORKSPACE_MANAGER_SYNC_CYCLE)")
 	f.DurationVar(&o.sessionCleanupAfter, "sessions-cleanup-after", envDuration("WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER", controller.DefaultSessionCleanupAfter), "How long a Session's directory outlives the Session's last turn, a Go duration (WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER)")
-	f.Float64Var(&o.sizingFactor, "sizing-factor", envFloat("WORKSPACE_MANAGER_SIZING_FACTOR", controller.DefaultSizing.Factor), "A new workspace volume's size is the measured need times this factor, at least 1, plus the headroom (WORKSPACE_MANAGER_SIZING_FACTOR)")
-	f.StringVar(&o.sizingHeadroom, "sizing-headroom", envOr("WORKSPACE_MANAGER_SIZING_HEADROOM", controller.DefaultSizing.Headroom.String()), "Headroom added to a new workspace volume's multiplied need, a Kubernetes quantity; a Workspace's larger spec.sizing.headroom replaces it (WORKSPACE_MANAGER_SIZING_HEADROOM)")
-	f.StringVar(&o.sizingMaxSize, "sizing-max-size", envOr("WORKSPACE_MANAGER_SIZING_MAX_SIZE", ""), "Ceiling of a new workspace volume's size, a Kubernetes quantity; empty sets none (WORKSPACE_MANAGER_SIZING_MAX_SIZE)")
+	f.Float64Var(&o.sizingFactor, "sizing-factor", envFloat("WORKSPACE_MANAGER_SIZING_FACTOR", controller.DefaultSizing.Factor), "What a repository not yet mirrored counts towards its workspace volume's need: this factor, at least 1, times the size its provider reports; a mirrored one counts its measured size (WORKSPACE_MANAGER_SIZING_FACTOR)")
+	f.StringVar(&o.sizingHeadroom, "sizing-headroom", envOr("WORKSPACE_MANAGER_SIZING_HEADROOM", controller.DefaultSizing.HeadroomFloor.String()), "The least headroom a workspace volume keeps over its need, a Kubernetes quantity; the headroom is the larger of this, the headroom share of the need and the Workspace's own spec.sizing.headroom (WORKSPACE_MANAGER_SIZING_HEADROOM)")
+	f.Float64Var(&o.sizingHeadroomShare, "sizing-headroom-share", envFloat("WORKSPACE_MANAGER_SIZING_HEADROOM_SHARE", controller.DefaultSizing.HeadroomShare), "The headroom as a share of a workspace volume's need, 0.5 for half of it; the larger of it and --sizing-headroom applies (WORKSPACE_MANAGER_SIZING_HEADROOM_SHARE)")
+	f.StringVar(&o.sizingMaxSize, "sizing-max-size", envOr("WORKSPACE_MANAGER_SIZING_MAX_SIZE", ""), "Ceiling of a workspace volume's size, a Kubernetes quantity: a sync cycle that would pass it fails, naming the size it needs, and keeps the mirrors it has; empty sets none (WORKSPACE_MANAGER_SIZING_MAX_SIZE)")
+	f.StringVar(&o.syncJobTemplate, "sync-job-template", envOr("WORKSPACE_MANAGER_SYNC_JOB_TEMPLATE", ""), "A Job manifest (YAML) every sync Job is made from, the chart's rendering of its image, account, security contexts, resources, deadline and TTL; it needs a container named `sync` running `workspace-manager sync`, and the cycle adds the volume, the selection and the credentials. Empty runs the sync container alone as --sync-service-account (WORKSPACE_MANAGER_SYNC_JOB_TEMPLATE)")
+	f.StringVar(&o.syncServiceAccount, "sync-service-account", envOr("WORKSPACE_MANAGER_SYNC_SERVICE_ACCOUNT", ""), "The ServiceAccount a sync Job runs as without a template, in the workspaces' namespace (WORKSPACE_MANAGER_SYNC_SERVICE_ACCOUNT)")
+	f.StringVar(&o.syncImage, "sync-image", envOr("WORKSPACE_MANAGER_SYNC_IMAGE", ""), "The image the sync Job runs, this binary's own; empty keeps the template's (WORKSPACE_MANAGER_SYNC_IMAGE)")
+	f.StringVar(&o.syncImagePullPolicy, "sync-image-pull-policy", envOr("WORKSPACE_MANAGER_SYNC_IMAGE_PULL_POLICY", ""), "The sync image's pull policy, with --sync-image (WORKSPACE_MANAGER_SYNC_IMAGE_PULL_POLICY)")
+	f.BoolVar(&o.leaderElection, "leader-election", envBool("WORKSPACE_MANAGER_LEADER_ELECTION", true), "Elect one replica to run the controller, through the Lease `"+controller.DefaultLease+"` in the workspaces' namespace; off runs it in every replica, for a single local process only (WORKSPACE_MANAGER_LEADER_ELECTION)")
+	f.StringVar(&o.leaderIdentity, "leader-election-identity", envOr("POD_NAME", ""), "This replica's name in the election; empty takes the host name, the pod's (POD_NAME)")
 	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
 	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace: provider Secrets, the sealing keys and the sign-ins live there (POD_NAMESPACE)")
 	f.StringVar(&o.signInKeysSecret, "signin-keys-secret", envOr("WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET", ""), "Secret in the manager's namespace with the sign-in sealing keys, each data entry a key id and its 32 raw bytes; required with providers and OAuth (WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET)")
@@ -185,6 +201,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	if o.storageClass == "" {
 		log.Warn("no StorageClass: no workspace volume is claimed until --storage-class (the chart's storage.storageClassName) names the installation's read-write-many class")
 	}
+	// The sync cycle lists each workspace's owners and fetches with the
+	// provider instances' sync credentials, read from their Secrets.
+	ctlCfg.Instances = providers
+	if o.managerNamespace != "" {
+		secrets := kube.Secrets{Client: clients.Typed(), Namespace: o.managerNamespace}
+		ctlCfg.Secrets = secrets
+		ctlCfg.Listings = workspace.NewListings(providers, secrets)
+	} else if len(providers) > 0 {
+		log.Warn("the sync cycle is off: it reads the providers' Secrets in --manager-namespace (POD_NAMESPACE); every cycle fails until it is set")
+	}
 	ctl := controller.New(ctlCfg)
 	// Accepted from the chart, which the agent-platform meta chart forwards
 	// it to, ahead of the cleanup that uses it.
@@ -240,7 +266,8 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		return err
 	}
 	log.Info("workspace-manager starting", "version", build.Version, "commit", build.Commit, "listen", o.listen,
-		"mcp", o.mcpPath, "oauth", o.oauthEnabled, "namespace", o.namespace, "organizations", len(orgs), "storageClass", o.storageClass)
+		"mcp", o.mcpPath, "oauth", o.oauthEnabled, "namespace", o.namespace, "organizations", len(orgs), "storageClass", o.storageClass,
+		"syncJobTemplate", o.syncJobTemplate, "leaderElection", o.leaderElection)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -303,7 +330,10 @@ func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAut
 // clients aside: a cycle, cleanup window or sizing that is out of range fails
 // the start.
 func (o *serveOptions) controllerConfig() (controller.Config, error) {
-	cfg := controller.Config{Namespace: o.namespace, StorageClass: o.storageClass, Resync: o.syncCycle, SessionCleanupAfter: o.sessionCleanupAfter}
+	cfg := controller.Config{
+		Namespace: o.namespace, StorageClass: o.storageClass, Resync: o.syncCycle, SessionCleanupAfter: o.sessionCleanupAfter,
+		SyncServiceAccount: o.syncServiceAccount, SyncImage: o.syncImage, SyncImagePullPolicy: corev1.PullPolicy(o.syncImagePullPolicy),
+	}
 	if o.syncCycle <= 0 {
 		return cfg, fmt.Errorf("--sync-cycle must be positive, got %s", o.syncCycle)
 	}
@@ -314,7 +344,7 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("--sizing-headroom %q: %w", o.sizingHeadroom, err)
 	}
-	cfg.Sizing = controller.Sizing{Factor: o.sizingFactor, Headroom: headroom}
+	cfg.Sizing = controller.Sizing{Factor: o.sizingFactor, HeadroomFloor: headroom, HeadroomShare: o.sizingHeadroomShare}
 	if o.sizingMaxSize != "" {
 		maxSize, err := resource.ParseQuantity(o.sizingMaxSize)
 		if err != nil {
@@ -324,6 +354,26 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	}
 	if err := cfg.Sizing.Validate(); err != nil {
 		return cfg, fmt.Errorf("sizing flags: %w", err)
+	}
+	switch cfg.SyncImagePullPolicy {
+	case "", corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
+	default:
+		return cfg, fmt.Errorf("--sync-image-pull-policy must be Always, IfNotPresent or Never, got %q", o.syncImagePullPolicy)
+	}
+	if o.syncJobTemplate != "" {
+		// A template that cannot make a Job fails the start, not every cycle.
+		if cfg.SyncJobTemplate, err = controller.LoadJobTemplate(o.syncJobTemplate); err != nil {
+			return cfg, err
+		}
+	}
+	if o.leaderElection {
+		identity := o.leaderIdentity
+		if identity == "" {
+			if identity, err = os.Hostname(); err != nil {
+				return cfg, fmt.Errorf("leader election identity: %w", err)
+			}
+		}
+		cfg.LeaderElection = &controller.LeaderElection{Identity: identity}
 	}
 	return cfg, nil
 }

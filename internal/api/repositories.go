@@ -10,7 +10,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/controller"
@@ -210,16 +209,19 @@ func (t *selectionTools) preview(sel *workspace.Selection, ws *v1alpha1.Workspac
 		SkippedArchived: sel.SkippedArchived, SkippedForks: sel.SkippedForks, Repositories: []PreviewRepository{}}
 	search := strings.ToLower(in.Search)
 	var matching []PreviewRepository
+	items := make([]provider.Item, 0, len(sel.Items))
 	for _, it := range sel.Items {
 		res.ProviderSizeKiB += it.SizeKiB
+		items = append(items, it.Item)
 		if search != "" && !strings.Contains(strings.ToLower(it.Key()), search) {
 			continue
 		}
 		matching = append(matching, PreviewRepository{Provider: it.Provider, Repository: it.Key(), Language: it.Language,
 			Topics: nonNil(it.Topics), LastPush: it.LastChange.UTC(), SizeKiB: it.SizeKiB, Why: nonNil(it.Why)})
 	}
-	ws.Status.NeededSize = resource.NewQuantity(res.ProviderSizeKiB*1024, resource.BinarySI)
-	size := t.sizing.Size(ws)
+	// The size a volume gets for the selection as nothing of it is mirrored
+	// yet: the estimate for every repository, the headroom, the overrides.
+	size := t.sizing.Size(t.sizing.Need(nil, items, nil), ws.Spec.Sizing)
 	res.EstimatedVolumeSize = size.String()
 	res.Matching = len(matching)
 	var page []PreviewRepository

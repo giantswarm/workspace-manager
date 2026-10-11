@@ -30,20 +30,41 @@ rules:
     resources: [workspaces/finalizers]
     verbs: [update]
   {{- /*
-  The workspace's volume: the controller claims it from storage.storageClassName
-  and never deletes it; the claim is the Workspace's, by its owner reference,
-  and goes with it.
+  The workspace's volume: the controller claims it from storage.storageClassName,
+  grows it where the class provisions a size and never deletes it; the claim is
+  the Workspace's, by its owner reference, and goes with it.
   */}}
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [get, create]
+    verbs: [get, create, patch]
   {{- /*
-  The last sync's manifest, which the sync Job writes and authorize_workspace
-  checks the person against.
+  The sync cycle's input and result: the selection the controller writes for
+  the Job, and the manifest the Job writes, which the controller reads after
+  the Job and authorize_workspace checks the person against.
   */}}
   - apiGroups: [""]
     resources: [configmaps]
-    verbs: [get]
+    verbs: [get, create, update]
+  {{- /*
+  The Job's credentials Secret, server-side applied per cycle and emptied
+  after it: the manager never reads a Secret of this namespace.
+  */}}
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, patch]
+  {{- /*
+  The sync Jobs: started per cycle, watched to their end, never deleted (their
+  TTL and their Workspace's deletion remove them).
+  */}}
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create]
+  {{- /*
+  The controller's leader election among the replicas.
+  */}}
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -63,7 +84,8 @@ subjects:
 {{- /*
 A workspace's volume is named by its CSI driver and handle, which only the
 claim's PersistentVolume carries: the workspace tools show it and
-authorize_workspace's grant names it; nothing else is read cluster-wide.
+authorize_workspace's grant names it. Whether the StorageClass provisions a
+size to grow is its allowVolumeExpansion. Nothing else is read cluster-wide.
 */}}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -75,6 +97,9 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [persistentvolumes]
+    verbs: [get]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

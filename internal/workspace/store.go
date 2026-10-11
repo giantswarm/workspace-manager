@@ -2,14 +2,18 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
+	"github.com/giantswarm/workspace-manager/internal/identity"
 )
 
 // Store reads and writes the Workspaces of one namespace for the caller in
@@ -131,6 +135,33 @@ func (s *Store) Delete(ctx context.Context, name string) (*v1alpha1.Workspace, e
 // owner's repositories for an Organization's workspace editor.
 func (s *Store) CheckOrganization(ctx context.Context, org string) error {
 	return s.orgs.Check(ctx, org)
+}
+
+// RequestSync asks the controller for a sync cycle of a Workspace of an
+// Organization the caller is a member of, now: it records the request and
+// the caller as annotations the controller acts on and removes. A request
+// made while a cycle runs is served after it; a Workspace being deleted
+// syncs no more.
+func (s *Store) RequestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
+	ws, err := s.Get(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if ws.DeletionTimestamp != nil {
+		return nil, fmt.Errorf("%w: workspace %q is being deleted", ErrInvalid, name)
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{
+		v1alpha1.AnnotationSyncRequested:   at.UTC().Format(time.RFC3339),
+		v1alpha1.AnnotationSyncRequestedBy: identity.Caller(ctx),
+	}}})
+	if err != nil {
+		return nil, fmt.Errorf("workspace %q: %w", name, err)
+	}
+	updated, err := s.client.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("request a sync of workspace %q: %w", name, err)
+	}
+	return fromUnstructured(updated)
 }
 
 func (s *Store) get(ctx context.Context, name string) (*v1alpha1.Workspace, error) {

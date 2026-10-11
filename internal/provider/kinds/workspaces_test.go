@@ -212,6 +212,20 @@ func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
 		assert.Equal(t, 4, updated.NextSync.Hour())
 		assert.Equal(t, "8Gi", updated.Sizing.Minimum, "sizing given nowhere is kept")
 
+		// A sync request is an annotation the controller serves: the view
+		// shows it until then, and the schedule stands.
+		synced := ok[api.SyncResult](t, f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "platform"}))
+		assert.Equal(t, "platform", synced.Workspace)
+		assert.Equal(t, "alice@acme.test", synced.RequestedBy)
+		assert.False(t, synced.RequestedAt.IsZero())
+		assert.Nil(t, synced.ActiveSync, "no sync Job runs")
+		got = ok[api.WorkspaceDetail](t, f.call(t, f.member, "get_workspace", map[string]any{"workspace": "platform"}))
+		require.NotNil(t, got.Workspace.SyncRequest)
+		assert.Equal(t, api.SyncRequest{RequestedAt: synced.RequestedAt, RequestedBy: "alice@acme.test"}, *got.Workspace.SyncRequest)
+		assert.Equal(t, updated.NextSync, got.Workspace.NextSync, "the schedule is not the request's business")
+		again := ok[api.SyncResult](t, f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "platform"}))
+		assert.False(t, again.RequestedAt.Before(synced.RequestedAt), "a second request replaces the first")
+
 		deleted := ok[api.DeleteResult](t, f.call(t, f.member, "delete_workspace", map[string]any{"workspace": "platform"}))
 		assert.Equal(t, "platform", deleted.Workspace)
 		refused(t, f.call(t, f.member, "get_workspace", map[string]any{"workspace": "platform"}), "not found")
@@ -226,6 +240,7 @@ func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
 			"create_workspace":  {"name": "mine", "organization": "acme", "sources": platformSources},
 			"update_workspace":  {"name": "theirs", "sources": platformSources},
 			"delete_workspace":  {"workspace": "theirs"},
+			"sync_workspace":    {"workspace": "theirs"},
 			"list_repositories": {"organization": "acme", "provider": "github", "owner": "acme"},
 			"preview_workspace": {"workspace": "theirs"},
 		} {
@@ -237,6 +252,7 @@ func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
 		refused(t, f.call(t, context.Background(), "list_repositories", map[string]any{"organization": "acme", "provider": "github", "owner": "acme"}), "no authenticated caller")
 		got := ok[api.WorkspaceDetail](t, f.call(t, f.member, "get_workspace", map[string]any{"workspace": "theirs"}))
 		assert.Len(t, got.Workspace.Sources, 2, "the refused update changed nothing")
+		assert.Nil(t, got.Workspace.SyncRequest, "the refused sync request left no annotation")
 	})
 
 	t.Run("an invalid spec is refused with its reason and nothing is written", func(t *testing.T) {

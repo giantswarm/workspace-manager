@@ -15,6 +15,10 @@ import (
 // Job's result ConfigMap carries it under.
 const ManifestFile = "manifest.json"
 
+// ErrorKey is the key of the Job's result ConfigMap a failed sync writes its
+// error under, beside the previous manifest; a successful sync removes it.
+const ErrorKey = "error"
+
 // Manifest records what the volume holds after a sync: every mirror with its
 // head commit, last-push time and measured size. The next sync compares the
 // selection with it, and the controller sizes a provisioned share from it.

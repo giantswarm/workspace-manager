@@ -23,7 +23,9 @@ tests:
             - --sync-cycle=10m
             - --sessions-cleanup-after=720h
             - --sizing-factor=1.5
-            - --sizing-headroom=5Gi
+            - --sizing-headroom=4Gi
+            - --sizing-headroom-share=0.5
+            - --sync-job-template=/etc/workspace-manager/sync-job/job.yaml
             - --mcp-path=/mcp
       - equal:
           path: spec.template.spec.containers[0].image
@@ -33,6 +35,54 @@ tests:
           content:
             name: DEX_CLIENT_SECRET
           any: true
+
+  # The controller reads the template at start: the Job template ConfigMap is
+  # mounted, and a change of it rolls the pod through the checksum.
+  - it: mounts the sync Job template and names this replica for the election
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: sync-job
+            mountPath: /etc/workspace-manager/sync-job
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: sync-job
+            configMap:
+              name: workspace-manager-sync-job
+      - isNotEmpty:
+          path: spec.template.metadata.annotations.checksum/sync-job
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+
+  - it: passes the sizing rule
+    set:
+      storage:
+        sizing:
+          factor: 2
+          headroom: 8Gi
+          headroomShare: 0.25
+          maxSize: 500Gi
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-factor=2
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-headroom=8Gi
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-headroom-share=0.25
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sizing-max-size=500Gi
 
   - it: passes each Organization's member groups
     set:

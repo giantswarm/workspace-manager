@@ -82,4 +82,4 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --providers-config=/etc/workspace-manager/providers/providers.yaml
       - notExists:
-          path: spec.template.metadata.annotations
+          path: spec.template.metadata.annotations.checksum/providers

@@ -78,12 +78,18 @@ func TestServeStorageClassFlag(t *testing.T) {
 func TestServeControllerFlags(t *testing.T) {
 	f := newServeCmd().Flags()
 	for name, def := range map[string]string{
-		"sync-cycle":             controller.DefaultResync.String(),
-		"sessions-cleanup-after": controller.DefaultSessionCleanupAfter.String(),
-		"sizing-factor":          "1.5",
-		"sizing-headroom":        "5Gi",
-		"sizing-max-size":        "",
-		"grant-signing-key":      "",
+		"sync-cycle":               controller.DefaultResync.String(),
+		"sessions-cleanup-after":   controller.DefaultSessionCleanupAfter.String(),
+		"sizing-factor":            "1.5",
+		"sizing-headroom":          "4Gi",
+		"sizing-headroom-share":    "0.5",
+		"sizing-max-size":          "",
+		"sync-job-template":        "",
+		"sync-service-account":     "",
+		"sync-image":               "",
+		"leader-election":          "true",
+		"leader-election-identity": "",
+		"grant-signing-key":        "",
 	} {
 		flag := f.Lookup(name)
 		require.NotNil(t, flag, name)
@@ -101,7 +107,8 @@ func TestServeControllerFlags(t *testing.T) {
 
 func validServeOptions() *serveOptions {
 	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour,
-		sizingFactor: 2, sizingHeadroom: "10Gi", sizingMaxSize: "500Gi",
+		sizingFactor: 2, sizingHeadroom: "10Gi", sizingHeadroomShare: 0.25, sizingMaxSize: "500Gi",
+		syncServiceAccount: "workspace-manager-sync", leaderElection: true, leaderIdentity: "workspace-manager-0",
 		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager"}
 }
 
@@ -112,15 +119,36 @@ func TestServeControllerConfig(t *testing.T) {
 	assert.Equal(t, 720*time.Hour, cfg.SessionCleanupAfter)
 	assert.Equal(t, "efs-rwx", cfg.StorageClass)
 	assert.InDelta(t, 2.0, cfg.Sizing.Factor, 0)
-	assert.Equal(t, "10Gi", cfg.Sizing.Headroom.String())
+	assert.Equal(t, "10Gi", cfg.Sizing.HeadroomFloor.String())
+	assert.InDelta(t, 0.25, cfg.Sizing.HeadroomShare, 0)
 	require.NotNil(t, cfg.Sizing.MaxSize)
 	assert.Equal(t, "500Gi", cfg.Sizing.MaxSize.String())
+	assert.Equal(t, "workspace-manager-sync", cfg.SyncServiceAccount)
+	assert.Nil(t, cfg.SyncJobTemplate, "no template: the default Job")
+	require.NotNil(t, cfg.LeaderElection)
+	assert.Equal(t, "workspace-manager-0", cfg.LeaderElection.Identity)
 
 	o := validServeOptions()
-	o.sizingMaxSize = ""
+	o.sizingMaxSize, o.leaderElection, o.leaderIdentity = "", false, ""
 	cfg, err = o.controllerConfig()
 	require.NoError(t, err)
 	assert.Nil(t, cfg.Sizing.MaxSize, "empty sets no ceiling")
+	assert.Nil(t, cfg.LeaderElection, "off runs the controller in this process")
+
+	o = validServeOptions()
+	o.leaderIdentity = ""
+	cfg, err = o.controllerConfig()
+	require.NoError(t, err)
+	host, _ := os.Hostname()
+	assert.Equal(t, host, cfg.LeaderElection.Identity, "the host name, the pod's")
+
+	o = validServeOptions()
+	o.syncJobTemplate = filepath.Join(t.TempDir(), "job.yaml")
+	require.NoError(t, os.WriteFile(o.syncJobTemplate, []byte("spec:\n  template:\n    spec:\n      restartPolicy: Never\n      containers: [{name: sync, image: wm:1}]\n"), 0o600))
+	cfg, err = o.controllerConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg.SyncJobTemplate)
+	assert.Equal(t, "wm:1", cfg.SyncJobTemplate.Spec.Template.Spec.Containers[0].Image)
 }
 
 // TestServeControllerConfigFailsTheStart: a value out of range names its flag.
@@ -135,7 +163,10 @@ func TestServeControllerConfigFailsTheStart(t *testing.T) {
 		"bad max size":      {func(o *serveOptions) { o.sizingMaxSize = "huge" }, "--sizing-max-size"},
 		"factor below one":  {func(o *serveOptions) { o.sizingFactor = 0.5 }, "sizing factor"},
 		"negative headroom": {func(o *serveOptions) { o.sizingHeadroom = "-1Gi" }, "headroom must not be negative"},
+		"negative share":    {func(o *serveOptions) { o.sizingHeadroomShare = -1 }, "headroom share"},
 		"zero max size":     {func(o *serveOptions) { o.sizingMaxSize = "0" }, "maximum size must be positive"},
+		"bad pull policy":   {func(o *serveOptions) { o.syncImagePullPolicy = "Sometimes" }, "--sync-image-pull-policy"},
+		"absent template":   {func(o *serveOptions) { o.syncJobTemplate = "/nonexistent/job.yaml" }, "sync job template"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o := validServeOptions()
