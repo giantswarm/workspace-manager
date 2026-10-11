@@ -424,6 +424,14 @@ type statusError struct {
 	resetIn      time.Duration
 }
 
+// Unwrap makes a 401 an ErrCredentialRefused.
+func (e *statusError) Unwrap() error {
+	if e.status == http.StatusUnauthorized {
+		return provider.ErrCredentialRefused
+	}
+	return nil
+}
+
 func (e *statusError) Error() string {
 	s := fmt.Sprintf("%s %s: %d %s %s", e.method, e.path, e.status, http.StatusText(e.status), e.message)
 	if e.limited {

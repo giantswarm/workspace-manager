@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A GitHub Enterprise Server's host, which serves git and the API, is one run-time host with the git Basic credential: kagent's egress refuses two credentials for one host.
 - `GET /.well-known/jwks.json` publishes the grant's verification keys: the signing key's and every other PEM private key in its Secret, re-read every 30 seconds, so a key rotates with both published.
 - `sessions.cleanupAfter` is documented as accepted, not yet in effect, and the server logs it at start until the session-directory cleanup lands.
+- A provider refusing the person's own sign-in (revoked or expired there) is `connect_required` with the connect link, not an error: the provider contract's `Readable` wraps `provider.ErrCredentialRefused` (GitHub's 401), and `authorize_workspace` asks for the connect again.
 
 ### Changed
 

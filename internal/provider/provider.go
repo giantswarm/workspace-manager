@@ -13,10 +13,16 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"golang.org/x/oauth2"
 )
+
+// ErrCredentialRefused is wrapped by a Kind's error when the provider refused
+// the credential itself (revoked, expired, unknown): for a person's own
+// sign-in, they connect again.
+var ErrCredentialRefused = errors.New("the provider refused the credential")
 
 // Kind is one provider implementation, configured as one instance. Its parts
 // are what a workspace needs from a provider.
@@ -31,7 +37,8 @@ type Kind interface {
 	// whose own sign-in cred is can read, each with its last change: the
 	// access check at a Session's start. It never answers from a cache, so
 	// the answer is the person's access at the time of the call; a name
-	// missing from the result is an item the person cannot read.
+	// missing from the result is an item the person cannot read. A credential
+	// the provider refuses is an error wrapping ErrCredentialRefused.
 	Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]Item, error)
 
 	// SyncCredential is the provider's own credential for an owner, the one

@@ -130,7 +130,7 @@ func (k *Kind) Readable(_ context.Context, cred oauth2.TokenSource, owner string
 	defer k.store.mu.Unlock()
 	reads, ok := k.store.persons[tok.AccessToken]
 	if !ok {
-		return nil, errors.New("fake: unauthorized")
+		return nil, fmt.Errorf("fake: %w", provider.ErrCredentialRefused)
 	}
 	var items []provider.Item
 	for _, n := range names {

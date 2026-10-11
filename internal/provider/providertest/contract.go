@@ -192,7 +192,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		assert.Empty(t, items, "a person reading nothing reads none of them")
 
 		_, err = k.Readable(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "forged"}), Owner, []string{"api"})
-		assert.Error(t, err, "a token the provider does not know is refused, not read as no access")
+		assert.ErrorIs(t, err, provider.ErrCredentialRefused, "a token the provider does not know is refused, not read as no access")
 	})
 
 	t.Run("run-time hosts", func(t *testing.T) {

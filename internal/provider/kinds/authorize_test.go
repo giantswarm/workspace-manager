@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"net/http/httptest"
 	"testing"
@@ -229,10 +228,13 @@ func TestAnUnknownWorkspaceIsAnError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestAProviderFailureIsAnError(t *testing.T) {
+func TestASignInTheProviderRefusesAsksToConnectAgain(t *testing.T) {
 	f := authSetup(t)
 	f.tokens["alice"]["github"] = "revoked"
-	_, err := f.authorizer.Authorize(context.Background(), "alice", "otter")
-	require.Error(t, err, "a token the provider refuses is no answer about access")
-	assert.False(t, errors.Is(err, signin.ErrNotSignedIn))
+	res, err := f.authorizer.Authorize(context.Background(), "alice", "otter")
+	require.NoError(t, err)
+	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
+	assert.Equal(t, []authorize.Connect{{Provider: "github", URL: "https://wm.example.com/connect/github"}}, res.Connect)
+	assert.Empty(t, res.Grant)
+	assert.Empty(t, res.Changed)
 }

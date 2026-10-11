@@ -200,16 +200,11 @@ func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Resul
 		}
 	}
 	if len(res.Connect) > 0 {
-		names := make([]string, len(res.Connect))
-		for i, c := range res.Connect {
-			names[i] = c.Provider
-		}
-		res.Outcome = ConnectRequired
-		res.Reason = fmt.Sprintf("connect %s to use workspace %s: the Session works as you there", strings.Join(names, ", "), name)
-		return res, nil
+		return a.connectRequired(res, name)
 	}
 
-	// What the person reads, one check per owner, against the manifest.
+	// What the person reads, one check per owner, against the manifest. A
+	// provider refusing the person's own token (revoked there) is a connect.
 	for _, p := range providers {
 		kind := a.instances[p].Kind
 		cred := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: tokens[p]})
@@ -220,6 +215,10 @@ func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Resul
 				names[i] = e.Name
 			}
 			items, err := kind.Readable(ctx, cred, owner, names)
+			if errors.Is(err, provider.ErrCredentialRefused) {
+				res.Connect = append(res.Connect, Connect{Provider: p, URL: a.cfg.ConnectURL(p)})
+				break
+			}
 			if err != nil {
 				return nil, fmt.Errorf("check %s on %s: %w", owner, p, err)
 			}
@@ -237,6 +236,9 @@ func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Resul
 				}
 			}
 		}
+	}
+	if len(res.Connect) > 0 {
+		return a.connectRequired(res, name)
 	}
 	if len(res.Unreadable) > 0 {
 		sort.Strings(res.Unreadable)
@@ -258,6 +260,18 @@ func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Resul
 		return nil, err
 	}
 	res.Outcome, res.Grant, res.ExpiresAt = Granted, token, &expiry
+	return res, nil
+}
+
+// connectRequired answers with the providers to connect, and nothing about
+// what the person reads.
+func (a *Authorizer) connectRequired(res *Result, name string) (*Result, error) {
+	names := make([]string, len(res.Connect))
+	for i, c := range res.Connect {
+		names[i] = c.Provider
+	}
+	res.Outcome, res.Changed, res.Unreadable = ConnectRequired, nil, nil
+	res.Reason = fmt.Sprintf("connect %s to use workspace %s: the Session works as you there", strings.Join(names, ", "), name)
 	return res, nil
 }
 
