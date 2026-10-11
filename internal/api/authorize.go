@@ -24,7 +24,7 @@ func addAuthorizeTool(s *mcpserver.MCPServer, a *authorize.Authorizer) {
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithOutputSchema[authorize.Result](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		person, err := caller(ctx)
+		id, err := callerIdentity(ctx)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -32,7 +32,7 @@ func addAuthorizeTool(s *mcpserver.MCPServer, a *authorize.Authorizer) {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		res, err := a.Authorize(ctx, person, name)
+		res, err := a.Authorize(ctx, id, name)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("authorize workspace", err), nil
 		}

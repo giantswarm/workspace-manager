@@ -24,6 +24,7 @@ import (
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/authorize"
 	"github.com/giantswarm/workspace-manager/internal/grant"
+	"github.com/giantswarm/workspace-manager/internal/identity"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/fake"
@@ -55,6 +56,12 @@ func (t authTokens) Access(_ context.Context, person, instance string) (signin.A
 		return signin.Access{}, signin.ErrNotSignedIn
 	}
 	return signin.Access{Token: tok}, nil
+}
+
+// person is a caller: the Dex subject their sign-ins are keyed by, and the
+// email the grant names them by.
+func person(subject string) *identity.Identity {
+	return &identity.Identity{Subject: subject, Email: subject + "@acme.test"}
 }
 
 type authFixture struct {
@@ -137,7 +144,7 @@ func authSetup(t *testing.T) *authFixture {
 func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	f := authSetup(t)
 	before := time.Now().Truncate(time.Second)
-	res, err := f.authorizer.Authorize(context.Background(), "alice", "otter")
+	res, err := f.authorizer.Authorize(context.Background(), person("alice"), "otter")
 	require.NoError(t, err)
 	require.Equal(t, authorize.Granted, res.Outcome, res.Reason)
 	assert.Equal(t, []string{"acme/api", "acme/web", "umbrella/theirs"}, res.Repositories, "the dropped mirror is no repository of the workspace")
@@ -146,22 +153,8 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	require.NotNil(t, res.ExpiresAt)
 	assert.WithinDuration(t, before.Add(2*time.Minute), *res.ExpiresAt, 2*time.Second, "expires as configured")
 
-	// The grant verifies against the published JWKS.
-	srv := httptest.NewServer(grant.JWKS(f.keys, nil))
-	defer srv.Close()
-	resp, err := srv.Client().Get(srv.URL)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	var set jose.JSONWebKeySet
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&set))
-	parsed, err := jwt.ParseSigned(res.Grant, []jose.SignatureAlgorithm{jose.ES256})
-	require.NoError(t, err)
-	published := set.Key(parsed.Headers[0].KeyID)
-	require.Len(t, published, 1, "the grant's key is published")
-	var claims grant.Claims
-	require.NoError(t, parsed.Claims(published[0].Key, &claims))
-	require.NoError(t, claims.Validate(jwt.Expected{Issuer: "https://wm.example.com", Subject: "alice", AnyAudience: jwt.Audience{"kagent"}}))
-
+	claims := verified(t, f.keys, res.Grant)
+	assert.Equal(t, "alice@acme.test", claims.Subject, "the grant names the person by email, not by the sign-in key")
 	assert.Equal(t, grant.Workspace{Namespace: authNamespace, Name: "otter"}, claims.Workspace)
 	assert.Equal(t, grant.Volume{Driver: "nfs.csi.k8s.io", Handle: "nfs-server#share#pvc-otter"}, claims.Volume)
 	assert.Equal(t, []grant.Mount{{SubPath: "sessions/${SESSION_ID}"}, {SubPath: "mirrors", ReadOnly: true}}, claims.Mounts)
@@ -178,16 +171,56 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	assert.Contains(t, audiences, "github")
 	assert.Contains(t, audiences, "code")
 
-	for _, person := range f.tokens["alice"] {
-		assert.NotContains(t, res.Grant, person, "no token in the grant")
+	for _, token := range f.tokens["alice"] {
+		assert.NotContains(t, res.Grant, token, "no token in the grant")
 		raw, err := json.Marshal(claims)
 		require.NoError(t, err)
-		assert.NotContains(t, string(raw), person, "no token in the grant's claims")
+		assert.NotContains(t, string(raw), token, "no token in the grant's claims")
 	}
 }
 
+// verified parses a grant as kagent's admission does: signed by a key the
+// manager publishes, by this issuer, for this audience, in time.
+func verified(t *testing.T, keys *grant.KeySource, token string) grant.Claims {
+	t.Helper()
+	srv := httptest.NewServer(grant.JWKS(keys, nil))
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	var set jose.JSONWebKeySet
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&set))
+	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES256})
+	require.NoError(t, err)
+	published := set.Key(parsed.Headers[0].KeyID)
+	require.Len(t, published, 1, "the grant's key is published")
+	var claims grant.Claims
+	require.NoError(t, parsed.Claims(published[0].Key, &claims))
+	require.NoError(t, claims.Validate(jwt.Expected{Issuer: "https://wm.example.com", AnyAudience: jwt.Audience{"kagent"}}))
+	return claims
+}
+
+// kagent's admission compares the verified grant's sub with the Session's
+// creator as its authenticator names the caller: on the platform the email.
+// A caller the manager knows by Dex subject only gets no grant, since one
+// naming the subject would admit nobody.
+func TestTheGrantNamesTheCallerAsKagentNamesTheCreator(t *testing.T) {
+	f := authSetup(t)
+	res, err := f.authorizer.Authorize(context.Background(), &identity.Identity{Subject: "alice", Email: "alice@acme.test"}, "otter")
+	require.NoError(t, err)
+	require.Equal(t, authorize.Granted, res.Outcome, res.Reason)
+	sub := verified(t, f.keys, res.Grant).Subject
+	for creator, admitted := range map[string]bool{"alice@acme.test": true, "alice": false, "bob@acme.test": false} {
+		assert.Equal(t, admitted, sub == creator, "creator %q against the grant's sub %q", creator, sub)
+	}
+
+	res, err = f.authorizer.Authorize(context.Background(), &identity.Identity{Subject: "alice"}, "otter")
+	require.ErrorIs(t, err, authorize.ErrNoEmail)
+	assert.Nil(t, res)
+}
+
 func TestAPersonMissingARepositoryIsRefusedWithItsName(t *testing.T) {
-	res, err := authSetup(t).authorizer.Authorize(context.Background(), "bob", "otter")
+	res, err := authSetup(t).authorizer.Authorize(context.Background(), person("bob"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.Refused, res.Outcome)
 	assert.Equal(t, []string{"acme/web"}, res.Unreadable)
@@ -197,41 +230,41 @@ func TestAPersonMissingARepositoryIsRefusedWithItsName(t *testing.T) {
 }
 
 func TestAPersonNotConnectedGetsTheConnectLink(t *testing.T) {
-	res, err := authSetup(t).authorizer.Authorize(context.Background(), "carol", "otter")
+	res, err := authSetup(t).authorizer.Authorize(context.Background(), person("carol"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
 	assert.Equal(t, []authorize.Connect{{Provider: "code", URL: "https://wm.example.com/connect/code"}}, res.Connect)
 	assert.Contains(t, res.Reason, "connect code")
 	assert.Empty(t, res.Grant)
 
-	res, err = authSetup(t).authorizer.Authorize(context.Background(), "dave", "otter")
+	res, err = authSetup(t).authorizer.Authorize(context.Background(), person("dave"), "otter")
 	require.NoError(t, err)
 	assert.Len(t, res.Connect, 2, "every provider the person has not connected, at once")
 }
 
 func TestAWorkspaceNotSyncedYetIsRefused(t *testing.T) {
 	f := authSetup(t)
-	res, err := f.authorizer.Authorize(context.Background(), "alice", "fresh")
+	res, err := f.authorizer.Authorize(context.Background(), person("alice"), "fresh")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.Refused, res.Outcome)
 	assert.Contains(t, res.Reason, "has not synced yet")
 	assert.Empty(t, res.Grant)
 
-	res, err = f.authorizer.Authorize(context.Background(), "alice", "pending")
+	res, err = f.authorizer.Authorize(context.Background(), person("alice"), "pending")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.Refused, res.Outcome)
 	assert.Contains(t, res.Reason, "not bound yet")
 }
 
 func TestAnUnknownWorkspaceIsAnError(t *testing.T) {
-	_, err := authSetup(t).authorizer.Authorize(context.Background(), "alice", "nope")
+	_, err := authSetup(t).authorizer.Authorize(context.Background(), person("alice"), "nope")
 	require.Error(t, err)
 }
 
 func TestASignInTheProviderRefusesAsksToConnectAgain(t *testing.T) {
 	f := authSetup(t)
 	f.tokens["alice"]["github"] = "revoked"
-	res, err := f.authorizer.Authorize(context.Background(), "alice", "otter")
+	res, err := f.authorizer.Authorize(context.Background(), person("alice"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
 	assert.Equal(t, []authorize.Connect{{Provider: "github", URL: "https://wm.example.com/connect/github"}}, res.Connect)

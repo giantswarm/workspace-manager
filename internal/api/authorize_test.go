@@ -51,7 +51,7 @@ func TestAuthorizeWorkspaceTool(t *testing.T) {
 	})
 	require.NoError(t, err)
 	cfg := Config{Authorizer: a}
-	ctx := identity.ContextWith(context.Background(), &identity.Identity{Subject: "alice-sub"})
+	ctx := identity.ContextWith(context.Background(), &identity.Identity{Subject: "alice-sub", Email: "alice@example.com"})
 
 	t.Run("listed", func(t *testing.T) {
 		out := NewMCPServer(cfg, "test").HandleMessage(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)).(mcp.JSONRPCResponse)
@@ -63,6 +63,14 @@ func TestAuthorizeWorkspaceTool(t *testing.T) {
 	t.Run("no caller", func(t *testing.T) {
 		res := callTool(t, context.Background(), cfg, "authorize_workspace", map[string]any{"workspace": "otter"})
 		assert.True(t, res.IsError)
+	})
+
+	t.Run("a caller without an email gets no grant", func(t *testing.T) {
+		noEmail := identity.ContextWith(context.Background(), &identity.Identity{Subject: "alice-sub"})
+		res := callTool(t, noEmail, cfg, "authorize_workspace", map[string]any{"workspace": "otter"})
+		require.True(t, res.IsError)
+		require.Len(t, res.Content, 1)
+		assert.Contains(t, res.Content[0].(mcp.TextContent).Text, authorize.ErrNoEmail.Error())
 	})
 
 	t.Run("a refusal is an answer, with its reason", func(t *testing.T) {

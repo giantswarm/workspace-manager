@@ -106,7 +106,8 @@ func (s *Signer) Validate() error {
 	return errors.Join(errs...)
 }
 
-// Sign returns the signed grant for subject and when it expires.
+// Sign returns the signed grant for subject, the person as the verifier names
+// a Session's creator, and when it expires.
 func (s *Signer) Sign(ctx context.Context, subject string, g Grant) (string, time.Time, error) {
 	keys, err := s.Keys.Keys(ctx)
 	if err != nil {
