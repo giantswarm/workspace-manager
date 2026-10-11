@@ -99,13 +99,20 @@ repositories with the person's user-to-server token). The answer's `outcome`:
   connected, with its `/connect/<instance>` link.
 
 The grant's claims are kagent's JWT admission's: `iss` the manager's base URL,
-`sub` the person's Dex subject, `aud` `--grant-audience` (`kagent`), `exp`,
+`sub` the person's email, `aud` `--grant-audience` (`kagent`), `exp`,
 `nbf`, `iat`, `jti`; `workspace` {namespace, name}; `volume` {driver, handle}
 of the workspace's CSI volume; `mounts` `sessions/${SESSION_ID}` read-write
 and `mirrors` read-only; `changed` [`<owner>/<name>`]; and `providers`, one per
 git and API host of each provider of the workspace {hostname, audience (the
 instance), scheme, username, broker (`--grant-broker`, the name kagent knows
 the token endpoint by)}. It carries no token.
+
+The grant names the person by **email**, not by the Dex subject the sign-ins
+are keyed by: kagent's admission compares `sub` with the Session's creator as
+kagent's authenticator identifies the caller, which on the Agent Platform is
+the `email` claim (the edge sets `x-user-id` from it, the controller's user-id
+claim is `email`), so a grant naming the subject admits nobody. A caller whose
+identity carries no email gets an error instead of a grant.
 
 The signing key is `--grant-signing-key=<secret>/<key>`, a PEM private key (EC
 P-256 or P-384, or RSA of at least 2048 bits) in the manager's namespace, read

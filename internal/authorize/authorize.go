@@ -7,6 +7,13 @@
 // repositories, or, for a provider the person has not connected, its connect
 // link. It runs before the workspace's volume is mounted anywhere, because
 // the volume's content is readable in the Session from its first turn.
+//
+// The person has two names here. Their sign-ins are keyed by the Dex subject
+// (package signin). The grant names them by email: kagent's Session admission
+// compares the grant's `sub` with the Session's creator as kagent's
+// authenticator identifies the caller, which on the Agent Platform is the
+// `email` claim (the edge sets `x-user-id` from it, the controller's user-id
+// claim is `email`), so a grant naming the Dex subject admits nobody.
 package authorize
 
 import (
@@ -23,6 +30,7 @@ import (
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/grant"
+	"github.com/giantswarm/workspace-manager/internal/identity"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/signin"
@@ -60,6 +68,10 @@ type Config struct {
 	// provider host of a grant names it.
 	Broker string
 }
+
+// ErrNoEmail refuses a caller whose identity carries no email, which the
+// grant names the person by: a grant without one admits nobody.
+var ErrNoEmail = errors.New("the caller's identity has no email, which the grant names the person by")
 
 // Authorizer runs the check.
 type Authorizer struct {
@@ -131,11 +143,18 @@ type Result struct {
 	Connect []Connect `json:"connect,omitempty"`
 }
 
-// Authorize checks person, the caller in ctx, against the workspace name. An
-// error is a failure to check (the workspace unknown or not the caller's
-// Organization's, a provider or the API server failing); every answer about
+// Authorize checks the caller id against the workspace name: their sign-ins
+// by id.Subject, the grant in their name by id.Email. An error is a failure
+// to check (the workspace unknown or not the caller's Organization's, a caller
+// without an email, a provider or the API server failing); every answer about
 // the person's access is a Result.
-func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Result, error) {
+func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name string) (*Result, error) {
+	if id == nil || id.Subject == "" {
+		return nil, errors.New("authorize: no caller")
+	}
+	if id.Email == "" {
+		return nil, ErrNoEmail
+	}
 	ws, err := a.cfg.Workspaces.Get(ctx, name)
 	if err != nil {
 		return nil, err
@@ -187,7 +206,7 @@ func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Resul
 	// The person's token per provider; every unconnected one is named at once.
 	tokens := map[string]string{}
 	for _, p := range providers {
-		access, err := a.cfg.Tokens.Access(ctx, person, p)
+		access, err := a.cfg.Tokens.Access(ctx, id.Subject, p)
 		switch {
 		case errors.Is(err, signin.ErrNotSignedIn), errors.Is(err, signin.ErrSignInExpired):
 			res.Connect = append(res.Connect, Connect{Provider: p, URL: a.cfg.ConnectURL(p)})
@@ -253,7 +272,7 @@ func (a *Authorizer) Authorize(ctx context.Context, person, name string) (*Resul
 		Changed:   res.Changed,
 		Providers: a.providers(providers),
 	}
-	token, expiry, err := a.cfg.Signer.Sign(ctx, person, g)
+	token, expiry, err := a.cfg.Signer.Sign(ctx, id.Email, g)
 	if err != nil {
 		return nil, err
 	}

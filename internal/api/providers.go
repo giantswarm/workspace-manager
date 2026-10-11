@@ -104,11 +104,21 @@ func addProviderTools(s *mcpserver.MCPServer, c *connect.Connector) {
 	})
 }
 
-// caller is the person a tool acts for: the caller's Dex subject.
-func caller(ctx context.Context) (string, error) {
+// callerIdentity is the authenticated caller, without whom no tool acts.
+func callerIdentity(ctx context.Context) (*identity.Identity, error) {
 	id, ok := identity.FromContext(ctx)
 	if !ok || id.Subject == "" {
-		return "", errors.New("no caller: provider sign-ins need the server's OAuth")
+		return nil, errors.New("no caller: provider sign-ins need the server's OAuth")
+	}
+	return id, nil
+}
+
+// caller is the person a tool acts for: the caller's Dex subject, the key of
+// their provider sign-ins.
+func caller(ctx context.Context) (string, error) {
+	id, err := callerIdentity(ctx)
+	if err != nil {
+		return "", err
 	}
 	return id.Subject, nil
 }
