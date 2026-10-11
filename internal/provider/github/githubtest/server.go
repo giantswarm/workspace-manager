@@ -1,9 +1,12 @@
 // Package githubtest is a stub of the GitHub REST API's parts the github kind
 // calls: a GitHub App's installation on an organization or a user account,
 // its installation tokens, whose JWTs it verifies, and the installation's
-// repository listing (paged), with the rate-limit answers GitHub gives. It
-// goes by a clock the kind under test shares, moved past the listing's
-// freshness by every change, as time passing would.
+// repository listing (paged), with the rate-limit answers GitHub gives; and,
+// with a person's user-to-server token, the owner's listing and a single
+// repository, holding what that person reads. Every repository is private:
+// a user account's listing shows a person none, as GitHub shows only public
+// ones there. It goes by a clock the kind under test shares, moved past the
+// listing's freshness by every change, as time passing would.
 package githubtest
 
 import (
@@ -105,7 +108,8 @@ type Server struct {
 	mu       sync.Mutex
 	repos    map[string]map[string]provider.Item
 	users    map[string]bool
-	tokens   map[string]string // installation token → owner
+	tokens   map[string]string          // installation token → owner
+	persons  map[string]map[string]bool // person's token → owner/name they read
 	minted   int
 	listed   int
 	requests int
@@ -122,6 +126,7 @@ func NewServer(t *testing.T) *Server {
 	s := &Server{
 		Clock: &Clock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}, PageSize: DefaultPageSize, key: key,
 		repos: map[string]map[string]provider.Item{}, users: map[string]bool{}, tokens: map[string]string{},
+		persons: map[string]map[string]bool{},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
@@ -154,6 +159,19 @@ func (s *Server) User(owner string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.users[owner] = true
+}
+
+// Person issues a person's user-to-server token reading the repositories
+// named `<owner>/<name>`, and no other.
+func (s *Server) Person(readable ...string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tok := fmt.Sprintf("ghu_stub%d", len(s.persons)+1)
+	s.persons[tok] = map[string]bool{}
+	for _, key := range readable {
+		s.persons[tok][key] = true
+	}
+	return tok
 }
 
 // LimitNext answers the next n API requests with the rate limit l.
@@ -265,21 +283,74 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusUnauthorized, "Bad credentials")
 			return
 		}
-		s.listRepos(w, r, owner)
+		s.listRepos(w, r, owner, s.items(owner, nil))
+	case r.Method == http.MethodGet && len(parts) == 3 && (parts[0] == "orgs" || parts[0] == "users") && parts[2] == "repos":
+		reads, ok := s.person(r)
+		if !ok {
+			fail(w, http.StatusUnauthorized, "Bad credentials")
+			return
+		}
+		s.mu.Lock()
+		_, known := s.repos[parts[1]]
+		isUser := s.users[parts[1]]
+		s.mu.Unlock()
+		if !known || isUser != (parts[0] == "users") {
+			fail(w, http.StatusNotFound, "Not Found")
+			return
+		}
+		if isUser {
+			reads = nil
+		}
+		s.listRepos(w, r, parts[1], s.items(parts[1], reads))
+	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "repos":
+		reads, ok := s.person(r)
+		if !ok {
+			fail(w, http.StatusUnauthorized, "Bad credentials")
+			return
+		}
+		s.mu.Lock()
+		it, known := s.repos[parts[1]][parts[2]]
+		s.mu.Unlock()
+		if !known || !reads[parts[1]+"/"+parts[2]] {
+			fail(w, http.StatusNotFound, "Not Found")
+			return
+		}
+		writeJSON(w, http.StatusOK, s.repoJSON(parts[1], it))
 	default:
 		fail(w, http.StatusNotFound, "Not Found")
 	}
 }
 
-func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string) {
+// items are owner's repositories by name, only those in reads unless reads
+// is nil.
+func (s *Server) items(owner string, reads map[string]bool) []provider.Item {
 	s.mu.Lock()
-	s.listed++
+	defer s.mu.Unlock()
 	var all []provider.Item
 	for _, it := range s.repos[owner] {
-		all = append(all, it)
+		if reads == nil || reads[owner+"/"+it.Name] {
+			all = append(all, it)
+		}
 	}
-	s.mu.Unlock()
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
+	return all
+}
+
+// person is what the bearer reads, false for anything but a person's token.
+func (s *Server) person(r *http.Request) (map[string]bool, bool) {
+	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reads, ok := s.persons[tok]
+	return reads, ok
+}
+
+// listRepos serves all as one page of a listing: the installation's
+// (wrapped, as GitHub wraps it) or an owner's (a plain array).
+func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string, all []provider.Item) {
+	s.mu.Lock()
+	s.listed++
+	s.mu.Unlock()
 
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	page = max(page, 1)
@@ -293,22 +364,30 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string)
 	}
 	out := make([]map[string]any, 0, to-from)
 	for _, it := range all[from:to] {
-		topics := it.Topics
-		if topics == nil {
-			topics = []string{}
-		}
-		var lang any
-		if it.Language != "" {
-			lang = it.Language
-		}
-		out = append(out, map[string]any{
-			"name": it.Name, "full_name": owner + "/" + it.Name, "owner": map[string]any{"login": owner},
-			"language": lang, "topics": topics, "archived": it.Archived, "fork": it.Fork,
-			"pushed_at": it.LastChange.UTC().Format(time.RFC3339), "size": it.SizeKiB,
-			"clone_url": s.URL + "/" + owner + "/" + it.Name + ".git", "default_branch": "main",
-		})
+		out = append(out, s.repoJSON(owner, it))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(all), "repository_selection": "all", "repositories": out})
+	if strings.HasSuffix(r.URL.Path, "/installation/repositories") {
+		writeJSON(w, http.StatusOK, map[string]any{"total_count": len(all), "repository_selection": "all", "repositories": out})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) repoJSON(owner string, it provider.Item) map[string]any {
+	topics := it.Topics
+	if topics == nil {
+		topics = []string{}
+	}
+	var lang any
+	if it.Language != "" {
+		lang = it.Language
+	}
+	return map[string]any{
+		"name": it.Name, "full_name": owner + "/" + it.Name, "owner": map[string]any{"login": owner},
+		"private": true, "language": lang, "topics": topics, "archived": it.Archived, "fork": it.Fork,
+		"pushed_at": it.LastChange.UTC().Format(time.RFC3339), "size": it.SizeKiB,
+		"clone_url": s.URL + "/" + owner + "/" + it.Name + ".git", "default_branch": "main",
+	}
 }
 
 func (s *Server) validJWT(r *http.Request) bool {

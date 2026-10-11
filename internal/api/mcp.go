@@ -1,5 +1,6 @@
 // Package api is workspace-manager's MCP surface: the person's provider
-// sign-ins (providers.go) and the workspace operations' tools, each reading
+// sign-ins (providers.go), the access check at a Session's start
+// (authorize.go) and the workspace operations' tools, each reading
 // and writing through a workspace.Store, which checks the caller's
 // Organization and writes with Config.Kube, the manager's own clients.
 package api
@@ -15,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/giantswarm/workspace-manager/internal/authorize"
 	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
@@ -37,6 +39,8 @@ type Config struct {
 	// Connector, when set, serves the person's provider sign-ins:
 	// list_providers, connect_provider and disconnect_provider.
 	Connector *connect.Connector
+	// Authorizer, when set, serves authorize_workspace.
+	Authorizer *authorize.Authorizer
 }
 
 // genAIToolName labels the mcp.tools/call server span with the called tool
@@ -61,6 +65,9 @@ func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
 	)
 	if cfg.Connector != nil {
 		addProviderTools(s, cfg.Connector)
+	}
+	if cfg.Authorizer != nil {
+		addAuthorizeTool(s, cfg.Authorizer)
 	}
 	return s
 }

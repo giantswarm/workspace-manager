@@ -195,18 +195,77 @@ func (k *Kind) list(ctx context.Context, cred oauth2.TokenSource, owner string) 
 			if !strings.EqualFold(r.Owner.Login, owner) {
 				return nil, fmt.Errorf("listing %s: the credential is the App's installation on %s", owner, r.Owner.Login)
 			}
-			items = append(items, provider.Item{
-				Owner:         owner,
-				Name:          r.Name,
-				Language:      r.Language,
-				Topics:        r.Topics,
-				Archived:      r.Archived,
-				Fork:          r.Fork,
-				LastChange:    r.PushedAt,
-				SizeKiB:       r.Size,
-				CloneURL:      r.CloneURL,
-				DefaultBranch: r.DefaultBranch,
-			})
+			items = append(items, r.item(owner))
+		}
+	}
+	return items, nil
+}
+
+// Readable implements provider.Kind with the person's user-to-server token,
+// which reads what both the person and the App's installation can: one
+// listing of the owner's repositories as an organization; on a user account,
+// whose listing shows only public repositories, each named repository the
+// listing left out is asked for on its own. A repository GitHub answers 404
+// or 403 for is one the person cannot read.
+func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
+	listed, isUser, err := k.listAs(ctx, cred, owner)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, n := range names {
+		wanted[strings.ToLower(n)] = true
+	}
+	var items []provider.Item
+	for _, it := range listed {
+		if wanted[strings.ToLower(it.Name)] {
+			items = append(items, it)
+			delete(wanted, strings.ToLower(it.Name))
+		}
+	}
+	if !isUser {
+		return items, nil
+	}
+	for _, n := range names {
+		if !wanted[strings.ToLower(n)] {
+			continue
+		}
+		var r repository
+		err := k.get(ctx, cred, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(n), &r)
+		var se *statusError
+		switch {
+		case errors.As(err, &se) && !se.limited && (se.status == http.StatusNotFound || se.status == http.StatusForbidden):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("reading %s/%s: %w", owner, n, err)
+		}
+		items = append(items, r.item(owner))
+	}
+	return items, nil
+}
+
+// listAs pages through owner's repositories as cred sees them: an
+// organization's every type, else, on a 404, a user account's.
+func (k *Kind) listAs(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, bool, error) {
+	items, err := k.listPages(ctx, cred, owner, "/orgs/"+url.PathEscape(owner)+"/repos?type=all&per_page=100")
+	var se *statusError
+	if !errors.As(err, &se) || se.status != http.StatusNotFound {
+		return items, false, err
+	}
+	items, err = k.listPages(ctx, cred, owner, "/users/"+url.PathEscape(owner)+"/repos?type=all&per_page=100")
+	return items, true, err
+}
+
+func (k *Kind) listPages(ctx context.Context, cred oauth2.TokenSource, owner, path string) ([]provider.Item, error) {
+	var items []provider.Item
+	for next := k.api.String() + path; next != ""; {
+		var page []repository
+		var err error
+		if next, err = k.getPage(ctx, cred, next, &page); err != nil {
+			return nil, fmt.Errorf("listing %s: %w", owner, err)
+		}
+		for _, r := range page {
+			items = append(items, r.item(owner))
 		}
 	}
 	return items, nil
@@ -226,6 +285,21 @@ type repository struct {
 	Size          int64     `json:"size"`
 	CloneURL      string    `json:"clone_url"`
 	DefaultBranch string    `json:"default_branch"`
+}
+
+func (r repository) item(owner string) provider.Item {
+	return provider.Item{
+		Owner:         owner,
+		Name:          r.Name,
+		Language:      r.Language,
+		Topics:        r.Topics,
+		Archived:      r.Archived,
+		Fork:          r.Fork,
+		LastChange:    r.PushedAt,
+		SizeKiB:       r.Size,
+		CloneURL:      r.CloneURL,
+		DefaultBranch: r.DefaultBranch,
+	}
 }
 
 func (k *Kind) get(ctx context.Context, cred oauth2.TokenSource, path string, out any) error {

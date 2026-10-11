@@ -21,6 +21,7 @@ from that identity and writes with its own ServiceAccount.
 | `/.well-known/oauth-*`, `/oauth/*` | OAuth metadata and this server's own OAuth flow, with `--enable-oauth` |
 | `/connect/<instance>`, `/callback/<instance>`, `/signin` | A person's provider sign-in in the browser, with providers and `--enable-oauth`; otherwise a 503 "No provider configured" page (below) |
 | `POST /token` | Token exchange (RFC 8693) for the installation's kagent client, with providers, `--enable-oauth` and `--token-exchange-client-id` (below) |
+| `GET /.well-known/jwks.json` | The workspace grant's verification keys, unauthenticated, with providers, `--enable-oauth` and `--grant-signing-key` (below) |
 | `:9464/metrics` | Prometheus metrics (`OTEL_METRICS_EXPORTER=prometheus`) |
 
 ## Provider sign-ins
@@ -76,6 +77,43 @@ every other client gets `invalid_client`.
   outcome), never with a token.
 
 Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+## Access at a Session's start: `authorize_workspace` and the grant
+
+Before a Session starts on a workspace, the surface calls the MCP tool
+`authorize_workspace(workspace)` as the person. The manager reads the last
+sync's manifest (the ConfigMap `status.manifest` names) and, with the person's
+own sign-in to each provider of the workspace, checks per owner which of its
+repositories the person reads (on GitHub one listing of the owner's
+repositories with the person's user-to-server token). The answer's `outcome`:
+
+- `granted`: the person reads every repository. `grant` is a JWT signed by
+  the manager, valid for `--grant-ttl` (5 minutes), to be passed to
+  agent-manager's `start_session`, whose Session kagent admits only against
+  this manager's keys. `changed` names the repositories pushed to since the
+  sync, which the Session fetches before its first turn.
+- `refused`: `unreadable` names the repositories the person cannot read; or
+  `reason` says why the workspace cannot be started on yet: it has not
+  synced, its volume is not bound, or it is being deleted.
+- `connect_required`: `connect` lists each provider the person has not
+  connected, with its `/connect/<instance>` link.
+
+The grant's claims are kagent's JWT admission's: `iss` the manager's base URL,
+`sub` the person's Dex subject, `aud` `--grant-audience` (`kagent`), `exp`,
+`nbf`, `iat`, `jti`; `workspace` {namespace, name}; `volume` {driver, handle}
+of the workspace's CSI volume; `mounts` `sessions/${SESSION_ID}` read-write
+and `mirrors` read-only; `changed` [`<owner>/<name>`]; and `providers`, one per
+git and API host of each provider of the workspace {hostname, audience (the
+instance), scheme, username, broker (`--grant-broker`, the name kagent knows
+the token endpoint by)}. It carries no token.
+
+The signing key is `--grant-signing-key=<secret>/<key>`, a PEM private key (EC
+P-256 or P-384, or RSA of at least 2048 bits) in the manager's namespace, read
+at start. Every other entry of that Secret holding such a key is published
+beside it at `/.well-known/jwks.json`, so a key rotates without a gap: add the
+next key to the Secret, point the reference at it (a verifier fetches the
+keys again for a key id it does not know), and remove the old one after its
+last grant expired. The Secret is read again every 30 seconds.
 
 ## The Workspace API
 
@@ -197,9 +235,11 @@ volume mounted at `--volume`:
 - `internal/workspace`: the Organization check, the provider validation and the Workspace store every tool reads and writes through.
 - `internal/controller`: the manager's controller, watching the Workspaces of the workspaces' namespace: it claims each one's volume from the installation's StorageClass and writes the Workspace's status (the claim, the `VolumeClaimed` condition), which nothing else writes.
 - `internal/kube`: the manager's Kubernetes clients.
-- `internal/api`: the MCP server, its tools (`list_providers`, `connect_provider`, `disconnect_provider`) and its tracing and metrics middleware.
+- `internal/api`: the MCP server, its tools (`list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
+- `internal/authorize`: the access check at a Session's start: the manifest against what the person reads at each provider, the volume's CSI handle, and the grant.
+- `internal/grant`: the workspace grant: its claims, the signing keys from their Secret and the JWKS.
 - `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.
-- `internal/provider`: the provider contract (listing, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, the listing cache (one listing per owner within a minute, shared by the workspaces resolved on the owner and by an editor's picker), and the provider instance list (`--providers-config`, the chart's `providers`).
+- `internal/provider`: the provider contract (listing, what a person reads, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, the listing cache (one listing per owner within a minute, shared by the workspaces resolved on the owner and by an editor's picker), and the provider instance list (`--providers-config`, the chart's `providers`).
 - `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes. The `github` kind lists a GitHub App installation's repositories (name, language, topics, archived, fork, last push, size in KiB) with the installation token it mints per owner and renews before expiry, and waits out a rate limit as GitHub asks (`Retry-After`, the primary limit's reset, else a minute).
 - `internal/exchange`: the token exchange `POST /token` (RFC 8693) for the installation's kagent client.
 - `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.

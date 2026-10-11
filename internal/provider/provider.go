@@ -18,14 +18,21 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Kind is one provider implementation, configured as one instance. Its four
-// parts are what a workspace needs from a provider.
+// Kind is one provider implementation, configured as one instance. Its parts
+// are what a workspace needs from a provider.
 type Kind interface {
 	// List resolves an owner (an organization, a user account, a group) to
 	// every item it holds that cred can see, from a listing at most
 	// ListingFreshness old. Selection by name, language and topics is
 	// Select's, over what List reports.
 	List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]Item, error)
+
+	// Readable returns those of owner's items named in names that the person
+	// whose own sign-in cred is can read, each with its last change: the
+	// access check at a Session's start. It never answers from a cache, so
+	// the answer is the person's access at the time of the call; a name
+	// missing from the result is an item the person cannot read.
+	Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]Item, error)
 
 	// SyncCredential is the provider's own credential for an owner, the one
 	// the sync fetches with, built from the instance's Secret references.

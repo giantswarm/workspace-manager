@@ -2,6 +2,12 @@ package cmd
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,10 +17,17 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/controller"
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/signin"
 )
 
 func TestLoadProvidersFailsTheStart(t *testing.T) {
@@ -88,7 +101,8 @@ func TestServeControllerFlags(t *testing.T) {
 
 func validServeOptions() *serveOptions {
 	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour,
-		sizingFactor: 2, sizingHeadroom: "10Gi", sizingMaxSize: "500Gi"}
+		sizingFactor: 2, sizingHeadroom: "10Gi", sizingMaxSize: "500Gi",
+		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager"}
 }
 
 func TestServeControllerConfig(t *testing.T) {
@@ -133,15 +147,51 @@ func TestServeControllerConfigFailsTheStart(t *testing.T) {
 	}
 }
 
-func TestCheckGrantSigningKey(t *testing.T) {
-	secrets := kube.Secrets{Namespace: "wm", Client: fake.NewClientset(&corev1.Secret{
+// kubeClients are fake clients as kube.Client.
+type kubeClients struct {
+	kubernetes.Interface
+	dynamic dynamic.Interface
+}
+
+func (c kubeClients) Typed() kubernetes.Interface             { return c.Interface }
+func (c kubeClients) Dynamic() dynamic.Interface              { return c.dynamic }
+func (c kubeClients) Discovery() discovery.DiscoveryInterface { return c.Interface.Discovery() }
+
+func TestWorkspaceGrantsFailTheStart(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKCS8PrivateKey(ecKey)
+	require.NoError(t, err)
+	clients := kubeClients{Interface: fake.NewClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "workspace-manager-keys", Namespace: "wm"},
-		Data:       map[string][]byte{"grant": make([]byte, 32), "short": make([]byte, 16)},
-	})}
+		Data: map[string][]byte{
+			"grant": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}),
+			"bytes": make([]byte, 32),
+		},
+	}), dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())}
+	connectClients, err := connect.NewClients(nil, kube.Secrets{}, "https://wm.example.com")
+	require.NoError(t, err)
+	si := &signIns{store: &signin.KubeStore{}, clients: connectClients, baseURL: "https://wm.example.com"}
 	ctx := context.Background()
-	require.NoError(t, checkGrantSigningKey(ctx, secrets, "workspace-manager-keys/grant"))
-	assert.ErrorContains(t, checkGrantSigningKey(ctx, secrets, "workspace-manager-keys"), "must be <secret>/<key>")
-	assert.ErrorContains(t, checkGrantSigningKey(ctx, secrets, "workspace-manager-keys/missing"), `has no key "missing"`)
-	assert.ErrorContains(t, checkGrantSigningKey(ctx, secrets, "other/grant"), "not found")
-	assert.ErrorContains(t, checkGrantSigningKey(ctx, secrets, "workspace-manager-keys/short"), "holds 16 bytes, at least 32")
+	grants := func(ref string, mutate ...func(*serveOptions)) error {
+		o := validServeOptions()
+		o.managerNamespace, o.grantSigningKey = "wm", ref
+		for _, m := range mutate {
+			m(o)
+		}
+		_, _, err := workspaceGrants(ctx, o, si, clients, nil, nil, slog.Default())
+		return err
+	}
+
+	require.NoError(t, grants("workspace-manager-keys/grant"))
+	a, jwks, err := workspaceGrants(ctx, &serveOptions{}, si, clients, nil, nil, slog.Default())
+	require.NoError(t, err)
+	assert.True(t, a == nil && jwks == nil, "no signing key, no authorize_workspace and no JWKS")
+	assert.ErrorContains(t, grants("workspace-manager-keys"), "must be <secret>/<key>")
+	assert.ErrorContains(t, grants("workspace-manager-keys/missing"), `no entry "missing"`)
+	assert.ErrorContains(t, grants("other/grant"), "not found")
+	assert.ErrorContains(t, grants("workspace-manager-keys/bytes"), "not a PEM private key")
+	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantTTL = 0 }), "--grant-ttl must be positive")
+	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAudience = "" }), "an issuer and an audience")
+	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantBroker = "" }), "broker name")
 }

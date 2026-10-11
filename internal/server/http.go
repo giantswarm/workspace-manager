@@ -35,6 +35,9 @@ type Config struct {
 	// installation's kagent client. It needs OAuth, which validates the
 	// subject token.
 	TokenExchange *exchange.Config
+	// JWKS, when set, publishes the workspace grant's verification keys at
+	// grant.JWKSPath.
+	JWKS http.Handler
 }
 
 // Server is the assembled HTTP server.

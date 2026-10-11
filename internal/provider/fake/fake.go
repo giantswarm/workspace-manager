@@ -31,16 +31,31 @@ type Values struct {
 	ClientSecret provider.SecretRef `json:"clientSecret"`
 }
 
-// Store is the provider's data: items per owner, and the token it accepts.
+// Store is the provider's data: items per owner, the sync token it accepts
+// and the people's tokens with what each reads.
 type Store struct {
-	mu    sync.Mutex
-	items map[string]map[string]provider.Item
-	token string
+	mu      sync.Mutex
+	items   map[string]map[string]provider.Item
+	token   string
+	persons map[string]map[string]bool
 }
 
 // NewStore returns an empty store accepting token.
 func NewStore(token string) *Store {
-	return &Store{items: map[string]map[string]provider.Item{}, token: token}
+	return &Store{items: map[string]map[string]provider.Item{}, token: token, persons: map[string]map[string]bool{}}
+}
+
+// Person issues a person's token reading the items named `<owner>/<name>`,
+// and no other.
+func (s *Store) Person(readable ...string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tok := fmt.Sprintf("fake-person-%d", len(s.persons)+1)
+	s.persons[tok] = map[string]bool{}
+	for _, key := range readable {
+		s.persons[tok][key] = true
+	}
+	return tok
 }
 
 // Put creates or replaces an item.
@@ -100,6 +115,28 @@ func (k *Kind) List(_ context.Context, cred oauth2.TokenSource, owner string) ([
 		it.CloneURL = "https://" + k.v.Host + "/" + owner + "/" + it.Name + ".git"
 		it.DefaultBranch = "main"
 		items = append(items, it)
+	}
+	return items, nil
+}
+
+// Readable implements provider.Kind: the named items the person's token
+// reads; any other token is refused.
+func (k *Kind) Readable(_ context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
+	tok, err := cred.Token()
+	if err != nil {
+		return nil, err
+	}
+	k.store.mu.Lock()
+	defer k.store.mu.Unlock()
+	reads, ok := k.store.persons[tok.AccessToken]
+	if !ok {
+		return nil, errors.New("fake: unauthorized")
+	}
+	var items []provider.Item
+	for _, n := range names {
+		if it, ok := k.store.items[owner][n]; ok && reads[owner+"/"+n] {
+			items = append(items, it)
+		}
 	}
 	return items, nil
 }

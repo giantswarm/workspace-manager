@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/workspace-manager/internal/provider"
 )
@@ -30,6 +31,10 @@ type Backend interface {
 	Put(item provider.Item)
 	// Delete removes an item.
 	Delete(owner, name string)
+	// Person issues a person's own access token, as their sign-in to the
+	// provider holds it, reading the items named `<owner>/<name>` and no
+	// other.
+	Person(readable ...string) string
 }
 
 // Owner and Other are the owners the cases put items under.
@@ -160,6 +165,34 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		recorded = provider.StateOf(provider.Select(list(), src))
 		b.Delete(Owner, "cli")
 		assert.Equal(t, provider.Changes{Removed: []string{Owner + "/cli"}}, provider.Diff(recorded, provider.Select(list(), src)), "a deleted repository leaves")
+	})
+
+	t.Run("a person's access", func(t *testing.T) {
+		k, b, _ := setup(t)
+		person := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: b.Person(Owner+"/api", Owner+"/docs", Other+"/theirs")})
+		items, err := k.Readable(context.Background(), person, Owner, []string{"api", "web", "docs", "missing"})
+		require.NoError(t, err)
+		byName := map[string]provider.Item{}
+		for _, it := range items {
+			assert.Equal(t, Owner, it.Owner)
+			byName[it.Name] = it
+		}
+		assert.ElementsMatch(t, []string{"api", "docs"}, keys(byName), "exactly the named items the person reads")
+		assert.True(t, byName["api"].LastChange.Equal(t0), "last change %s", byName["api"].LastChange)
+
+		b.Put(provider.Item{Owner: Owner, Name: "api", Language: "Go", Topics: []string{platform, backend}, LastChange: t0.Add(48 * time.Hour)})
+		items, err = k.Readable(context.Background(), person, Owner, []string{"api"})
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		assert.True(t, items[0].LastChange.Equal(t0.Add(48*time.Hour)), "a push shows at once: the person's access is never cached")
+
+		nobody := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: b.Person()})
+		items, err = k.Readable(context.Background(), nobody, Owner, []string{"api", "web"})
+		require.NoError(t, err)
+		assert.Empty(t, items, "a person reading nothing reads none of them")
+
+		_, err = k.Readable(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "forged"}), Owner, []string{"api"})
+		assert.Error(t, err, "a token the provider does not know is refused, not read as no access")
 	})
 
 	t.Run("run-time hosts", func(t *testing.T) {
