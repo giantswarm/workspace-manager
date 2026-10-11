@@ -28,6 +28,10 @@ func (k oauthKind) List(context.Context, oauth2.TokenSource, string) ([]provider
 	return nil, nil
 }
 
+func (k oauthKind) Readable(context.Context, oauth2.TokenSource, string, []string) ([]provider.Item, error) {
+	return nil, nil
+}
+
 func (k oauthKind) SyncCredential(context.Context, provider.Secrets, string) (oauth2.TokenSource, error) {
 	return nil, nil
 }

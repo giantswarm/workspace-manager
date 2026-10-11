@@ -255,9 +255,8 @@ func TestEnterpriseServer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, provider.Hosts{
 		Git: []provider.Host{{Name: "ghe.example.com", Scheme: provider.SchemeBasic, User: "x-access-token"}},
-		API: []provider.Host{{Name: "ghe.example.com", Scheme: provider.SchemeBearer}},
 		CLI: "gh",
-	}, k.Hosts())
+	}, k.Hosts(), "the API under the git host takes the git host's one credential")
 	s := k.SignIn()
 	assert.Equal(t, "https://ghe.example.com/login/oauth/authorize", s.AuthURL)
 	assert.Equal(t, "https://ghe.example.com/login/oauth/access_token", s.TokenURL)

@@ -38,7 +38,37 @@ tests:
             - apiGroups: [""]
               resources: [persistentvolumeclaims]
               verbs: [get, create]
+            # The last sync's manifest.
+            - apiGroups: [""]
+              resources: [configmaps]
+              verbs: [get]
       - documentIndex: 1
+        equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: workspace-manager
+              namespace: agent-platform
+
+  - it: lets the manager read the PersistentVolumes, and nothing else cluster-wide, once it signs grants
+    template: templates/rbac.yaml
+    set:
+      grant:
+        signingKey: {name: workspace-manager-keys, key: grant}
+    asserts:
+      - hasDocuments:
+          count: 4
+      - documentIndex: 2
+        isKind:
+          of: ClusterRole
+      - documentIndex: 2
+        equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [persistentvolumes]
+              verbs: [get]
+      - documentIndex: 3
         equal:
           path: subjects
           value:

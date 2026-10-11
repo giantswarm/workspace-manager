@@ -96,6 +96,9 @@ spec:
             {{- with .Values.grant.signingKey.name }}
             {{- /* The workspace grant's signing key, read at start. */}}
             - --grant-signing-key={{ . }}/{{ required "grant.signingKey.key is required with grant.signingKey.name" $.Values.grant.signingKey.key }}
+            - --grant-ttl={{ $.Values.grant.ttl }}
+            - --grant-audience={{ $.Values.grant.audience }}
+            - --grant-broker={{ $.Values.grant.broker }}
             {{- end }}
             {{- with .Values.tokenExchange.clientID }}
             {{- /* POST /token for the installation's kagent client. */}}

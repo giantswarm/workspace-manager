@@ -6,6 +6,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/giantswarm/workspace-manager/internal/connect"
+	"github.com/giantswarm/workspace-manager/internal/grant"
 )
 
 // Pages are the person's browser pages for connecting a provider
@@ -45,6 +46,12 @@ func (s *Server) routes(mux *http.ServeMux, cfg Config, mcpSrv *mcpserver.MCPSer
 	// never a bearer token.
 	if s.exchange != nil {
 		s.exchange.Register(mux)
+	}
+
+	// The grant's verification keys are public: kagent's admission fetches
+	// them without credentials.
+	if cfg.JWKS != nil {
+		mux.Handle("GET "+grant.JWKSPath, cfg.JWKS)
 	}
 
 	// mcp-go's default session manager issues session IDs without keeping

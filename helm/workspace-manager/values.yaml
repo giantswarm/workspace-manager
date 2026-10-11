@@ -79,7 +79,8 @@ sync:
 sessions:
   # -- How long a Session's directory on the workspace volume outlives the
   # Session's last turn, a Go duration (`720h` is 30 days). Passed to `serve`
-  # as its `sessions-cleanup-after` flag.
+  # as its `sessions-cleanup-after` flag. Accepted, not yet in effect: no
+  # session directory is cleaned up yet, and the manager logs it at start.
   cleanupAfter: 720h
 
 crds:
@@ -121,13 +122,26 @@ signin:
     current: ""
 
 grant:
-  # -- The key the workspace grant a Session carries is signed with: `{name,
-  # key}` of a Secret in the release namespace holding at least 32 random
-  # bytes, read at start (a missing or short key fails it); the chart never
-  # renders it. Empty signs no grant. Needs `providers` and `oauth.enabled`.
+  # -- The key the workspace grant a Session carries is signed with (the
+  # grant `authorize_workspace` returns): `{name, key}` of a Secret in the
+  # release namespace whose entry is a PEM private key, EC P-256 or P-384 or
+  # RSA of at least 2048 bits, read at start (a missing or unusable key fails
+  # it); the chart never renders it. Every other entry of the Secret holding
+  # such a key is published beside it at `/.well-known/jwks.json`, so a key
+  # rotates by adding the next one to the Secret, pointing `key` at it and
+  # removing the old one once its last grant expired. Empty serves no
+  # `authorize_workspace` and no JWKS. Needs `providers` and `oauth.enabled`.
   signingKey:
     name: ""
     key: ""
+  # -- How long a grant is valid, a Go duration: the time a surface has to
+  # pass it to agent-manager's `start_session`.
+  ttl: 5m
+  # -- The grant's audience: the one kagent's Session admission requires.
+  audience: kagent
+  # -- The name kagent knows this manager's token endpoint by, as its token
+  # broker: every provider host of a grant names it.
+  broker: workspace-manager
 
 tokenExchange:
   # -- The installation's kagent client: the only client the token exchange

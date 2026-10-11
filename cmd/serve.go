@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -19,9 +20,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/giantswarm/workspace-manager/internal/api"
+	"github.com/giantswarm/workspace-manager/internal/authorize"
 	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/controller"
 	"github.com/giantswarm/workspace-manager/internal/exchange"
+	"github.com/giantswarm/workspace-manager/internal/grant"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/kinds"
@@ -70,6 +73,9 @@ type serveOptions struct {
 	signInKeysSecret string
 	signInCurrentKey string
 	grantSigningKey  string
+	grantTTL         time.Duration
+	grantAudience    string
+	grantBroker      string
 
 	tokenExchangeClientID     string
 	tokenExchangeClientSecret string
@@ -112,7 +118,10 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace: provider Secrets, the sealing keys and the sign-ins live there (POD_NAMESPACE)")
 	f.StringVar(&o.signInKeysSecret, "signin-keys-secret", envOr("WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET", ""), "Secret in the manager's namespace with the sign-in sealing keys, each data entry a key id and its 32 raw bytes; required with providers and OAuth (WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET)")
 	f.StringVar(&o.signInCurrentKey, "signin-current-key", envOr("WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY", ""), "The id of the sealing key that seals new sign-ins (WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY)")
-	f.StringVar(&o.grantSigningKey, "grant-signing-key", envOr("WORKSPACE_MANAGER_GRANT_SIGNING_KEY", ""), "The key the workspace grant a Session carries is signed with, as `<secret>/<key>` of a Secret in the manager's namespace, at least 32 bytes, read at start; empty signs no grant. Needs providers and OAuth (WORKSPACE_MANAGER_GRANT_SIGNING_KEY)")
+	f.StringVar(&o.grantSigningKey, "grant-signing-key", envOr("WORKSPACE_MANAGER_GRANT_SIGNING_KEY", ""), "The key the workspace grant a Session carries is signed with, as `<secret>/<key>` of a Secret in the manager's namespace: a PEM private key, EC P-256 or P-384 or RSA of at least 2048 bits. Every other entry of the Secret holding such a key is published beside it at "+grant.JWKSPath+", so a key rotates by adding the next one, switching to it and removing the old one. Empty serves no authorize_workspace. Needs providers and OAuth (WORKSPACE_MANAGER_GRANT_SIGNING_KEY)")
+	f.DurationVar(&o.grantTTL, "grant-ttl", envDuration("WORKSPACE_MANAGER_GRANT_TTL", grant.DefaultTTL), "How long a workspace grant is valid, a Go duration (WORKSPACE_MANAGER_GRANT_TTL)")
+	f.StringVar(&o.grantAudience, "grant-audience", envOr("WORKSPACE_MANAGER_GRANT_AUDIENCE", "kagent"), "The workspace grant's audience: the one kagent's Session admission requires (WORKSPACE_MANAGER_GRANT_AUDIENCE)")
+	f.StringVar(&o.grantBroker, "grant-broker", envOr("WORKSPACE_MANAGER_GRANT_BROKER", "workspace-manager"), "The name kagent knows this manager's token endpoint by, which every provider host of a grant names (WORKSPACE_MANAGER_GRANT_BROKER)")
 	f.StringVar(&o.tokenExchangeClientID, "token-exchange-client-id", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID", ""), "The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers; empty serves no token exchange. Needs providers and OAuth (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID)")
 	f.StringVar(&o.tokenExchangeClientSecret, "token-exchange-client-secret", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET", ""), "The kagent client's secret as `<secret>/<key>` of a Secret in the manager's namespace, read on every exchange (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
@@ -177,6 +186,9 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		log.Warn("no StorageClass: no workspace volume is claimed until --storage-class (the chart's storage.storageClassName) names the installation's read-write-many class")
 	}
 	ctl := controller.New(ctlCfg)
+	// Accepted from the chart, which the agent-platform meta chart forwards
+	// it to, ahead of the cleanup that uses it.
+	log.Warn("sessions.cleanupAfter is accepted, not yet in effect: no session directory is cleaned up yet", "sessionsCleanupAfter", o.sessionCleanupAfter)
 
 	srvCfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
 	if o.oauthEnabled {
@@ -203,6 +215,9 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			}
 			apiCfg.Connector, srvCfg.Pages = si.connector, si.pages
 			if srvCfg.TokenExchange, err = tokenExchange(o, si, providers, log); err != nil {
+				return err
+			}
+			if apiCfg.Authorizer, srvCfg.JWKS, err = workspaceGrants(ctx, o, si, clients, orgs, providers, log); err != nil {
 				return err
 			}
 		}
@@ -237,6 +252,8 @@ type signIns struct {
 	store     *signin.KubeStore
 	clients   *connect.Clients
 	secrets   kube.Secrets
+	// baseURL is the manager's public URL, the grant's issuer.
+	baseURL string
 }
 
 // providerSignIns builds the person's provider sign-ins: the sealing keys,
@@ -271,14 +288,8 @@ func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAut
 	if err != nil {
 		return nil, err
 	}
-	if o.grantSigningKey != "" {
-		if err := checkGrantSigningKey(ctx, secrets, o.grantSigningKey); err != nil {
-			return nil, err
-		}
-		log.Info("grant signing key read", "key", o.grantSigningKey)
-	}
 	log.Info("provider sign-ins enabled", "namespace", o.managerNamespace, "keysSecret", o.signInKeysSecret, "currentKey", keyring.Current())
-	return &signIns{connector: conn, pages: pages, store: store, clients: oauthClients, secrets: secrets}, nil
+	return &signIns{connector: conn, pages: pages, store: store, clients: oauthClients, secrets: secrets, baseURL: oauthCfg.BaseURL}, nil
 }
 
 // controllerConfig is the controller's configuration from the flags, the
@@ -310,26 +321,47 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	return cfg, nil
 }
 
-// minGrantSigningKey is the shortest grant signing key accepted, in bytes.
-const minGrantSigningKey = 32
-
-// checkGrantSigningKey reads the grant signing key `<secret>/<key>` and
-// refuses a malformed reference, a missing entry and a key shorter than
-// minGrantSigningKey, so a misconfigured key fails the start instead of
-// the first grant.
-func checkGrantSigningKey(ctx context.Context, secrets kube.Secrets, ref string) error {
-	name, key, ok := strings.Cut(ref, "/")
+// workspaceGrants builds authorize_workspace and the grant's JWKS; nil
+// without --grant-signing-key. The signing key is read now, so a missing or
+// unusable key fails the start instead of the first grant.
+func workspaceGrants(ctx context.Context, o *serveOptions, si *signIns, clients kube.Client, orgs workspace.Organizations,
+	providers []provider.Instance, log *slog.Logger,
+) (*authorize.Authorizer, http.Handler, error) {
+	if o.grantSigningKey == "" {
+		return nil, nil, nil
+	}
+	name, key, ok := strings.Cut(o.grantSigningKey, "/")
 	if !ok || name == "" || key == "" {
-		return fmt.Errorf("--grant-signing-key must be <secret>/<key>, got %q", ref)
+		return nil, nil, fmt.Errorf("--grant-signing-key must be <secret>/<key>, got %q", o.grantSigningKey)
 	}
-	v, err := secrets.Value(ctx, provider.SecretRef{Name: name, Key: key})
+	if o.grantTTL <= 0 {
+		return nil, nil, fmt.Errorf("--grant-ttl must be positive, got %s", o.grantTTL)
+	}
+	keys := &grant.KeySource{Client: clients.Typed(), Namespace: o.managerNamespace, Secret: name, Key: key}
+	k, err := keys.Keys(ctx)
 	if err != nil {
-		return fmt.Errorf("grant signing key: %w", err)
+		return nil, nil, err
 	}
-	if len(v) < minGrantSigningKey {
-		return fmt.Errorf("grant signing key %s holds %d bytes, at least %d are needed", ref, len(v), minGrantSigningKey)
+	names := make([]string, len(providers))
+	for i, p := range providers {
+		names[i] = p.Name
 	}
-	return nil
+	a, err := authorize.New(authorize.Config{
+		Workspaces: workspace.NewStore(clients.Dynamic(), o.namespace, orgs, names),
+		Core:       clients.Typed(),
+		Namespace:  o.namespace,
+		Instances:  providers,
+		Tokens:     si.store,
+		ConnectURL: si.clients.ConnectURL,
+		Signer:     &grant.Signer{Keys: keys, Issuer: si.baseURL, Audience: o.grantAudience, TTL: o.grantTTL},
+		Broker:     o.grantBroker,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Info("workspace grants enabled", "signingKey", o.grantSigningKey, "keyID", k.Signing.KeyID, "published", len(k.Public.Keys),
+		"issuer", si.baseURL, "audience", o.grantAudience, "ttl", o.grantTTL, "broker", o.grantBroker)
+	return a, grant.JWKS(keys, log), nil
 }
 
 // tokenExchange configures POST /token for the installation's kagent client;
