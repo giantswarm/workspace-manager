@@ -182,11 +182,14 @@ type Host struct {
 	User string
 }
 
-// Hosts are a provider's run-time hosts.
+// Hosts are a provider's run-time hosts. A host name appears once: a host
+// takes one credential, so a host serving git and the API is listed under
+// Git alone, with a scheme both take.
 type Hosts struct {
 	// Git hosts serve git over HTTPS.
 	Git []Host
-	// API hosts serve the provider's API, which its CLI calls.
+	// API hosts serve the provider's API, which its CLI calls, where they are
+	// not git hosts.
 	API []Host
 	// CLI is the provider's command-line tool (`gh`, `glab`).
 	CLI string

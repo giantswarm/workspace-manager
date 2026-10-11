@@ -168,7 +168,10 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	assert.Equal(t, []grant.Mount{{SubPath: "sessions/${SESSION_ID}"}, {SubPath: "mirrors", ReadOnly: true}}, claims.Mounts)
 	assert.Equal(t, []string{"acme/api"}, claims.Changed)
 	var audiences []string
+	hosts := map[string]bool{}
 	for _, p := range claims.Providers {
+		assert.False(t, hosts[p.Hostname], "%s once: kagent's egress refuses two credentials for one host", p.Hostname)
+		hosts[p.Hostname] = true
 		audiences = append(audiences, p.Audience)
 		assert.Equal(t, "workspace-manager", p.Broker)
 		assert.Equal(t, p.Scheme == "Basic", p.Username != "", "%s: a user name with Basic only", p.Hostname)

@@ -199,10 +199,12 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		k, _, _ := setup(t)
 		h := k.Hosts()
 		assert.NotEmpty(t, h.Git, "git hosts")
-		assert.NotEmpty(t, h.API, "API hosts")
 		assert.NotEmpty(t, h.CLI, "the CLI the Harness images carry")
+		seen := map[string]bool{}
 		for _, host := range slices.Concat(h.Git, h.API) {
 			assert.NotEmpty(t, host.Name)
+			assert.False(t, seen[host.Name], "%s is listed once: a host takes one credential", host.Name)
+			seen[host.Name] = true
 			u, err := url.Parse("//" + host.Name)
 			assert.True(t, err == nil && u.Host == host.Name && u.User == nil, "%q is a host name with at most a port", host.Name)
 			switch host.Scheme {

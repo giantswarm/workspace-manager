@@ -169,7 +169,12 @@ func (k *Kind) Hosts() provider.Hosts {
 		Git: []provider.Host{{Name: k.web.Host, Scheme: provider.SchemeBasic, User: "x-access-token"}},
 		CLI: "gh",
 	}
-	h.API = []provider.Host{{Name: k.api.Host, Scheme: provider.SchemeBearer}}
+	// A GitHub Enterprise Server serves its API under the git host
+	// (`/api/v3`): one host takes one credential, and GitHub's API takes the
+	// git host's Basic token too.
+	if k.api.Host != k.web.Host {
+		h.API = []provider.Host{{Name: k.api.Host, Scheme: provider.SchemeBearer}}
+	}
 	return h
 }
 
