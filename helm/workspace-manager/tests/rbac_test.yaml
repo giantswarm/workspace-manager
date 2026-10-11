@@ -28,6 +28,12 @@ tests:
             - apiGroups: [workspace-manager.giantswarm.io]
               resources: [workspaces/status]
               verbs: [get, update, patch]
+            # The claim's owner reference sets blockOwnerDeletion on its
+            # Workspace, which OwnerReferencesPermissionEnforcement admits
+            # only with update on the owner's finalizers.
+            - apiGroups: [workspace-manager.giantswarm.io]
+              resources: [workspaces/finalizers]
+              verbs: [update]
             # The claim is made, never deleted: it goes with its Workspace.
             - apiGroups: [""]
               resources: [persistentvolumeclaims]

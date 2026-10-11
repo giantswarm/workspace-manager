@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The image carries git for the sync Job; the chart renders the Job's ServiceAccount and Role in the workspaces' namespace, allowed to write its result ConfigMap.
 - The chart registers the server with muster through its own `MCPServer` (`muster.mcpServer.enabled`; its `name` sets the tool prefix `x_workspace-manager_<tool>`): `streamable-http` at the Service, the chart's labels plus `muster.giantswarm.io/type: workspace-manager` and `agent-platform.giantswarm.io/tool-group: agent-platform`, and with `oauth.enabled` the unpinned `auth` block (`forwardToken`, `requiredAudiences`) -- no authorization server and no GitHub App, since a provider sign-in is the workspace-manager's own business. The required audiences count as trusted bearer audiences next to `oauth.trustedAudiences`.
 
+### Fixed
+
+- The chart grants the ServiceAccount `update` on `workspaces/finalizers` in the workspaces' namespace: a volume claim's owner reference blocks its Workspace's deletion (`blockOwnerDeletion`), which a cluster enforcing owner-reference permissions (`OwnerReferencesPermissionEnforcement`) admits only with that right, refusing the claim otherwise.
+
 
 
 [Unreleased]: https://github.com/giantswarm/workspace-manager/tree/main

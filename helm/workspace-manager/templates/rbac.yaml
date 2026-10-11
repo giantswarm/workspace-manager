@@ -22,6 +22,14 @@ rules:
     resources: [workspaces/status]
     verbs: [get, update, patch]
   {{- /*
+  The claim's owner reference blocks its Workspace's deletion
+  (blockOwnerDeletion), which a cluster enforcing owner-reference permissions
+  admits only from an account that may update the owner's finalizers.
+  */}}
+  - apiGroups: [workspace-manager.giantswarm.io]
+    resources: [workspaces/finalizers]
+    verbs: [update]
+  {{- /*
   The workspace's volume: the controller claims it from storage.storageClassName
   and never deletes it; the claim is the Workspace's, by its owner reference,
   and goes with it.
