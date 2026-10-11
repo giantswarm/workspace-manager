@@ -1,12 +1,14 @@
 // Package api is workspace-manager's MCP surface: the person's provider
 // sign-ins (providers.go), the access check at a Session's start
-// (authorize.go) and the workspace operations' tools, each reading
-// and writing through a workspace.Store, which checks the caller's
-// Organization and writes with Config.Kube, the manager's own clients.
+// (authorize.go), the workspaces' tools (workspaces.go) and the selection's
+// (repositories.go), each reading and writing through a workspace.Store,
+// which checks the caller's Organization and writes with Config.Kube, the
+// manager's own clients.
 package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpotel "github.com/mark3labs/mcp-go/otel"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/giantswarm/workspace-manager/internal/authorize"
 	"github.com/giantswarm/workspace-manager/internal/connect"
+	"github.com/giantswarm/workspace-manager/internal/controller"
 	"github.com/giantswarm/workspace-manager/internal/kube"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
@@ -36,6 +39,12 @@ type Config struct {
 	Organizations workspace.Organizations
 	// Providers are the installation's provider instances.
 	Providers []provider.Instance
+	// Secrets read the provider instances' Secrets: with Providers, they
+	// serve list_repositories and preview_workspace.
+	Secrets provider.Secrets
+	// Sizing is the installation's volume sizing, which preview_workspace
+	// estimates a selection's volume with.
+	Sizing controller.Sizing
 	// Connector, when set, serves the person's provider sign-ins:
 	// list_providers, connect_provider and disconnect_provider.
 	Connector *connect.Connector
@@ -63,6 +72,21 @@ func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
 		mcpserver.WithToolCapabilities(false),
 		mcpserver.WithInstructions("Manage the Agent Platform's workspaces: the sources an agent session works on. Every call is checked against the caller's Organization."),
 	)
+	if cfg.Kube != nil {
+		names := make([]string, len(cfg.Providers))
+		for i, p := range cfg.Providers {
+			names[i] = p.Name
+		}
+		store := workspace.NewStore(cfg.Kube.Dynamic(), cfg.Namespace, cfg.Organizations, names)
+		addWorkspaceTools(s, &workspaceTools{store: store, core: cfg.Kube.Typed(), namespace: cfg.Namespace, now: time.Now})
+		if len(cfg.Providers) > 0 && cfg.Secrets != nil {
+			sizing := cfg.Sizing
+			if sizing == (controller.Sizing{}) {
+				sizing = controller.DefaultSizing
+			}
+			addSelectionTools(s, &selectionTools{store: store, listings: workspace.NewListings(cfg.Providers, cfg.Secrets), sizing: sizing})
+		}
+	}
 	if cfg.Connector != nil {
 		addProviderTools(s, cfg.Connector)
 	}

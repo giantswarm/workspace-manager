@@ -11,7 +11,6 @@ package authorize
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -20,8 +19,6 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
@@ -29,6 +26,7 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/mirror"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/signin"
+	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
 // Workspaces reads a Workspace for the caller in the context, after its
@@ -275,54 +273,19 @@ func (a *Authorizer) connectRequired(res *Result, name string) (*Result, error) 
 	return res, nil
 }
 
-// manifest is the last sync's manifest from the ConfigMap the Workspace's
-// status names; nil before the first sync.
+// manifest is the last sync's manifest; nil before the first sync.
 func (a *Authorizer) manifest(ctx context.Context, ws *v1alpha1.Workspace) (*mirror.Manifest, error) {
-	if ws.Status.Manifest == "" {
-		return nil, nil
-	}
-	cm, err := a.cfg.Core.CoreV1().ConfigMaps(a.cfg.Namespace).Get(ctx, ws.Status.Manifest, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the manifest of workspace %s: %w", ws.Name, err)
-	}
-	raw, ok := cm.Data[mirror.ManifestFile]
-	if !ok {
-		return nil, nil
-	}
-	var m mirror.Manifest
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil, fmt.Errorf("parse the manifest of workspace %s: %w", ws.Name, err)
-	}
-	return &m, nil
+	return workspace.ReadManifest(ctx, a.cfg.Core, a.cfg.Namespace, ws)
 }
 
-// volume is the workspace's volume by its CSI driver and handle, read from
-// its claim's bound PersistentVolume; a reason instead while there is none.
+// volume is the workspace's volume by its CSI driver and handle; a reason
+// instead while there is none.
 func (a *Authorizer) volume(ctx context.Context, ws *v1alpha1.Workspace) (*grant.Volume, string, error) {
-	if ws.Status.Volume == nil || ws.Status.Volume.ClaimName == "" {
-		return nil, "its volume is not claimed", nil
+	ref, reason, err := workspace.Volume(ctx, a.cfg.Core, a.cfg.Namespace, ws)
+	if ref == nil {
+		return nil, reason, err
 	}
-	claim, err := a.cfg.Core.CoreV1().PersistentVolumeClaims(a.cfg.Namespace).Get(ctx, ws.Status.Volume.ClaimName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, fmt.Sprintf("its volume claim %s is gone", ws.Status.Volume.ClaimName), nil
-	}
-	if err != nil {
-		return nil, "", fmt.Errorf("read the volume claim of workspace %s: %w", ws.Name, err)
-	}
-	if claim.Spec.VolumeName == "" {
-		return nil, fmt.Sprintf("its volume claim %s is not bound yet", claim.Name), nil
-	}
-	pv, err := a.cfg.Core.CoreV1().PersistentVolumes().Get(ctx, claim.Spec.VolumeName, metav1.GetOptions{})
-	if err != nil {
-		return nil, "", fmt.Errorf("read the volume of workspace %s: %w", ws.Name, err)
-	}
-	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver == "" || pv.Spec.CSI.VolumeHandle == "" {
-		return nil, fmt.Sprintf("its volume %s is not a CSI volume, which a Session cannot mount", pv.Name), nil
-	}
-	return &grant.Volume{Driver: pv.Spec.CSI.Driver, Handle: pv.Spec.CSI.VolumeHandle}, "", nil
+	return &grant.Volume{Driver: ref.Driver, Handle: ref.Handle}, "", nil
 }
 
 // providers are the hosts of the named instances the Session gets the

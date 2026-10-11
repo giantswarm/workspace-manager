@@ -165,6 +165,51 @@ groups, configured per Organization (`--organization
 shows only the caller's Organizations' Workspaces; an Organization not
 configured has no members.
 
+## The workspace tools
+
+Every tool acts for the caller muster forwards. A Workspace read or write first
+passes the Organization check on that identity; the manager's ServiceAccount
+then writes the object. A refusal is the tool's answer (`isError`), never a
+server error: `permission denied` for a non-member or a call without a
+caller, `invalid workspace` with the API server's or the manager's reason
+(nothing is written), `not found`, `already exists`, and a stale
+`resourceVersion`'s "changed since it was read".
+
+| Tool | Input | Result |
+|---|---|---|
+| `list_workspaces` | `organization` (optional, a member's) | `workspaces`: each workspace's view (below) |
+| `get_workspace` | `workspace` | `workspace` (the view); `mirrors`: the last sync's repositories (`provider`, `repository`, `defaultBranch`, `head`, `pushedAt`, measured `sizeBytes`, `droppedAt`); `storage` (`mirrorsBytes`, `sessionsBytes`, `neededSize`, `volumeSize`); `sessionDirectories` (`session`, `sizeBytes`, `cleanupAfter`) |
+| `create_workspace` | `name`, `organization`, `sources`, `sync` (default nightly), `sizing` (`headroom`, `minimum` as quantities) | the view |
+| `update_workspace` | `name`, `sources` (replaced), `sync` and `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
+| `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume |
+| `list_repositories` | `organization` (a member's), `provider`, `owner`, `search` (name, ignoring case), `languages` (any of), `topics` (any of), `archived` and `fork` (`true` only those, `false` none, unset both), `page`, `pageSize` (50, at most 200) | `total` matching, `ownerTotal`, `page`, `pageSize`, `repositories` (`name`, `language`, `topics`, `archived`, `fork`, `lastPush`, `sizeKiB`), and every `languages` and `topics` value of the owner for the picker's filters |
+| `preview_workspace` | `workspace` (an existing one), or a draft's `organization`, `sources` and `sizing`; `search` (`owner/name`), `page`, `pageSize` | `total` selected now, `excluded`, `skippedArchived` and `skippedForks` (what a selector matched and those rules left out), `providerSizeKiB`, `estimatedVolumeSize`, `matching` the search, and the page's `repositories` (`provider`, `repository`, `language`, `topics`, `lastPush`, `sizeKiB`, `why`: `name`, `language <l>`, `topic <t>`) |
+
+The view of a workspace: `name`, `organization`, `sources`, `sync`,
+`sizing`, `resourceVersion`, `createdAt`, `deleting`, `lastSync` (`time`,
+`result`, `message`), `nextSync`, the number of `repositories` and
+`sessions`, `volume` (`claimName`, and the CSI `driver` and `handle` read from
+the bound PersistentVolume, which a Session's volume reference names; else
+`pending` says why), `neededSize`, `volumeSize` and the `conditions`.
+`nextSync` is the next scheduled sync, in UTC: nightly at 03:00, weekly on
+Sunday at 03:00, custom on its weekdays at its hour.
+
+`list_repositories` and `preview_workspace` read the owner's listing with the
+provider instance's own sync credential (on GitHub the `-agents` App's
+installation token), from the listing cache: an owner of hundreds of
+repositories costs one paginated listing a minute, however many pages, searches
+and filters the picker asks for. They write nothing and say nothing about the
+caller's own access to a repository, which `authorize_workspace` checks at a
+Session's start. The preview selects as the sync does: named repositories
+count even when archived or a fork, the filters' matches unless archived or
+forks (unless included), exclusions over everything; its
+`estimatedVolumeSize` is the size a new volume is claimed with for the
+providers' reported sizes, where the StorageClass provisions one.
+
+`delete_workspace` deletes the Workspace: `authorize_workspace` refuses it
+from then on, so no new Session starts on it, and its volume claim goes with
+it by its owner reference once no running Session mounts it.
+
 ## The workspace's volume and the sync Job
 
 Every workspace has one read-write-many volume, shared by the sync and every
@@ -232,10 +277,10 @@ volume mounted at `--volume`:
 - `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request; `routes.go` is the one place every route is registered.
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
-- `internal/workspace`: the Organization check, the provider validation and the Workspace store every tool reads and writes through.
+- `internal/workspace`: the Organization check, the provider validation, the Workspace store every tool reads and writes through, the selection a workspace's sources resolve to from the providers' listings (with why each repository is in), the last sync's manifest, the volume's CSI handle and the sync schedule.
 - `internal/controller`: the manager's controller, watching the Workspaces of the workspaces' namespace: it claims each one's volume from the installation's StorageClass and writes the Workspace's status (the claim, the `VolumeClaimed` condition), which nothing else writes.
 - `internal/kube`: the manager's Kubernetes clients.
-- `internal/api`: the MCP server, its tools (`list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
+- `internal/api`: the MCP server, its tools (`list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace`, `delete_workspace`, `list_repositories`, `preview_workspace`, `list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
 - `internal/authorize`: the access check at a Session's start: the manifest against what the person reads at each provider, the volume's CSI handle, and the grant.
 - `internal/grant`: the workspace grant: its claims, the signing keys from their Secret and the JWKS.
 - `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.

@@ -60,11 +60,10 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "workspace-manager.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
-{{- if .Values.grant.signingKey.name }}
 {{- /*
-The workspace grant names the volume by its CSI driver and handle, which only
-the claim's PersistentVolume carries: authorize_workspace reads it, nothing
-else.
+A workspace's volume is named by its CSI driver and handle, which only the
+claim's PersistentVolume carries: the workspace tools show it and
+authorize_workspace's grant names it; nothing else is read cluster-wide.
 */}}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -92,5 +91,4 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "workspace-manager.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
-{{- end }}
 {{- end }}

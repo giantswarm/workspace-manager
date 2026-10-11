@@ -112,17 +112,25 @@ func (s *Store) Update(ctx context.Context, ws *v1alpha1.Workspace) (*v1alpha1.W
 	return fromUnstructured(updated)
 }
 
-// Delete removes a Workspace of an Organization the caller is a member of.
-func (s *Store) Delete(ctx context.Context, name string) error {
+// Delete removes a Workspace of an Organization the caller is a member of,
+// and returns it as it was checked.
+func (s *Store) Delete(ctx context.Context, name string) (*v1alpha1.Workspace, error) {
 	ws, err := s.Get(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The precondition makes sure what is deleted is what was checked.
 	if err := s.client.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &ws.UID}}); err != nil {
-		return fmt.Errorf("delete workspace %q: %w", name, err)
+		return nil, fmt.Errorf("delete workspace %q: %w", name, err)
 	}
-	return nil
+	return ws, nil
+}
+
+// CheckOrganization returns nil when the caller is a member of org: the
+// check for a call that reads or writes no Workspace yet, such as listing an
+// owner's repositories for an Organization's workspace editor.
+func (s *Store) CheckOrganization(ctx context.Context, org string) error {
+	return s.orgs.Check(ctx, org)
 }
 
 func (s *Store) get(ctx context.Context, name string) (*v1alpha1.Workspace, error) {

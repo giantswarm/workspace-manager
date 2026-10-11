@@ -10,7 +10,7 @@ tests:
     template: templates/rbac.yaml
     asserts:
       - hasDocuments:
-          count: 2
+          count: 4
       - documentIndex: 0
         isKind:
           of: Role
@@ -50,11 +50,8 @@ tests:
               name: workspace-manager
               namespace: agent-platform
 
-  - it: lets the manager read the PersistentVolumes, and nothing else cluster-wide, once it signs grants
+  - it: lets the manager read the PersistentVolumes, and nothing else cluster-wide
     template: templates/rbac.yaml
-    set:
-      grant:
-        signingKey: {name: workspace-manager-keys, key: grant}
     asserts:
       - hasDocuments:
           count: 4
