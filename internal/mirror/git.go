@@ -26,6 +26,19 @@ var gitEnv = []string{
 // refuse as dubious ownership; the volume is the sync's own.
 var gitBaseArgs = []string{"-c", "safe.directory=*"}
 
+// gitEnviron is the environment git runs with: the process's own, gitEnv,
+// and the roots the binary's HTTP client verifies with (SSL_CERT_FILE, which
+// Go honours and git's libcurl does not) handed to git as GIT_SSL_CAINFO
+// unless one is set, so a provider behind a private CA (a GitHub Enterprise
+// Server) is fetched with the roots it is listed with.
+func gitEnviron() []string {
+	env := append(os.Environ(), gitEnv...)
+	if ca := os.Getenv("SSL_CERT_FILE"); ca != "" && os.Getenv("GIT_SSL_CAINFO") == "" {
+		env = append(env, "GIT_SSL_CAINFO="+ca)
+	}
+	return env
+}
+
 type git struct {
 	bin string
 	log *slog.Logger
@@ -49,7 +62,7 @@ func (g *git) run(ctx context.Context, dir string, args ...string) (string, erro
 	full := append(append([]string{}, gitBaseArgs...), args...)
 	cmd := exec.CommandContext(ctx, g.bin, full...) //nolint:gosec // the arguments are the sync's own
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), gitEnv...)
+	cmd.Env = gitEnviron()
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

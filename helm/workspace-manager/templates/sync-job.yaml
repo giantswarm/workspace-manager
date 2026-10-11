@@ -5,8 +5,13 @@ the resources, the deadline and the TTL). The controller reads it at start
 (`--sync-job-template`) and adds per cycle what only it knows: the Job's
 name and owner, the workspace's volume, the selection and the credentials.
 The pod carries no selector label of the Deployment: the manager's
-NetworkPolicy and Service never match a sync pod.
+NetworkPolicy and Service never match a sync pod. It takes the manager's
+extraEnv and, with a private CA configured, the same CA mount: a provider
+behind that CA (a GitHub Enterprise Server) is fetched with the roots it is
+listed with (the sync hands SSL_CERT_FILE to git).
 */}}
+{{- $idpCA := "" }}
+{{- if .Values.oauth.enabled }}{{ $idpCA = include "workspace-manager.oauthDexCASecretName" . }}{{ end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -71,14 +76,30 @@ data:
                 {{- /* git writes its temporary files under HOME; /tmp is the one writable path. */}}
                 - name: HOME
                   value: /tmp
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
               resources:
                 {{- toYaml .Values.sync.job.resources | nindent 16 }}
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
+                {{- if $idpCA }}
+                - name: idp-ca
+                  mountPath: /etc/workspace-manager/idp-ca
+                  readOnly: true
+                {{- end }}
           volumes:
             - name: tmp
               emptyDir: {}
+            {{- if $idpCA }}
+            - name: idp-ca
+              secret:
+                secretName: {{ $idpCA }}
+                items:
+                  - key: {{ include "workspace-manager.oauthDexCASecretKey" . }}
+                    path: {{ include "workspace-manager.oauthDexCASecretKey" . }}
+            {{- end }}
           {{- with .Values.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
