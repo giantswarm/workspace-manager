@@ -61,6 +61,10 @@ spec:
             {{- end }}
             - --sync-cycle={{ .Values.sync.cycle }}
             - --sessions-cleanup-after={{ .Values.sessions.cleanupAfter }}
+            {{- with .Values.kagent.address }}
+            - --kagent-address={{ . }}
+            - --kagent-token-file=/var/run/secrets/workspace-manager/kagent/token
+            {{- end }}
             - --sizing-factor={{ .Values.storage.sizing.factor }}
             - --sizing-headroom={{ .Values.storage.sizing.headroom }}
             - --sizing-headroom-share={{ .Values.storage.sizing.headroomShare }}
@@ -240,6 +244,11 @@ spec:
               mountPath: /etc/workspace-manager/idp-ca
               readOnly: true
             {{- end }}
+            {{- if .Values.kagent.address }}
+            - name: kagent-token
+              mountPath: /var/run/secrets/workspace-manager/kagent
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -258,6 +267,16 @@ spec:
             items:
               - key: {{ include "workspace-manager.oauthDexCASecretKey" . }}
                 path: {{ include "workspace-manager.oauthDexCASecretKey" . }}
+        {{- end }}
+        {{- if .Values.kagent.address }}
+        {{- /* The manager's identity towards kagent, for kagent's audience only. */}}
+        - name: kagent-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.kagent.tokenAudience }}
+                  expirationSeconds: 3600
+                  path: token
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

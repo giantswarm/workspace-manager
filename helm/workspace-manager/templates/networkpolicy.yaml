@@ -79,6 +79,17 @@ spec:
         - protocol: TCP
           port: {{ .port }}
     {{- end }}
+    {{- if .Values.kagent.address }}
+    # kagent's API: every Session's last turn, for the session directories'
+    # cleanup.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.kagent.namespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.kagent.port }}
+    {{- end }}
     {{- range .Values.networkPolicy.egressCIDRs }}
     - to:
         - ipBlock:

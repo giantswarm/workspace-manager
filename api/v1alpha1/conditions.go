@@ -15,7 +15,32 @@ const (
 	// Job (SyncFailed), the volume's size past the installation's ceiling
 	// (SizeCeiling) or no volume to sync onto (VolumeMissing).
 	ConditionSynced = "Synced"
+	// ConditionSessionsCleanedUp is True when the last cycle cleaned up the
+	// session directories from kagent's Sessions (reason Listed); False when
+	// it could not, and no directory was deleted: kagent's listing failed
+	// (KagentUnavailable), the manager runs without kagent
+	// (KagentNotConfigured) or the volume's CSI handle is not known yet
+	// (VolumePending).
+	ConditionSessionsCleanedUp = "SessionsCleanedUp"
 )
+
+// The reasons of ConditionSessionsCleanedUp.
+const (
+	// ReasonSessionsListed: kagent listed the workspace's Sessions.
+	ReasonSessionsListed = "Listed"
+	// ReasonKagentUnavailable: kagent's listing failed; the message carries
+	// its error.
+	ReasonKagentUnavailable = "KagentUnavailable"
+	// ReasonKagentNotConfigured: the manager runs without --kagent-address.
+	ReasonKagentNotConfigured = "KagentNotConfigured"
+	// ReasonVolumePending: the volume's CSI handle, which a Session names
+	// it by, is not known yet; no directory was deleted.
+	ReasonVolumePending = "VolumePending"
+)
+
+// FinalizerVolume keeps a deleted Workspace, and with it its volume, until
+// the last session directory on the volume is cleaned up.
+const FinalizerVolume = "workspace-manager.giantswarm.io/volume"
 
 // The reasons of ConditionVolumeClaimed.
 const (
@@ -35,7 +60,8 @@ const (
 	// ReasonSynced: the sync Job fetched what changed.
 	ReasonSynced = "Synced"
 	// ReasonNoChange: the selection equals the last manifest and nothing was
-	// pushed since; no Job ran.
+	// pushed since; no mirror was fetched, and a Job ran only to clean up the
+	// session directories.
 	ReasonNoChange = "NoChange"
 	// ReasonSyncing: a sync Job runs; the message names it.
 	ReasonSyncing = "Syncing"
@@ -50,6 +76,9 @@ const (
 	// ReasonVolumeMissing: the volume is not claimed, so nothing can sync
 	// onto it; the VolumeClaimed condition says why.
 	ReasonVolumeMissing = "VolumeMissing"
+	// ReasonDeleting: the workspace is deleted, its sync stopped; its
+	// session directories are cleaned up until the last is gone.
+	ReasonDeleting = "Deleting"
 )
 
 // The annotations a sync request leaves on a Workspace: sync_workspace sets

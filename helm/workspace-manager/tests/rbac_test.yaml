@@ -34,11 +34,11 @@ tests:
             - apiGroups: [workspace-manager.giantswarm.io]
               resources: [workspaces/finalizers]
               verbs: [update]
-            # The claim is made and grown, never deleted: it goes with its
-            # Workspace.
+            # The claim is made, grown, and deleted with a deleted
+            # Workspace's last session directory.
             - apiGroups: [""]
               resources: [persistentvolumeclaims]
-              verbs: [get, create, patch]
+              verbs: [get, create, patch, delete]
             # The sync Job's selection and the last sync's manifest.
             - apiGroups: [""]
               resources: [configmaps]

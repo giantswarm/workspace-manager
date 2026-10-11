@@ -253,6 +253,11 @@ spec:
               activeSync:
                 description: ActiveSync is the sync Job running now.
                 properties:
+                  cleanupOnly:
+                    description: |-
+                      CleanupOnly says the Job fetches nothing: the selection did not
+                      change, and it runs to clean up the session directories.
+                    type: boolean
                   job:
                     description: Job is the sync Job's name, in the workspace's namespace.
                     type: string
@@ -267,6 +272,7 @@ spec:
                     - change
                     - request
                     - retry
+                    - deletion
                     type: string
                 required:
                 - job
@@ -364,6 +370,7 @@ spec:
                     - change
                     - request
                     - retry
+                    - deletion
                     type: string
                 required:
                 - result
@@ -410,12 +417,25 @@ spec:
                   properties:
                     cleanupAfter:
                       description: |-
-                        CleanupAfter is when the directory is deleted: 30 days after its
-                        Session's last turn.
+                        CleanupAfter is when the directory is deleted: the cleanup window (30
+                        days by default) after its Session's last turn. A Session deleted in
+                        kagent loses its directory at the next sync.
                       format: date-time
                       type: string
+                    creator:
+                      description: Creator is the person who created the Session.
+                      type: string
+                    lastTurn:
+                      description: |-
+                        LastTurn is the Session's last turn in kagent; absent before its first
+                        turn and for a Session kagent does not know.
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the Session's display name in kagent.
+                      type: string
                     session:
-                      description: Session is the Session's name.
+                      description: Session is the Session's id, the directory's name.
                       type: string
                     size:
                       anyOf:
@@ -424,6 +444,11 @@ spec:
                       description: Size measured at the last sync.
                       pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                       x-kubernetes-int-or-string: true
+                    unknown:
+                      description: |-
+                        Unknown is true for a directory whose Session kagent does not list:
+                        it goes after the cleanup window from when a sync first found it.
+                      type: boolean
                   required:
                   - session
                   type: object

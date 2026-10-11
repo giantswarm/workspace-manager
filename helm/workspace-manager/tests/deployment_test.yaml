@@ -290,3 +290,41 @@ tests:
           content:
             name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: http://otlp-gateway.kube-system.svc:4317
+
+  # The session directories' cleanup reads kagent's Sessions with a token for
+  # kagent's audience only, never the API server's.
+  - it: calls kagent with a projected token for its audience
+    set:
+      kagent:
+        address: grpc://kagent-controller.kagent:8083
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --kagent-address=grpc://kagent-controller.kagent:8083
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --kagent-token-file=/var/run/secrets/workspace-manager/kagent/token
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: kagent-token
+            mountPath: /var/run/secrets/workspace-manager/kagent
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: kagent-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: kagent
+                    expirationSeconds: 3600
+                    path: token
+
+  - it: mounts no kagent token without kagent
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: kagent-token
+          any: true

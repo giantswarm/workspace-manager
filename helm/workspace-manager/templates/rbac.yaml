@@ -31,12 +31,12 @@ rules:
     verbs: [update]
   {{- /*
   The workspace's volume: the controller claims it from storage.storageClassName,
-  grows it where the class provisions a size and never deletes it; the claim is
-  the Workspace's, by its owner reference, and goes with it.
+  grows it where the class provisions a size, and deletes it once a deleted
+  Workspace's last session directory is gone, before it lets the Workspace go.
   */}}
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [get, create, patch]
+    verbs: [get, create, patch, delete]
   {{- /*
   The sync cycle's input and result: the selection the controller writes for
   the Job, and the manifest the Job writes, which the controller reads after
