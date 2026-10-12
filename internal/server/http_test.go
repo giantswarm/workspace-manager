@@ -73,3 +73,15 @@ func TestPagesWithoutProvider(t *testing.T) {
 		})
 	}
 }
+
+// A body beyond the bound is refused, and the endpoint keeps answering.
+func TestMCPBodyIsBounded(t *testing.T) {
+	ts := newTestServer(t)
+
+	big := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("x", maxMCPBodyBytes) + `"}}`
+	resp := postMCP(t, ts.URL, "", big)
+	assert.GreaterOrEqual(t, resp.StatusCode, 400)
+
+	resp = postMCP(t, ts.URL, "", `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}

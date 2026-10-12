@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The MCP endpoint refuses a request body larger than 1 MiB before mcp-go reads it whole (CVE-2026-108859, no fixed mcp-go release yet; the scan ignores it until 2026-11-12). ([#52](https://github.com/giantswarm/workspace-manager/issues/52))
+
 ### Added
 
 - The sync cycle: the controller, leader-elected among the replicas through the Lease `workspace-manager-controller` in the workspaces' namespace (`--leader-election`, on; `--leader-election-identity`, the pod's name), runs each Workspace's cycle for a `sync_workspace` request, a changed spec or first sync, a volume claimed anew, the retry of a failed cycle after `--sync-cycle`, or the schedule come due (`workspace.NextSync`: nightly and weekly at 03:00 UTC, weekly on Sunday, custom on its weekdays at its hour). A cycle lists each owner once, and a selection equal to the last manifest with nothing pushed since is `NoChange` and costs no Job and no origin request; otherwise the controller writes the selection and the credentials (server-side applied, emptied after the Job; it never reads a Secret of the namespace) and starts the sync Job from the chart's template, owned by the Workspace. The Job's end wakes the controller, which records the outcome from the manifest: a Job gone before its end still counts by its manifest, a failed Job's error is read from beside it. The status carries `lastSync` (`trigger`, `job`), `activeSync`, `nextSync` (the controller's own timer) and the `Synced` condition (`Synced`, `NoChange`, `Syncing`, `ListingFailed`, `SyncFailed`, `SizeCeiling`, `VolumeMissing`).
