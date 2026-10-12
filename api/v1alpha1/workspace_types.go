@@ -211,7 +211,7 @@ const (
 )
 
 // SyncTrigger is what started a sync cycle.
-// +kubebuilder:validation:Enum=schedule;change;request;retry;deletion
+// +kubebuilder:validation:Enum=schedule;change;request;retry;deletion;sessionDeleted
 type SyncTrigger string
 
 const (
@@ -228,6 +228,10 @@ const (
 	// its session directories, until the last is gone and the volume goes
 	// with the workspace.
 	TriggerDeletion SyncTrigger = "deletion"
+	// TriggerSessionDeleted: kagent no longer lists a Session with a
+	// directory on the volume; the cycle only deletes the directories of
+	// the deleted Sessions and fetches nothing.
+	TriggerSessionDeleted SyncTrigger = "sessionDeleted"
 )
 
 // WorkspaceStatus is what the workspace-manager observed.
@@ -357,7 +361,7 @@ type SessionDirectory struct {
 	Size *resource.Quantity `json:"size,omitempty"`
 	// CleanupAfter is when the directory is deleted: the cleanup window (30
 	// days by default) after its Session's last turn. A Session deleted in
-	// kagent loses its directory at the next sync.
+	// kagent loses its directory at once, within the manager's session poll.
 	// +optional
 	CleanupAfter *metav1.Time `json:"cleanupAfter,omitempty"`
 }

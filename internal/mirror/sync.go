@@ -83,7 +83,7 @@ const (
 // push is newer than the manifest's, leaves the others untouched, marks the
 // mirrors of repositories that left the selection and deletes the marked ones
 // no session directory borrows from any more. A stopped selection (a deleted
-// workspace) touches no mirror. A failed clone or fetch fails the run before
+// workspace, or a deleted Session's cleanup) fetches no mirror. A failed clone or fetch fails the run before
 // the manifest is written, so the previous manifest stays in place.
 func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 	if err := sel.validate(); err != nil {

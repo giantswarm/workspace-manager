@@ -273,6 +273,7 @@ spec:
                     - request
                     - retry
                     - deletion
+                    - sessionDeleted
                     type: string
                 required:
                 - job
@@ -371,6 +372,7 @@ spec:
                     - request
                     - retry
                     - deletion
+                    - sessionDeleted
                     type: string
                 required:
                 - result
@@ -419,7 +421,7 @@ spec:
                       description: |-
                         CleanupAfter is when the directory is deleted: the cleanup window (30
                         days by default) after its Session's last turn. A Session deleted in
-                        kagent loses its directory at the next sync.
+                        kagent loses its directory at once, within the manager's session poll.
                       format: date-time
                       type: string
                     creator:

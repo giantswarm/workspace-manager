@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,6 +57,104 @@ func (c *Controller) cleanup(ctx context.Context, ws *v1alpha1.Workspace) (*mirr
 	}
 	return out, sessionsCleanedUp(ws, metav1.ConditionTrue, v1alpha1.ReasonSessionsListed,
 		fmt.Sprintf("kagent lists %d Sessions on the volume; their directories go %s after the last turn", len(out.Sessions), c.sessionCleanupAfter)), nil
+}
+
+// sessionsDeleted deletes at once the directories of Sessions kagent no
+// longer lists, on a live workspace with no cycle due: a cleanup-only Job
+// that fetches nothing and touches no mirror but a dropped one the deleted
+// directories were the last to borrow from. Without such a Session it says
+// how long until the next look: the poll interval, or the schedule when that
+// comes first. A failed last cycle waits for its retry, whose Job cleans up
+// too; so does a directory the Job could not delete, at the next cycle.
+func (c *Controller) sessionsDeleted(ctx context.Context, ws *v1alpha1.Workspace, now time.Time, claim *corev1.PersistentVolumeClaim) (time.Duration, error) {
+	wake := c.wake(ws, now)
+	last := ws.Status.LastSync
+	if c.sessions == nil || claim == nil || (last != nil && last.Result == v1alpha1.SyncFailed) || !slices.ContainsFunc(ws.Status.Sessions, known) {
+		return wake, nil
+	}
+	next := c.sessionPoll
+	if wake > 0 && wake < next {
+		next = wake
+	}
+	listed, err := c.listed.get(ctx, c.sessions, now, c.sessionPoll)
+	if err != nil {
+		c.log.Warn("deleted Sessions not looked for: kagent's listing failed", "workspace", ws.Name, "error", err)
+		return next, nil
+	}
+	if len(goneSessions(ws, listed)) == 0 {
+		return next, nil
+	}
+	// The cleanup lists kagent anew, so the Job works from the listing it
+	// was decided on.
+	cleanup, cond, err := c.cleanup(ctx, ws)
+	if err != nil {
+		return 0, err
+	}
+	if cleanup == nil {
+		return next, nil
+	}
+	gone := goneSessions(ws, cleanup.Sessions)
+	if len(gone) == 0 {
+		return next, nil
+	}
+	id, err := cycleID()
+	if err != nil {
+		return 0, err
+	}
+	job, err := c.jobs.Start(ctx, ws, id, &mirror.Selection{Repositories: []mirror.Repository{}, Stopped: true, Cleanup: cleanup}, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.log.Info("sync job started for the directories of deleted Sessions", "workspace", ws.Name, "trigger", v1alpha1.TriggerSessionDeleted, "job", job.Name, "sessions", gone)
+	return 0, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
+		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerSessionDeleted, CleanupOnly: true}
+		w.Status.NextSync = nil
+		meta.SetStatusCondition(&w.Status.Conditions, cond)
+		return true
+	})
+}
+
+// goneSessions are the ids of the workspace's directories whose Session
+// kagent listed at the last sync and no longer lists.
+func goneSessions[V any](ws *v1alpha1.Workspace, listed map[string]V) []string {
+	var gone []string
+	for _, d := range ws.Status.Sessions {
+		if _, ok := listed[d.Session]; known(d) && !ok {
+			gone = append(gone, d.Session)
+		}
+	}
+	return gone
+}
+
+// known reports whether kagent listed the directory's Session at the last
+// sync; an unknown directory goes after its window, never at once.
+func known(d v1alpha1.SessionDirectory) bool { return !d.Unknown }
+
+// listedSessions is kagent's Session ids, listed at most once per poll
+// interval for every workspace's look.
+type listedSessions struct {
+	mu  sync.Mutex
+	at  time.Time
+	ids map[string]bool
+}
+
+// get is the listing, read anew once it is older than maxAge.
+func (l *listedSessions) get(ctx context.Context, sessions Sessions, now time.Time, maxAge time.Duration) (map[string]bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ids != nil && now.Sub(l.at) < maxAge {
+		return l.ids, nil
+	}
+	list, err := sessions.Sessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]bool, len(list))
+	for _, s := range list {
+		ids[s.ID] = true
+	}
+	l.at, l.ids = now, ids
+	return ids, nil
 }
 
 // housekeeping reports whether a cycle that fetches nothing still runs its

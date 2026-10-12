@@ -41,6 +41,10 @@ const DefaultResync = 10 * time.Minute
 // Session's last turn: 30 days.
 const DefaultSessionCleanupAfter = 30 * 24 * time.Hour
 
+// DefaultSessionPoll is how often kagent's Sessions are listed for the ones
+// deleted since the last sync, whose directories go at once.
+const DefaultSessionPoll = 30 * time.Second
+
 // DefaultLease is the Lease the replicas elect the controller with.
 const DefaultLease = "workspace-manager-controller"
 
@@ -83,6 +87,11 @@ type Config struct {
 	// Session's last turn (the chart's sessions.cleanupAfter); zero is
 	// DefaultSessionCleanupAfter.
 	SessionCleanupAfter time.Duration
+	// SessionPoll is how often kagent's Sessions are listed, once for every
+	// workspace, for a Session deleted since the last sync: its directory
+	// goes in a cleanup-only Job (the chart's sessions.poll); zero is
+	// DefaultSessionPoll.
+	SessionPoll time.Duration
 	// Sessions lists kagent's Sessions, whose last turns the session
 	// directories' cleanup works from; nil cleans up no directory.
 	Sessions Sessions
@@ -128,9 +137,13 @@ type Controller struct {
 	election  *LeaderElection
 	// sessionCleanupAfter is the session directories' cleanup window.
 	sessionCleanupAfter time.Duration
-	now                 func() time.Time
-	log                 *slog.Logger
-	leading             atomic.Bool
+	// sessionPoll is how often a workspace with session directories checks
+	// kagent's listing for a deleted Session, listed reads it.
+	sessionPoll time.Duration
+	listed      listedSessions
+	now         func() time.Time
+	log         *slog.Logger
+	leading     atomic.Bool
 }
 
 // New builds the controller; Run starts it.
@@ -146,6 +159,9 @@ func New(cfg Config) *Controller {
 	}
 	if cfg.SessionCleanupAfter == 0 {
 		cfg.SessionCleanupAfter = DefaultSessionCleanupAfter
+	}
+	if cfg.SessionPoll == 0 {
+		cfg.SessionPoll = DefaultSessionPoll
 	}
 	if cfg.SyncJobTemplate == nil {
 		cfg.SyncJobTemplate = DefaultJobTemplate(cfg.SyncServiceAccount)
@@ -175,6 +191,7 @@ func New(cfg Config) *Controller {
 		status:              NewStatus(cfg.Dynamic, cfg.Namespace),
 		election:            cfg.LeaderElection,
 		sessionCleanupAfter: cfg.SessionCleanupAfter,
+		sessionPoll:         cfg.SessionPoll,
 		now:                 cfg.Now,
 		log:                 cfg.Logger,
 	}
@@ -315,7 +332,7 @@ func (c *Controller) run(ctx context.Context) error {
 	}
 	c.log.Info("controller started", "storageClass", c.volumes.StorageClass, "sizingFactor", c.sizing.Factor,
 		"sizingHeadroom", c.sizing.HeadroomFloor.String(), "sizingHeadroomShare", c.sizing.HeadroomShare,
-		"sizingMaxSize", quantityString(c.sizing.MaxSize), "resync", c.resync, "sessionCleanupAfter", c.sessionCleanupAfter)
+		"sizingMaxSize", quantityString(c.sizing.MaxSize), "resync", c.resync, "sessionCleanupAfter", c.sessionCleanupAfter, "sessionPoll", c.sessionPoll)
 	go func() {
 		<-ctx.Done()
 		queue.ShutDown()
@@ -371,9 +388,10 @@ func (c *Controller) process(ctx context.Context, queue workqueue.TypedRateLimit
 // Reconcile runs the Workspace's sync cycle when one is due, or records the
 // outcome of the Job of the running one, and says how long until the next
 // one is due (zero for none). An error is the API server's: the caller
-// retries with backoff. A Workspace being deleted syncs no more; its cycles
-// only clean up its session directories until the last is gone
-// (reconcileDeleted).
+// retries with backoff. With no cycle due, a Session deleted in kagent has
+// its directory deleted at once (sessionsDeleted). A Workspace being deleted
+// syncs no more; its cycles only clean up its session directories until the
+// last is gone (reconcileDeleted).
 func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (time.Duration, error) {
 	if ws.DeletionTimestamp != nil {
 		return c.reconcileDeleted(ctx, ws)
@@ -399,7 +417,7 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 	now := c.now()
 	trigger := c.trigger(ws, now, claim)
 	if trigger == "" {
-		return c.wake(ws, now), nil
+		return c.sessionsDeleted(ctx, ws, now, claim)
 	}
 	return c.cycle(ctx, ws, trigger, claim)
 }

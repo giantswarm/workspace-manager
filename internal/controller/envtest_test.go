@@ -189,7 +189,7 @@ func gitCmd(t *testing.T, dir string, args ...string) {
 // TestSessionDirectoriesAreCleanedUp walks the cleanup through a workspace's
 // life on a real API server with a fake kagent and a one-hour window: an old
 // directory goes and a newer one stays, a Session deleted in kagent loses its
-// directory at the next run, a dropped mirror stays while borrowed and goes
+// directory at the next poll, a dropped mirror stays while borrowed and goes
 // after, the status lists the directories, and a deleted workspace's volume
 // goes with its last directory, not before.
 func TestSessionDirectoriesAreCleanedUp(t *testing.T) {
@@ -279,11 +279,14 @@ func TestSessionDirectoriesAreCleanedUp(t *testing.T) {
 	require.True(t, newer.CleanupAfter.Time.Equal(now.Add(-10*time.Minute+labWindow)), "cleanup %s", newer.CleanupAfter)
 	require.Equal(t, int64(4096), newer.Size.Value())
 
-	// The Session borrowing from the dropped mirror is deleted in kagent: its
-	// directory goes at the next run, and the mirror with it.
+	// The Session borrowing from the dropped mirror is deleted in kagent: at
+	// the next poll, with no cycle due, its directory goes in a cleanup-only
+	// run, and the mirror with it.
 	l.kagent.Delete("11111111-0000-0000-0000-000000000003")
-	l.requestSync()
+	l.advance(DefaultSessionPoll)
 	l.reconcile()
+	ws = l.workspace()
+	require.Equal(t, v1alpha1.TriggerSessionDeleted, ws.Status.ActiveSync.Trigger)
 	res = l.runJob()
 	require.Equal(t, []string{"11111111-0000-0000-0000-000000000003"}, res.CleanedUp)
 	require.Equal(t, []string{"acme/old"}, res.Deleted)

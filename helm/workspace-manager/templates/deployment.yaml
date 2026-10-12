@@ -61,6 +61,7 @@ spec:
             {{- end }}
             - --sync-cycle={{ .Values.sync.cycle }}
             - --sessions-cleanup-after={{ .Values.sessions.cleanupAfter }}
+            - --sessions-poll={{ .Values.sessions.poll }}
             {{- with .Values.kagent.address }}
             - --kagent-address={{ . }}
             - --kagent-token-file=/var/run/secrets/workspace-manager/kagent/token

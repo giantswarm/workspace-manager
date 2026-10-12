@@ -121,12 +121,19 @@ sync:
 sessions:
   # -- How long a Session's directory on the workspace volume outlives the
   # Session's last turn, a Go duration (`720h` is 30 days); every turn moves
-  # the date, a Session deleted in kagent loses its directory at the next
-  # sync, and a directory whose Session kagent does not know goes this long
+  # the date, a Session deleted in kagent loses its directory at once (see
+  # `poll`), and a directory whose Session kagent does not know goes this long
   # after the sync that first found it. The sync Job cleans up, from kagent's
   # record of each Session's last turn (`kagent.address`). Passed to `serve`
   # as its `sessions-cleanup-after` flag.
   cleanupAfter: 720h
+  # -- How often the manager lists kagent's Sessions for one deleted since the
+  # last sync, a Go duration: its directory then goes at once, in a sync Job
+  # that fetches nothing. One listing serves every workspace; only a
+  # workspace with session directories looks. The regular sync cleans up
+  # too, and catches what this misses. Passed to `serve` as its
+  # `sessions-poll` flag.
+  poll: 30s
 
 kagent:
   # -- The kagent controller's gRPC API, `grpc://host:port` (in-cluster

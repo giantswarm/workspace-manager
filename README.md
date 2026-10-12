@@ -304,6 +304,15 @@ record of each Session's last turn:
   directory whose Session kagent does not know goes the window after the
   sync that first found it. A directory is renamed aside before it is
   removed, so no half-removed tree is ever seen as a Session's.
+- **A deleted Session.** Between cycles, every `--sessions-poll` (the
+  chart's `sessions.poll`, 30s) the controller lists kagent's Sessions once
+  for every workspace; a live workspace whose status lists a directory of a
+  Session kagent no longer lists gets a cleanup-only Job at once (trigger
+  `sessionDeleted`, the result `NoChange`): one Job for all its deleted
+  Sessions, which fetches no mirror and deletes those directories and a
+  dropped mirror they were the last to borrow from. The regular cycle still
+  cleans up everything else, and catches a directory this missed (kagent
+  unreachable, the Job failed, the manager restarted).
 - **Fails safe.** Without kagent, while kagent's listing fails (an
   incomplete listing is a failure) or while the volume's CSI handle is not
   known, no directory is deleted; the Job only measures them. The condition
