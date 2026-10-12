@@ -12,8 +12,8 @@ import (
 
 func TestServeCredential(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, credentialUsernameFile), []byte("x-access-token\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, credentialTokenFile), []byte("ghs_token\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CredentialUsernameFile), []byte("x-access-token\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CredentialTokenFile), []byte("ghs_token\n"), 0o600))
 	request := "protocol=https\nhost=github.com\npath=acme/alpha.git\n\n"
 
 	var out bytes.Buffer
@@ -26,7 +26,7 @@ func TestServeCredential(t *testing.T) {
 		require.Empty(t, out.String(), op)
 	}
 
-	require.NoError(t, os.Remove(filepath.Join(dir, credentialTokenFile)))
+	require.NoError(t, os.Remove(filepath.Join(dir, CredentialTokenFile)))
 	out.Reset()
 	err := ServeCredential(dir, "get", strings.NewReader(request), &out)
 	require.Error(t, err)

@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The sync reads an owner's credential from `<provider>/<owner>/{username,token}` under `--credentials-dir`, where the sync Job's Secret projects it: a private repository syncs again instead of failing with `credential: open <dir>/<provider>/username: no such file or directory`, and several owners of one provider instance each fetch with their own credential.
 - `authorize_workspace` signs the grant's `sub` as the caller's email, the identity kagent's trusted-proxy authenticator gives a Session's creator (the Agent Platform's user-id claim is `email`, the claim the edge sets `x-user-id` from), where it signed the Dex subject and kagent refused every grant as naming another person. The sign-ins and the token exchange stay keyed by the Dex subject. A caller whose identity carries no email gets an error instead of a grant.
 - The chart grants the ServiceAccount `update` on `workspaces/finalizers` in the workspaces' namespace: a volume claim's owner reference blocks its Workspace's deletion (`blockOwnerDeletion`), which a cluster enforcing owner-reference permissions (`OwnerReferencesPermissionEnforcement`) admits only with that right, refusing the claim otherwise.
 

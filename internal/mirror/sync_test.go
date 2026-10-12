@@ -43,17 +43,13 @@ type harness struct {
 	syncer   *Syncer
 }
 
-// newHarness wires a sync against the fixture: a credential directory for
-// the provider "github" holding the fixture's token, and this test binary as
-// the credential helper.
+// newHarness wires a sync against the fixture: the credential of the
+// provider "github" for the owner "acme" holding the fixture's token, and
+// this test binary as the credential helper.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	upstream := newGitServer(t)
 	creds := t.TempDir()
-	dir := filepath.Join(creds, "github")
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, credentialUsernameFile), []byte(fixtureUsername+"\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, credentialTokenFile), []byte(upstream.token+"\n"), 0o600))
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	t.Setenv("WORKSPACE_MANAGER_TEST_CREDENTIAL_HELPER", "1")
@@ -66,7 +62,18 @@ func newHarness(t *testing.T) *harness {
 		Parallel:         2,
 		Log:              slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
+	h.credential("acme", upstream.token)
 	return h
+}
+
+// credential writes the owner's credential for the provider "github" where
+// the sync Job's Secret projects it: <provider>/<owner>/{username,token}.
+func (h *harness) credential(owner, token string) {
+	h.t.Helper()
+	dir := filepath.Join(h.syncer.CredentialsDir, "github", owner)
+	require.NoError(h.t, os.MkdirAll(dir, 0o700))
+	require.NoError(h.t, os.WriteFile(filepath.Join(dir, "username"), []byte(fixtureUsername+"\n"), 0o600))
+	require.NoError(h.t, os.WriteFile(filepath.Join(dir, "token"), []byte(token+"\n"), 0o600))
 }
 
 func (h *harness) repo(owner, name string, pushedAt time.Time) Repository {
@@ -350,6 +357,29 @@ func TestSyncAnonymousWithoutACredentialDirectory(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, h.logs.String(), "fetching anonymously")
 	h.assertNoToken()
+}
+
+// TestSyncUsesEachOwnersCredential: two owners of one provider instance,
+// each accepting only its own token, sync side by side, each with the
+// credential the Job projects for it; an owner without one is fetched
+// anonymously.
+func TestSyncUsesEachOwnersCredential(t *testing.T) {
+	h := newHarness(t)
+	h.upstream.create("acme", "alpha")
+	h.upstream.commit("acme", "alpha", "README.md", "alpha")
+	h.upstream.create("globex", "gamma")
+	h.upstream.commit("globex", "gamma", "README.md", "gamma")
+	h.credential("globex", h.upstream.ownerToken("globex"))
+
+	res := h.sync(h.repo("acme", "alpha", t0), h.repo("globex", "gamma", t0))
+	require.Equal(t, []string{"acme/alpha", "globex/gamma"}, res.Added)
+	require.DirExists(t, h.mirror("globex", "gamma"))
+
+	h.upstream.create("initech", "delta")
+	h.upstream.commit("initech", "delta", "README.md", "delta")
+	_, err := h.syncer.Run(context.Background(), &Selection{Repositories: []Repository{h.repo("initech", "delta", t0)}})
+	require.Error(t, err)
+	require.Contains(t, h.logs.String(), "fetching anonymously")
 }
 
 func TestSyncReportsTheRemovedMirror(t *testing.T) {

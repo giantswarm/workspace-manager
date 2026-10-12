@@ -27,7 +27,9 @@ const fixtureUsername = "x-access-token"
 // fetching (what git http-backend serves, spoken here over `git upload-pack`
 // since a minimal git lacks http-backend) behind a token check, recording
 // every request per repository, with the upstream repositories as bare
-// repositories on disk and a work clone each to push from.
+// repositories on disk and a work clone each to push from. An owner given its
+// own token (ownerToken) accepts only that one, as an installation token is
+// scoped to one owner.
 type gitServer struct {
 	t      *testing.T
 	root   string
@@ -37,20 +39,19 @@ type gitServer struct {
 
 	mu       sync.Mutex
 	requests map[string]int
+	owners   map[string]string
 }
 
 func newGitServer(t *testing.T) *gitServer {
 	t.Helper()
 	_, err := exec.LookPath("git")
 	require.NoError(t, err, "the fixture needs git")
-	var raw [16]byte
-	_, err = rand.Read(raw[:])
-	require.NoError(t, err)
-	s := &gitServer{t: t, root: t.TempDir(), work: t.TempDir(), token: "fixture-token-" + hex.EncodeToString(raw[:]), requests: map[string]int{}}
+	s := &gitServer{t: t, root: t.TempDir(), work: t.TempDir(), token: newFixtureToken(t), requests: map[string]int{}, owners: map[string]string{}}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.record(r.URL.Path)
 		user, pass, ok := r.BasicAuth()
-		if !ok || user != fixtureUsername || pass != s.token {
+		owner, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if !ok || user != fixtureUsername || pass != s.tokenFor(owner) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -59,6 +60,34 @@ func newGitServer(t *testing.T) *gitServer {
 	}))
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+func newFixtureToken(t *testing.T) string {
+	t.Helper()
+	var raw [16]byte
+	_, err := rand.Read(raw[:])
+	require.NoError(t, err)
+	return "fixture-token-" + hex.EncodeToString(raw[:])
+}
+
+// ownerToken gives the owner a token of its own, the only one its
+// repositories accept from now on.
+func (s *gitServer) ownerToken(owner string) string {
+	token := newFixtureToken(s.t)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.owners[owner] = token
+	return token
+}
+
+// tokenFor is the token the owner's repositories accept.
+func (s *gitServer) tokenFor(owner string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if token, ok := s.owners[owner]; ok {
+		return token
+	}
+	return s.token
 }
 
 // record counts a request against its repository, /<owner>/<name>.git/...
