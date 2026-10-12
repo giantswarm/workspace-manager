@@ -3,7 +3,10 @@
 - `make test`: the Go tests, among them the MCP `initialize` against a fake Dex
   (`internal/server/oauth_test.go`) and the sync against a local git server
   over HTTP that wants a token and records every request
-  (`internal/mirror/sync_test.go`; needs `git` on the path).
+  (`internal/mirror/sync_test.go`; needs `git` on the path). Every provider
+  kind passes the contract suite of `internal/provider/providertest` against
+  its stub API (`githubtest`, `gitlabtest`) or the test-only `fake` kind
+  (`internal/provider/kinds/kinds_test.go`).
 - `make test-envtest`: the tests behind the `envtest` build tag, against a
   real kube-apiserver and etcd that setup-envtest fetches (the `envtest` CI
   job): the sign-in store's refresh, single-flighted across two replicas

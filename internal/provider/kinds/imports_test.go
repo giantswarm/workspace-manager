@@ -38,6 +38,7 @@ func TestKindsStayInTheirPackage(t *testing.T) {
 		}
 	}
 	require.Contains(t, kindDirs, "github")
+	require.Contains(t, kindDirs, "gitlab")
 	require.Contains(t, kindDirs, "fake")
 
 	checked := 0

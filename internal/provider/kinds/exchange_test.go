@@ -72,7 +72,7 @@ type exchangeEnv struct {
 
 func newExchangeEnv(t *testing.T) *exchangeEnv {
 	t.Helper()
-	instances, err := testRegistry(fake.NewStore("t")).Load([]byte(twoProviders))
+	instances, err := testRegistry(fake.NewStore("t")).Load([]byte(sideBySide))
 	require.NoError(t, err)
 	rs := newRefreshServer(t)
 	keyring, err := signin.NewKeyring(map[string][]byte{"k1": []byte("0123456789abcdef0123456789abcdef")}, "k1")
@@ -124,12 +124,12 @@ func (e *exchangeEnv) exchange(t *testing.T, clientID, subject, audience string)
 
 // TestTokenExchangeContract is the endpoint's contract for every configured
 // kind: the kagent client gets the person's access token for the GitHub
-// instance and the fake one; another client gets invalid_client; a person
+// instance, the GitLab one and the fake one; another client gets invalid_client; a person
 // without a sign-in gets invalid_target with the instance's connect page.
 func TestTokenExchangeContract(t *testing.T) {
 	ctx := context.Background()
 	e := newExchangeEnv(t)
-	for _, instance := range []string{"github", "other"} {
+	for _, instance := range []string{"github", "gitlab", "other"} {
 		t.Run(instance, func(t *testing.T) {
 			require.NoError(t, e.store.Put(ctx, "alice", instance, &oauth2.Token{
 				AccessToken: "access-" + instance, RefreshToken: "refresh-" + instance, Expiry: time.Now().Add(time.Hour),
@@ -157,8 +157,9 @@ func TestTokenExchangeContract(t *testing.T) {
 		})
 	}
 	assert.Zero(t, e.refresh.calls.Load(), "no provider request for valid tokens")
-	assert.Equal(t, 2, strings.Count(e.logs.String(), `"msg":"token released"`), "one log line per release")
+	assert.Equal(t, 3, strings.Count(e.logs.String(), `"msg":"token released"`), "one log line per release")
 	assert.NotContains(t, e.logs.String(), "access-github")
+	assert.NotContains(t, e.logs.String(), "access-gitlab")
 	assert.NotContains(t, e.logs.String(), "access-other")
 	assert.NotContains(t, e.logs.String(), "kagent-secret")
 }

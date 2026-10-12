@@ -10,6 +10,8 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/provider/fake"
 	"github.com/giantswarm/workspace-manager/internal/provider/github"
 	"github.com/giantswarm/workspace-manager/internal/provider/github/githubtest"
+	"github.com/giantswarm/workspace-manager/internal/provider/gitlab"
+	"github.com/giantswarm/workspace-manager/internal/provider/gitlab/gitlabtest"
 	"github.com/giantswarm/workspace-manager/internal/provider/providertest"
 )
 
@@ -28,6 +30,10 @@ var backends = map[string]func(t *testing.T) (provider.Factory, providertest.Bac
 		s := githubtest.NewServer(t)
 		return github.Factory(github.Options{Clock: s.Clock}), s
 	},
+	gitlab.KindName: func(t *testing.T) (provider.Factory, providertest.Backend) {
+		s := gitlabtest.NewServer(t)
+		return gitlab.Factory(gitlab.Options{Clock: s.Clock}), s
+	},
 	fake.KindName: func(*testing.T) (provider.Factory, providertest.Backend) {
 		b := fake.NewBackend()
 		return fake.Factory(b.Store), b
@@ -44,7 +50,7 @@ func TestContract(t *testing.T) {
 	}
 }
 
-const twoProviders = `
+const sideBySide = `
 providers:
   - name: github
     kind: github
@@ -55,6 +61,14 @@ providers:
       oauth:
         clientID: Iv1.example
         clientSecret: {name: github-oauth, key: client-secret}
+  - name: gitlab
+    kind: gitlab
+    values:
+      url: https://gitlab.example.com:8443
+      token: {name: workspace-gitlab, key: token}
+      oauth:
+        clientID: abc
+        clientSecret: {name: workspace-gitlab, key: client-secret}
   - name: other
     kind: fake
     values:
@@ -64,24 +78,28 @@ providers:
       clientSecret: {name: other-oauth, key: client-secret}
 `
 
-func TestLoadTwoKinds(t *testing.T) {
-	instances, err := testRegistry(fake.NewStore("t")).Load([]byte(twoProviders))
+func TestLoadKindsSideBySide(t *testing.T) {
+	instances, err := testRegistry(fake.NewStore("t")).Load([]byte(sideBySide))
 	require.NoError(t, err)
-	require.Len(t, instances, 2)
+	require.Len(t, instances, 3)
 	assert.Equal(t, "github", instances[0].Name)
 	assert.Equal(t, github.KindName, instances[0].KindName)
 	assert.Equal(t, "github.com", instances[0].Hosts().Git[0].Name)
 	assert.Equal(t, "api.github.com", instances[0].Hosts().API[0].Name)
-	assert.Equal(t, "other", instances[1].Name)
-	assert.Equal(t, fake.KindName, instances[1].KindName)
-	assert.Equal(t, "code.example.test", instances[1].Hosts().Git[0].Name)
+	assert.Equal(t, "gitlab", instances[1].Name)
+	assert.Equal(t, gitlab.KindName, instances[1].KindName)
+	assert.Equal(t, []provider.Host{{Name: "gitlab.example.com:8443", Scheme: provider.SchemeBasic, User: "oauth2"}}, instances[1].Hosts().Git)
+	assert.Equal(t, "https://gitlab.example.com:8443/oauth/authorize", instances[1].SignIn().AuthURL)
+	assert.Equal(t, "other", instances[2].Name)
+	assert.Equal(t, fake.KindName, instances[2].KindName)
+	assert.Equal(t, "code.example.test", instances[2].Hosts().Git[0].Name)
 }
 
 func TestLoadRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name, config, want string
 	}{
-		{"duplicate name", twoProviders + `
+		{"duplicate name", sideBySide + `
   - name: github
     kind: fake
     values: {host: x.test, clientID: c}
@@ -89,8 +107,8 @@ func TestLoadRefuses(t *testing.T) {
 		{"unknown kind", `
 providers:
   - name: lab
-    kind: gitlab
-`, `provider "lab": unknown kind "gitlab" (known: fake, github)`},
+    kind: gitea
+`, `provider "lab": unknown kind "gitea" (known: fake, github, gitlab)`},
 		{"missing name", `
 providers:
   - kind: github
@@ -108,6 +126,13 @@ providers:
       app: {id: "1", privateKey: {name: github-app}}
       oauth: {clientID: c, clientSecret: {name: s, key: k}}
 `, `provider "github" (kind github): values: app.privateKey.key required`},
+		{"missing GitLab token", `
+providers:
+  - name: gitlab
+    kind: gitlab
+    values:
+      oauth: {clientID: c, clientSecret: {name: s, key: k}}
+`, `provider "gitlab" (kind gitlab): values: token.key, token.name required`},
 		{"unknown value", `
 providers:
   - name: github
@@ -138,5 +163,5 @@ func TestLoadEmpty(t *testing.T) {
 }
 
 func TestBinaryServesNoFake(t *testing.T) {
-	assert.Equal(t, []string{github.KindName}, Registry(nil).Kinds())
+	assert.Equal(t, []string{github.KindName, gitlab.KindName}, Registry(nil).Kinds())
 }

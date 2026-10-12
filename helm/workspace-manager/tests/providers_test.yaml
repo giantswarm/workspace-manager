@@ -30,6 +30,14 @@ set:
         oauth:
           clientID: Iv1.def
           clientSecret: {name: ghes-app, key: client-secret}
+    - name: gitlab
+      kind: gitlab
+      values:
+        url: https://gitlab.example.com
+        token: {name: workspace-gitlab, key: token}
+        oauth:
+          clientID: abc
+          clientSecret: {name: workspace-gitlab, key: client-secret}
 tests:
   - it: renders every instance into providers.yaml
     template: templates/providers-configmap.yaml
@@ -42,7 +50,16 @@ tests:
           value: agent-platform
       - matchRegex:
           path: data["providers.yaml"]
-          pattern: "(?s)^providers:\\n- kind: github\\n  name: github\\n.*- kind: github\\n  name: ghes\\n.*url: https://ghe.example.com"
+          pattern: "(?s)^providers:\\n- kind: github\\n  name: github\\n.*- kind: github\\n  name: ghes\\n.*url: https://ghe.example.com\n- kind: gitlab\n  name: gitlab\n.*url: https://gitlab.example.com"
+
+  - it: refuses a kind the server does not know
+    set:
+      providers:
+        - name: lab
+          kind: gitea
+    template: templates/providers-configmap.yaml
+    asserts:
+      - failedTemplate: {}
 
   - it: mounts the file and passes it to the server
     template: templates/deployment.yaml

@@ -169,7 +169,15 @@ organizations: {}  # @schema additionalProperties: {type: object, additionalProp
 # `{name: github, kind: github, values: {app: {id: "123", privateKey: {name:
 # github-agents-app, key: private-key}}, oauth: {clientID: Iv1.abc,
 # clientSecret: {name: github-agents-app, key: client-secret}}}}`.
-providers: []  # @schema item: object ; itemProperties: {name: {type: string}, kind: {type: string}, values: {type: object, additionalProperties: true}}
+# Kind `gitlab` (gitlab.com or a self-managed GitLab) takes `url` (default
+# `https://gitlab.com`, the git host and the OAuth application's), `apiURL`
+# (default `<url>/api/v4`), `token` (a group access token with `read_api` and
+# `read_repository`, the sync's) and `oauth.clientID`, `oauth.clientSecret` (an
+# OAuth application with the scopes `api read_user read_repository
+# write_repository` and the redirect URI `<oauth.baseURL>/callback/<name>`); a
+# source's owner is a top-level group, its sub-groups' projects included and
+# named by their path below it with `~` for `/` (`team~api`), or a user.
+providers: []  # @schema item: object ; itemProperties: {name: {type: string}, kind: {type: string, enum: [github, gitlab]}, values: {type: object, additionalProperties: true}}
 
 signin:
   keys:
