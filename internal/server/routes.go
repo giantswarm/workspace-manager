@@ -55,6 +55,12 @@ func (s *Server) routes(mux *http.ServeMux, cfg Config, mcpSrv *mcpserver.MCPSer
 	}
 
 	// mcp-go's default session manager issues session IDs without keeping
-	// them, so any replica answers any request of a session.
-	mux.Handle(cfg.MCPPath, s.guard(mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))))
+	// them, so any replica answers any request of a session. mcp-go reads a
+	// POST body whole before validating it (CVE-2026-108859): the bound keeps
+	// that read small.
+	mcpHandler := mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))
+	mux.Handle(cfg.MCPPath, http.MaxBytesHandler(s.guard(mcpHandler), maxMCPBodyBytes))
 }
+
+// maxMCPBodyBytes bounds an MCP request body.
+const maxMCPBodyBytes = 1 << 20

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The MCP endpoint refuses a request body larger than 1 MiB before mcp-go reads it whole (CVE-2026-108859, no fixed mcp-go release yet; the scan ignores it until 2026-11-12). ([#52](https://github.com/giantswarm/workspace-manager/issues/52))
+
 ### Added
 
 - The `gitlab` provider kind (gitlab.com or a self-managed GitLab), configured beside `github`: `url` (default `https://gitlab.com`), `apiURL` (default `<url>/api/v4`), `token` (a group access token with `read_api` and `read_repository`, by Secret reference) and `oauth.clientID`, `oauth.clientSecret`. The listing is a top-level group's projects with its sub-groups' (a sub-group project is named by its path below the group with `~` for `/`, `team~api`, and mirrored at `mirrors/<group>/team~api.git`) or a user namespace's, paged, with topics, archived, fork, `last_activity_at` as the last change and the repository size from the project statistics; GitLab's listing carries no language, so each project's primary language (the largest share of `/projects/:id/languages`) is read once and again only after the project's last activity moved. Selection, the listing cache and `Readable` (one listing as the person, a group the person cannot see reads as nothing) are as for GitHub. The sync fetches as `oauth2:<token>`. The person's sign-in is the OAuth application's authorization code with PKCE, scopes `api read_user read_repository write_repository`, revoked by RFC 7009 at `/oauth/revoke`. The run-time hosts are the git host with Basic `oauth2` and a separate API host with Bearer; a GitLab serving its API under the git host is that one host with the git credential, and its API takes no Basic credential, so `glab` API calls need a per-path scheme the contract does not carry yet. The chart's schema accepts `kind: gitlab`.
