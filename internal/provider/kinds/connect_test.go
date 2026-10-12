@@ -35,12 +35,12 @@ const managerNamespace = "workspace-manager"
 // browser pages served through the server's routes.
 type connectEnv struct {
 	github, gitlab, code *connecttest.AuthServer
-	dex          *connecttest.Dex
-	conn         *connect.Connector
-	store        *signin.KubeStore
-	kube         *k8sfake.Clientset
-	manager      string
-	skew         atomic.Int64 // added to the connector's clock
+	dex                  *connecttest.Dex
+	conn                 *connect.Connector
+	store                *signin.KubeStore
+	kube                 *k8sfake.Clientset
+	manager              string
+	skew                 atomic.Int64 // added to the connector's clock
 }
 
 func newConnectEnv(t *testing.T) *connectEnv {
