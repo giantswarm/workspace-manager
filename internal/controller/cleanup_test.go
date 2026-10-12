@@ -11,8 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/kagent"
@@ -203,6 +207,26 @@ func TestADeletedSessionWaitsWhileKagentFails(t *testing.T) {
 	assert.Equal(t, DefaultSessionPoll, f.reconcile("platform"))
 	assert.Len(t, f.jobs(), jobs)
 	assert.Nil(t, f.workspace("platform").Status.ActiveSync)
+}
+
+// TestARefusedStatusStartsNoJob: when the API server refuses the status
+// naming the cleanup's Job (a CRD older than the manager), no Job starts, so
+// the retries leave none behind.
+func TestARefusedStatusStartsNoJob(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	s, _ := f.withSessions("platform")
+	jobs := len(f.jobs())
+	f.dyn.PrependReactor("update", "workspaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInvalid(v1alpha1.GroupVersion.WithKind("Workspace").GroupKind(), "platform",
+			field.ErrorList{field.NotSupported(field.NewPath("status", "activeSync", "trigger"), "sessionDeleted", []string{"schedule"})})
+	})
+	s.delete("a")
+	f.advance(DefaultSessionPoll)
+	for range 3 {
+		_, err := f.c.Reconcile(context.Background(), f.workspace("platform"))
+		require.Error(t, err)
+	}
+	assert.Len(t, f.jobs(), jobs)
 }
 
 // TestADeletedSessionWaitsForTheRetry: after a failed cycle the retry, whose

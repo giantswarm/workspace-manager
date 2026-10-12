@@ -101,17 +101,24 @@ func (c *Controller) sessionsDeleted(ctx context.Context, ws *v1alpha1.Workspace
 	if err != nil {
 		return 0, err
 	}
-	job, err := c.jobs.Start(ctx, ws, id, &mirror.Selection{Repositories: []mirror.Repository{}, Stopped: true, Cleanup: cleanup}, nil)
-	if err != nil {
-		return 0, err
-	}
-	c.log.Info("sync job started for the directories of deleted Sessions", "workspace", ws.Name, "trigger", v1alpha1.TriggerSessionDeleted, "job", job.Name, "sessions", gone)
-	return 0, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
-		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerSessionDeleted, CleanupOnly: true}
+	// The status names the Job before it starts: a refused write starts
+	// none, so its retry cannot leave Jobs behind that no status names; a
+	// Job that then fails to start ends the cycle as gone without a
+	// manifest.
+	name := JobName(ws, id)
+	if err := c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
+		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerSessionDeleted, CleanupOnly: true}
 		w.Status.NextSync = nil
 		meta.SetStatusCondition(&w.Status.Conditions, cond)
 		return true
-	})
+	}); err != nil {
+		return 0, err
+	}
+	if _, err := c.jobs.Start(ctx, ws, id, &mirror.Selection{Repositories: []mirror.Repository{}, Stopped: true, Cleanup: cleanup}, nil); err != nil {
+		return 0, err
+	}
+	c.log.Info("sync job started for the directories of deleted Sessions", "workspace", ws.Name, "trigger", v1alpha1.TriggerSessionDeleted, "job", name, "sessions", gone)
+	return 0, nil
 }
 
 // goneSessions are the ids of the workspace's directories whose Session
