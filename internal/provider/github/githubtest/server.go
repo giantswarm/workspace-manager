@@ -10,7 +10,6 @@
 package githubtest
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -44,46 +43,8 @@ var (
 	clientSecretRef = provider.SecretRef{Name: "github-oauth", Key: "client-secret"}
 )
 
-// Clock is a stopped clock: it moves when advanced, and a Sleep moves it by
-// the duration slept, which it records.
-type Clock struct {
-	mu    sync.Mutex
-	now   time.Time
-	slept []time.Duration
-}
-
-// Now implements provider.Clock.
-func (c *Clock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-// Sleep implements provider.Clock without waiting.
-func (c *Clock) Sleep(ctx context.Context, d time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-	c.slept = append(c.slept, d)
-	return nil
-}
-
-// Advance moves the clock forward by d.
-func (c *Clock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
-// Slept are the waits so far.
-func (c *Clock) Slept() []time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]time.Duration(nil), c.slept...)
-}
+// Clock is the stub's stopped clock.
+type Clock = providertest.Clock
 
 // Limit is a rate-limited answer the stub gives.
 type Limit struct {
@@ -124,7 +85,7 @@ func NewServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	s := &Server{
-		Clock: &Clock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}, PageSize: DefaultPageSize, key: key,
+		Clock: providertest.NewClock(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)), PageSize: DefaultPageSize, key: key,
 		repos: map[string]map[string]provider.Item{}, users: map[string]bool{}, tokens: map[string]string{},
 		persons: map[string]map[string]bool{},
 	}

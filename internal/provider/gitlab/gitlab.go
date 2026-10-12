@@ -1,0 +1,541 @@
+// Package gitlab is the GitLab provider kind: gitlab.com or a self-managed
+// GitLab. A group access token is the sync credential, a group's projects
+// (its sub-groups' included) or a user namespace's are the listing, and an
+// OAuth application's authorization-code sign-in is the person's sign-in.
+// Only internal/provider/kinds imports this package.
+package gitlab
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/giantswarm/workspace-manager/internal/provider"
+)
+
+// KindName is the kind's name in the provider configuration.
+const KindName = "gitlab"
+
+// SubgroupSeparator joins a project's sub-group path to its name: a
+// project's name within its owner is one path segment (it is a directory of
+// the volume), and GitLab allows the character in no group or project path,
+// so `<owner>/team/api` is the name `team~api` and no two projects share one.
+const SubgroupSeparator = "~"
+
+// Values are an instance's settings.
+type Values struct {
+	// URL is the web URL: https://gitlab.com (the default) or a self-managed
+	// GitLab's. It is the git host and the OAuth application's issuer.
+	URL string `json:"url,omitempty"`
+	// APIURL is the REST API's base URL. Empty derives it from URL:
+	// `<url>/api/v4`.
+	APIURL string `json:"apiURL,omitempty"`
+	// Token is the sync credential: a group access token with `read_api` and
+	// `read_repository`.
+	Token provider.SecretRef `json:"token"`
+	// OAuth is the OAuth application, for the person's sign-in.
+	OAuth OAuthValues `json:"oauth"`
+}
+
+// OAuthValues are the OAuth application's client.
+type OAuthValues struct {
+	ClientID     string             `json:"clientID"`
+	ClientSecret provider.SecretRef `json:"clientSecret"`
+}
+
+// Scopes are what the person's sign-in asks for: the API (glab), the
+// person's identity, and git reads and pushes.
+var Scopes = []string{"api", "read_user", "read_repository", "write_repository"}
+
+// Options are an instance's dependencies beyond its Values.
+type Options struct {
+	// HTTP is the client the API calls use; nil for http.DefaultClient.
+	HTTP *http.Client
+	// Clock is what the instance tells time and waits by; nil for the wall
+	// clock.
+	Clock provider.Clock
+}
+
+// Factory builds GitLab instances with o.
+func Factory(o Options) provider.Factory {
+	return func(raw json.RawMessage) (provider.Kind, error) {
+		var v Values
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&v); err != nil {
+			return nil, fmt.Errorf("values: %w", err)
+		}
+		return New(v, o)
+	}
+}
+
+// Kind is a configured GitLab instance.
+type Kind struct {
+	v     Values
+	web   *url.URL
+	api   *url.URL
+	http  *http.Client
+	clock provider.Clock
+	cache *provider.ListingCache
+	langs *languages
+}
+
+// New validates v and builds the instance.
+func New(v Values, o Options) (*Kind, error) {
+	if v.URL == "" {
+		v.URL = "https://gitlab.com"
+	}
+	web, err := parseBase("url", v.URL)
+	if err != nil {
+		return nil, err
+	}
+	if v.APIURL == "" {
+		v.APIURL = web.String() + "/api/v4"
+	}
+	api, err := parseBase("apiURL", v.APIURL)
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	for field, empty := range map[string]bool{
+		"token.name":              v.Token.Name == "",
+		"token.key":               v.Token.Key == "",
+		"oauth.clientID":          v.OAuth.ClientID == "",
+		"oauth.clientSecret.name": v.OAuth.ClientSecret.Name == "",
+		"oauth.clientSecret.key":  v.OAuth.ClientSecret.Key == "",
+	} {
+		if empty {
+			missing = append(missing, field)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		return nil, fmt.Errorf("values: %s required", strings.Join(missing, ", "))
+	}
+	if o.HTTP == nil {
+		o.HTTP = http.DefaultClient
+	}
+	if o.Clock == nil {
+		o.Clock = provider.RealClock{}
+	}
+	return &Kind{
+		v: v, web: web, api: api, http: o.HTTP, clock: o.Clock,
+		cache: provider.NewListingCache(o.Clock), langs: &languages{byProject: map[int64]language{}},
+	}, nil
+}
+
+func parseBase(field, raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSuffix(raw, "/"))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("values: %s must be an absolute http(s) URL, got %q", field, raw)
+	}
+	return u, nil
+}
+
+// SecretRefs implements provider.Kind.
+func (k *Kind) SecretRefs() []provider.SecretRef {
+	return []provider.SecretRef{k.v.Token, k.v.OAuth.ClientSecret}
+}
+
+// SignIn implements provider.Kind: the OAuth application's authorization
+// code with PKCE; revoking the refresh token (RFC 7009) ends the grant.
+func (k *Kind) SignIn() provider.SignIn {
+	web := k.web.String()
+	return provider.SignIn{
+		AuthURL:       web + "/oauth/authorize",
+		TokenURL:      web + "/oauth/token",
+		RevocationURL: web + "/oauth/revoke",
+		Revocation:    provider.RevokeRFC7009,
+		ClientID:      k.v.OAuth.ClientID,
+		ClientSecret:  k.v.OAuth.ClientSecret,
+		Scopes:        slices.Clone(Scopes),
+	}
+}
+
+// Hosts implements provider.Kind. GitLab takes an OAuth token over git as
+// the password of the user `oauth2`, and on its API as a Bearer token. A
+// GitLab serving its API under the git host is that one host with the git
+// credential: a host takes one credential.
+func (k *Kind) Hosts() provider.Hosts {
+	h := provider.Hosts{
+		Git: []provider.Host{{Name: k.web.Host, Scheme: provider.SchemeBasic, User: "oauth2"}},
+		CLI: "glab",
+	}
+	if k.api.Host != k.web.Host {
+		h.API = []provider.Host{{Name: k.api.Host, Scheme: provider.SchemeBearer}}
+	}
+	return h
+}
+
+// SyncCredential implements provider.Kind: the group access token from its
+// Secret, read here, so a missing Secret fails the first sync of the owner
+// with its name.
+func (k *Kind) SyncCredential(ctx context.Context, secrets provider.Secrets, _ string) (oauth2.TokenSource, error) {
+	tok, err := secrets.Value(ctx, k.v.Token)
+	if err != nil {
+		return nil, fmt.Errorf("the group access token (Secret %s): %w", k.v.Token, err)
+	}
+	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: strings.TrimSpace(string(tok)), TokenType: "Bearer"}), nil
+}
+
+// List implements provider.Kind: owner's projects that cred, the owner's
+// SyncCredential, can see, each with its primary language; from the listing
+// cache within provider.ListingFreshness.
+func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
+	return k.cache.Get(owner, func() ([]provider.Item, error) {
+		projects, err := k.listAs(ctx, cred, owner, true)
+		if err != nil {
+			return nil, err
+		}
+		return k.withLanguages(ctx, cred, owner, projects)
+	})
+}
+
+// Readable implements provider.Kind with the person's own token: one listing
+// of the owner's projects as the person sees them, which GitLab filters by
+// what they can read; an owner the person cannot see at all (GitLab's 404)
+// holds nothing they read. Readable reports no language.
+func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
+	if err := checkOwner(owner); err != nil {
+		return nil, err
+	}
+	projects, err := k.listAs(ctx, cred, owner, false)
+	var se *statusError
+	switch {
+	case errors.As(err, &se) && se.status == http.StatusNotFound:
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, n := range names {
+		wanted[strings.ToLower(n)] = true
+	}
+	var items []provider.Item
+	for _, p := range projects {
+		if it := p.item(owner); wanted[strings.ToLower(it.Name)] {
+			items = append(items, it)
+		}
+	}
+	return items, nil
+}
+
+// checkOwner refuses a sub-group as an owner: an owner is one segment of the
+// volume's layout, and a group's listing takes its sub-groups' projects.
+func checkOwner(owner string) error {
+	if owner == "" || strings.Contains(owner, "/") {
+		return fmt.Errorf("owner %q: a GitLab owner is a top-level group or a user, whose sub-groups' projects it lists", owner)
+	}
+	return nil
+}
+
+// listAs pages through owner's projects as cred sees them, sub-groups
+// included and projects shared into the group left out: a group's, else, on
+// a 404, a user namespace's. Statistics (the repository size) are asked for
+// with the sync credential only, which may read them.
+func (k *Kind) listAs(ctx context.Context, cred oauth2.TokenSource, owner string, statistics bool) ([]project, error) {
+	q := url.Values{"per_page": {"100"}, "order_by": {"id"}, "sort": {"asc"}}
+	if statistics {
+		q.Set("statistics", "true")
+	}
+	gq := url.Values{"include_subgroups": {"true"}, "with_shared": {"false"}}
+	for key, vs := range q {
+		gq[key] = vs
+	}
+	projects, err := k.listPages(ctx, cred, owner, "/groups/"+url.PathEscape(owner)+"/projects?"+gq.Encode())
+	var se *statusError
+	if !errors.As(err, &se) || se.status != http.StatusNotFound {
+		return projects, err
+	}
+	return k.listPages(ctx, cred, owner, "/users/"+url.PathEscape(owner)+"/projects?"+q.Encode())
+}
+
+func (k *Kind) listPages(ctx context.Context, cred oauth2.TokenSource, owner, path string) ([]project, error) {
+	var out []project
+	for next := k.api.String() + path; next != ""; {
+		var page []project
+		var err error
+		if next, err = k.getPage(ctx, cred, next, &page); err != nil {
+			return nil, fmt.Errorf("listing %s: %w", owner, err)
+		}
+		for _, p := range page {
+			// An empty project has nothing to mirror; a project outside the
+			// owner's namespace is not the owner's.
+			if p.EmptyRepo || p.DefaultBranch == "" || !p.under(owner) {
+				continue
+			}
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// project is what the listing reads of a project; the repository size is in
+// bytes.
+type project struct {
+	ID                int64     `json:"id"`
+	Path              string    `json:"path"`
+	PathWithNamespace string    `json:"path_with_namespace"`
+	Topics            []string  `json:"topics"`
+	Archived          bool      `json:"archived"`
+	ForkedFrom        *struct{} `json:"forked_from_project"`
+	LastActivityAt    time.Time `json:"last_activity_at"`
+	HTTPURLToRepo     string    `json:"http_url_to_repo"`
+	DefaultBranch     string    `json:"default_branch"`
+	EmptyRepo         bool      `json:"empty_repo"`
+	Statistics        *struct {
+		RepositorySize int64 `json:"repository_size"`
+	} `json:"statistics"`
+}
+
+func (p project) under(owner string) bool {
+	return len(p.PathWithNamespace) > len(owner) && strings.EqualFold(p.PathWithNamespace[:len(owner)+1], owner+"/")
+}
+
+// name is the project's path below owner, its sub-groups joined by
+// SubgroupSeparator.
+func (p project) name(owner string) string {
+	return strings.ReplaceAll(p.PathWithNamespace[len(owner)+1:], "/", SubgroupSeparator)
+}
+
+func (p project) item(owner string) provider.Item {
+	it := provider.Item{
+		Owner:         owner,
+		Name:          p.name(owner),
+		Topics:        p.Topics,
+		Archived:      p.Archived,
+		Fork:          p.ForkedFrom != nil,
+		LastChange:    p.LastActivityAt,
+		CloneURL:      p.HTTPURLToRepo,
+		DefaultBranch: p.DefaultBranch,
+	}
+	if p.Statistics != nil {
+		it.SizeKiB = (p.Statistics.RepositorySize + 1023) / 1024
+	}
+	return it
+}
+
+// languageLookups bounds the language requests a listing has in flight.
+const languageLookups = 8
+
+// languages holds each project's primary language with the last activity it
+// was read at: GitLab's listing carries no language, so a listing asks
+// `/projects/:id/languages` only for projects active since their last read.
+type languages struct {
+	mu        sync.Mutex
+	byProject map[int64]language
+}
+
+type language struct {
+	name string
+	at   time.Time
+}
+
+func (l *languages) get(p project) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	got, ok := l.byProject[p.ID]
+	return got.name, ok && got.at.Equal(p.LastActivityAt)
+}
+
+func (l *languages) put(p project, name string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.byProject[p.ID] = language{name: name, at: p.LastActivityAt}
+}
+
+// withLanguages makes the listing's items, each with its primary language:
+// the one with the largest share, by name on a tie.
+func (k *Kind) withLanguages(ctx context.Context, cred oauth2.TokenSource, owner string, projects []project) ([]provider.Item, error) {
+	items := make([]provider.Item, len(projects))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(languageLookups)
+	for i, p := range projects {
+		items[i] = p.item(owner)
+		if lang, ok := k.langs.get(p); ok {
+			items[i].Language = lang
+			continue
+		}
+		g.Go(func() error {
+			var shares map[string]float64
+			if err := k.get(gctx, cred, "/projects/"+strconv.FormatInt(p.ID, 10)+"/languages", &shares); err != nil {
+				return fmt.Errorf("listing %s: the languages of %s: %w", owner, p.PathWithNamespace, err)
+			}
+			lang := primary(shares)
+			k.langs.put(p, lang)
+			items[i].Language = lang
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func primary(shares map[string]float64) string {
+	var best string
+	for name, share := range shares {
+		if best == "" || share > shares[best] || share == shares[best] && name < best {
+			best = name
+		}
+	}
+	return best
+}
+
+func (k *Kind) get(ctx context.Context, cred oauth2.TokenSource, path string, out any) error {
+	_, err := k.getPage(ctx, cred, k.api.String()+path, out)
+	return err
+}
+
+// getPage GETs one page and returns the URL of the next one, empty on the
+// last.
+func (k *Kind) getPage(ctx context.Context, cred oauth2.TokenSource, u string, out any) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	if cred != nil {
+		tok, err := cred.Token()
+		if err != nil {
+			return "", fmt.Errorf("credential: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	}
+	header, err := k.do(req, out)
+	if err != nil {
+		return "", err
+	}
+	return nextLink(header.Get("Link")), nil
+}
+
+// A rate limit (429) is waited out as GitLab says: `Retry-After`, else the
+// limit's `RateLimit-Reset`, else a minute. A wait beyond maxRateLimitWait,
+// or more than rateLimitRetries of them, fails the call with the limit
+// instead, for the caller's next cycle.
+const (
+	maxRateLimitWait = 5 * time.Minute
+	rateLimitRetries = 3
+)
+
+// do sends req (which carries no body, so it is sent again after a rate
+// limit's wait) and decodes a 200 answer into out.
+func (k *Kind) do(req *http.Request, out any) (http.Header, error) {
+	for attempt := 0; ; attempt++ {
+		header, err := k.once(req, out)
+		var se *statusError
+		if !errors.As(err, &se) || !se.limited || attempt == rateLimitRetries || se.resetIn > maxRateLimitWait {
+			return header, err
+		}
+		if err := k.clock.Sleep(req.Context(), se.resetIn); err != nil {
+			return nil, fmt.Errorf("%w (while waiting out a rate limit: %w)", err, se)
+		}
+	}
+}
+
+func (k *Kind) once(req *http.Request, out any) (http.Header, error) {
+	req.Header.Set("Accept", "application/json")
+	resp, err := k.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		se := &statusError{method: req.Method, path: req.URL.Path, status: resp.StatusCode, message: errorMessage(resp.Body)}
+		se.resetIn, se.limited = rateLimitWait(resp, k.clock.Now())
+		return nil, se
+	}
+	return resp.Header, json.NewDecoder(resp.Body).Decode(out)
+}
+
+// errorMessage reads GitLab's error answer: `{"message": …}` (a string or an
+// object of field errors) or `{"error": …}`.
+func errorMessage(body io.Reader) string {
+	var e struct {
+		Message json.RawMessage `json:"message"`
+		Error   string          `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&e)
+	var s string
+	if json.Unmarshal(e.Message, &s) == nil && s != "" {
+		return s
+	}
+	if len(e.Message) > 0 {
+		return string(e.Message)
+	}
+	return e.Error
+}
+
+// rateLimitWait reads a rate-limited answer's wait: false for any other
+// answer.
+func rateLimitWait(resp *http.Response, now time.Time) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusTooManyRequests {
+		return 0, false
+	}
+	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
+		return time.Duration(s) * time.Second, true
+	}
+	if reset, err := strconv.ParseInt(resp.Header.Get("RateLimit-Reset"), 10, 64); err == nil {
+		// A second past the reset, so the retry lands after it.
+		return max(time.Unix(reset, 0).Sub(now), 0) + time.Second, true
+	}
+	return time.Minute, true
+}
+
+// nextLink extracts rel="next" from a Link header.
+func nextLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		segs := strings.Split(part, ";")
+		if len(segs) < 2 {
+			continue
+		}
+		for _, s := range segs[1:] {
+			if strings.TrimSpace(s) == `rel="next"` {
+				return strings.Trim(strings.TrimSpace(segs[0]), "<>")
+			}
+		}
+	}
+	return ""
+}
+
+// statusError is an API answer other than 200; a rate limit says when it
+// resets.
+type statusError struct {
+	method, path string
+	status       int
+	message      string
+	limited      bool
+	resetIn      time.Duration
+}
+
+// Unwrap makes a 401 an ErrCredentialRefused.
+func (e *statusError) Unwrap() error {
+	if e.status == http.StatusUnauthorized {
+		return provider.ErrCredentialRefused
+	}
+	return nil
+}
+
+func (e *statusError) Error() string {
+	s := fmt.Sprintf("%s %s: %d %s %s", e.method, e.path, e.status, http.StatusText(e.status), e.message)
+	if e.limited {
+		s += fmt.Sprintf(" (rate limit resets in %s)", e.resetIn)
+	}
+	return s
+}

@@ -30,11 +30,11 @@ import (
 
 const managerNamespace = "workspace-manager"
 
-// connectEnv is a manager with a GitHub instance and a fake-kind instance
+// connectEnv is a manager with a GitHub, a GitLab and a fake-kind instance
 // configured at once, each behind its own fake authorization server, its
 // browser pages served through the server's routes.
 type connectEnv struct {
-	github, code *connecttest.AuthServer
+	github, gitlab, code *connecttest.AuthServer
 	dex          *connecttest.Dex
 	conn         *connect.Connector
 	store        *signin.KubeStore
@@ -47,6 +47,7 @@ func newConnectEnv(t *testing.T) *connectEnv {
 	t.Helper()
 	e := &connectEnv{
 		github: connecttest.NewAuthServer(t, "Iv1.github", "github-client-secret"),
+		gitlab: connecttest.NewAuthServer(t, "gitlab-app", "gitlab-client-secret"),
 		code:   connecttest.NewAuthServer(t, "fake-client", "fake-client-secret"),
 		dex:    connecttest.NewDex(t),
 		kube:   k8sfake.NewClientset(),
@@ -58,6 +59,12 @@ func newConnectEnv(t *testing.T) *connectEnv {
     url: %s
     app: {id: "1", privateKey: {name: github-app, key: private-key}}
     oauth: {clientID: Iv1.github, clientSecret: {name: github-oauth, key: client-secret}}
+- name: gitlab
+  kind: gitlab
+  values:
+    url: %s
+    token: {name: gitlab-sync, key: token}
+    oauth: {clientID: gitlab-app, clientSecret: {name: gitlab-oauth, key: client-secret}}
 - name: code
   kind: fake
   values:
@@ -65,11 +72,12 @@ func newConnectEnv(t *testing.T) *connectEnv {
     token: {name: fake-sync, key: token}
     clientID: fake-client
     clientSecret: {name: fake-oauth, key: client-secret}
-`, e.github.URL, e.code.Listener.Addr().String())
+`, e.github.URL, e.gitlab.URL, e.code.Listener.Addr().String())
 	instances, err := testRegistry(fake.NewStore("sync")).Load([]byte(cfg))
 	require.NoError(t, err)
 	secrets := providertest.Secrets{
 		{Name: "github-oauth", Key: "client-secret"}: []byte("github-client-secret"),
+		{Name: "gitlab-oauth", Key: "client-secret"}: []byte("gitlab-client-secret"),
 		{Name: "fake-oauth", Key: "client-secret"}:   []byte("fake-client-secret"),
 	}
 
@@ -153,21 +161,21 @@ func TestConnectProvidersIndependently(t *testing.T) {
 	ctx := context.Background()
 	alice := connecttest.NewBrowser(t, e.dex, "alice")
 
-	assert.Equal(t, map[string]bool{"github": false, "code": false}, e.connected(t, "alice"))
+	assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": false}, e.connected(t, "alice"))
 
 	// The connect page signs the browser in, then runs the provider's flow.
 	status, page := get(t, alice, e.manager+"/connect/github")
 	require.Equal(t, http.StatusOK, status, page)
 	assert.Contains(t, page, "github connected")
-	assert.Equal(t, map[string]bool{"github": true, "code": false}, e.connected(t, "alice"))
+	assert.Equal(t, map[string]bool{"github": true, "gitlab": false, "code": false}, e.connected(t, "alice"))
 
 	// The link connect_provider hands out completes in the browser too.
 	link, _, err := e.conn.AuthorizationURL(ctx, "alice", "code")
 	require.NoError(t, err)
 	status, page = get(t, alice, link)
 	require.Equal(t, http.StatusOK, status, page)
-	assert.Equal(t, map[string]bool{"github": true, "code": true}, e.connected(t, "alice"))
-	assert.Equal(t, map[string]bool{"github": false, "code": false}, e.connected(t, "bob"), "a sign-in is the person's own")
+	assert.Equal(t, map[string]bool{"github": true, "gitlab": false, "code": true}, e.connected(t, "alice"))
+	assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": false}, e.connected(t, "bob"), "a sign-in is the person's own")
 
 	// Each instance holds its own provider's token, sealed at rest.
 	ghToken, err := e.store.AccessToken(ctx, "alice", "github")
@@ -188,7 +196,7 @@ func TestConnectProvidersIndependently(t *testing.T) {
 	assert.True(t, revoked)
 	assert.Equal(t, []connecttest.Revocation{{Method: "grant", Token: ghToken}}, e.github.Revocations())
 	assert.False(t, e.github.Live(ghToken))
-	assert.Equal(t, map[string]bool{"github": false, "code": true}, e.connected(t, "alice"))
+	assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": true}, e.connected(t, "alice"))
 
 	// The fake kind revokes by RFC 7009, the refresh token.
 	revoked, err = e.conn.Disconnect(ctx, "alice", "code")
@@ -203,6 +211,46 @@ func TestConnectProvidersIndependently(t *testing.T) {
 	revoked, err = e.conn.Disconnect(ctx, "alice", "code")
 	require.NoError(t, err)
 	assert.False(t, revoked)
+}
+
+// TestConnectGitLab: the GitLab instance's sign-in is the authorization code
+// with PKCE at its OAuth application, asking for its scopes with the
+// instance's callback; it is stored sealed like every provider's, and
+// disconnecting revokes the refresh token by RFC 7009.
+func TestConnectGitLab(t *testing.T) {
+	e := newConnectEnv(t)
+	ctx := context.Background()
+	alice := connecttest.NewBrowser(t, e.dex, "alice")
+
+	link, _, err := e.conn.AuthorizationURL(ctx, "alice", "gitlab")
+	require.NoError(t, err)
+	u, err := url.Parse(link)
+	require.NoError(t, err)
+	assert.Equal(t, e.gitlab.URL+"/oauth/authorize", u.Scheme+"://"+u.Host+u.Path)
+	q := u.Query()
+	assert.Equal(t, "gitlab-app", q.Get("client_id"))
+	assert.Equal(t, "S256", q.Get("code_challenge_method"))
+	assert.Equal(t, "api read_user read_repository write_repository", q.Get("scope"))
+	assert.Equal(t, e.manager+"/callback/gitlab", q.Get("redirect_uri"))
+
+	status, page := get(t, alice, link)
+	require.Equal(t, http.StatusOK, status, page)
+	assert.Equal(t, map[string]bool{"github": false, "gitlab": true, "code": false}, e.connected(t, "alice"))
+	token, err := e.store.AccessToken(ctx, "alice", "gitlab")
+	require.NoError(t, err)
+	assert.True(t, e.gitlab.Live(token))
+	sealed := e.signIns(t)
+	require.Len(t, sealed, 1)
+	assert.False(t, bytes.Contains(sealed[0], []byte(token)), "a token is stored in clear")
+
+	revoked, err := e.conn.Disconnect(ctx, "alice", "gitlab")
+	require.NoError(t, err)
+	assert.True(t, revoked)
+	require.Len(t, e.gitlab.Revocations(), 1)
+	assert.Equal(t, "rfc7009", e.gitlab.Revocations()[0].Method)
+	assert.True(t, strings.HasPrefix(e.gitlab.Revocations()[0].Token, "refresh-"))
+	assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": false}, e.connected(t, "alice"))
+	assert.Empty(t, e.signIns(t))
 }
 
 func TestCallbackRefusals(t *testing.T) {
@@ -283,7 +331,7 @@ func TestCallbackRefusals(t *testing.T) {
 	t.Run("unknown provider", func(t *testing.T) {
 		e := newConnectEnv(t)
 		alice := connecttest.NewBrowser(t, e.dex, "alice")
-		status, _ := get(t, alice, e.manager+"/connect/gitlab")
+		status, _ := get(t, alice, e.manager+"/connect/gitea")
 		assert.Equal(t, http.StatusNotFound, status)
 	})
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/github"
+	"github.com/giantswarm/workspace-manager/internal/provider/gitlab"
 )
 
 // Registry returns every kind the binary serves; hc is the HTTP client their
@@ -15,5 +16,6 @@ import (
 func Registry(hc *http.Client) provider.Registry {
 	return provider.Registry{
 		github.KindName: github.Factory(github.Options{HTTP: hc}),
+		gitlab.KindName: gitlab.Factory(gitlab.Options{HTTP: hc}),
 	}
 }
