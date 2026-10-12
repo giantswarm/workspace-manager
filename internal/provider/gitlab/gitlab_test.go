@@ -234,7 +234,7 @@ func TestSelfManaged(t *testing.T) {
 		CLI: "glab",
 	}, k.Hosts(), "the API under the git host takes the git host's one credential")
 	s := k.SignIn()
-	assert.Equal(t, provider.SignIn{
+	assert.Equal(t, provider.SignIn{ //nolint:gosec // G101: URLs and a Secret reference, no credential
 		AuthURL:       "https://gitlab.example.com:8443/oauth/authorize",
 		TokenURL:      "https://gitlab.example.com:8443/oauth/token",
 		RevocationURL: "https://gitlab.example.com:8443/oauth/revoke",

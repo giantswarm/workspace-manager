@@ -26,7 +26,7 @@ import (
 )
 
 // SyncToken is the group access token the stub accepts.
-const SyncToken = "glpat-stub-sync"
+const SyncToken = "glpat-stub-sync" //nolint:gosec // G101: the stub's own fake token
 
 // DefaultPageSize is the stub's page size, small so listings page.
 const DefaultPageSize = 2
