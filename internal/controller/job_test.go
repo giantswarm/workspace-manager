@@ -160,3 +160,30 @@ func TestJobsStartCarriesRoots(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, cm.Data, rootsFile, "the roots of the last cycle go with the selection's rewrite")
 }
+
+// TestJobsStartProjectsEachOwnersCredential: the Job's Secret projects each
+// credential to <provider>/<owner>/{username,token}, the directory the sync
+// reads an owner's credential from, so two owners of one provider coexist.
+func TestJobsStartProjectsEachOwnersCredential(t *testing.T) {
+	ws := workspaceNamed("platform")
+	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync")}
+	creds := []Credential{
+		{Provider: "github", Owner: "acme", Username: "x-access-token", Token: "t1"},
+		{Provider: "github", Owner: "globex", Username: "x-access-token", Token: "t2"},
+	}
+	job, err := j.Start(context.Background(), ws, "ab12", &mirror.Selection{}, creds)
+	require.NoError(t, err)
+	var items []corev1.KeyToPath
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "credentials" {
+			items = v.Secret.Items
+		}
+	}
+	assert.Equal(t, []corev1.KeyToPath{
+		{Key: "0.username", Path: "github/acme/username"},
+		{Key: "0.token", Path: "github/acme/token"},
+		{Key: "1.username", Path: "github/globex/username"},
+		{Key: "1.token", Path: "github/globex/token"},
+	}, items)
+	assert.Equal(t, "github/acme", mirror.CredentialDir("github", "acme"), "the sync reads where the Job projects")
+}

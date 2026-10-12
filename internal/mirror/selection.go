@@ -51,8 +51,8 @@ func (c *Cleanup) After() time.Duration { return time.Duration(c.AfterSeconds) *
 
 // Repository is one selected repository as its provider listed it.
 type Repository struct {
-	// Provider is the provider instance the repository belongs to; it names
-	// the credential directory the sync fetches with.
+	// Provider is the provider instance the repository belongs to; with the
+	// owner it names the credential directory the sync fetches with.
 	Provider string `json:"provider"`
 	// Owner and Name place the mirror at mirrors/<owner>/<name>.git.
 	Owner string `json:"owner"`

@@ -37,11 +37,12 @@ const (
 type Syncer struct {
 	// Volume is the mount point of the workspace's volume.
 	Volume string
-	// CredentialsDir holds one directory per provider instance with the files
-	// username and token; a provider without one is fetched anonymously.
+	// CredentialsDir holds one directory per provider instance and owner,
+	// <provider>/<owner> (CredentialDir), with the files username and token;
+	// an owner without one is fetched anonymously.
 	CredentialsDir string
 	// CredentialHelper is the command git runs for a credential, given the
-	// provider's credential directory and the operation: this binary's
+	// owner's credential directory and the operation: this binary's
 	// git-credential subcommand.
 	CredentialHelper []string
 	// Git is the git binary; empty looks git up on PATH.
@@ -256,7 +257,7 @@ func (s *Syncer) clone(ctx context.Context, g *git, r Repository, dir string) er
 	if err := os.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("remove leftover clone: %w", err)
 	}
-	cred, err := s.credentialArgs(r.Provider)
+	cred, err := s.credentialArgs(r)
 	if err != nil {
 		return err
 	}
@@ -279,7 +280,7 @@ func (s *Syncer) clone(ctx context.Context, g *git, r Repository, dir string) er
 // fetch brings the mirror up to date and repacks it under the borrowed-objects
 // rule.
 func (s *Syncer) fetch(ctx context.Context, g *git, r Repository, dir, relPath string) error {
-	cred, err := s.credentialArgs(r.Provider)
+	cred, err := s.credentialArgs(r)
 	if err != nil {
 		return err
 	}
@@ -378,16 +379,16 @@ func (s *Syncer) listMirrors() (map[string]bool, error) {
 	return out, nil
 }
 
-// credentialArgs are the git options for a provider's credential, none for a
-// provider without a credential directory.
-func (s *Syncer) credentialArgs(provider string) ([]string, error) {
-	dir := filepath.Join(s.CredentialsDir, provider)
+// credentialArgs are the git options for the credential of the repository's
+// provider and owner, none for an owner without a credential directory.
+func (s *Syncer) credentialArgs(r Repository) ([]string, error) {
+	dir := filepath.Join(s.CredentialsDir, filepath.FromSlash(CredentialDir(r.Provider, r.Owner)))
 	ok, err := hasCredential(dir)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		s.log().Info("no credential for provider, fetching anonymously", "provider", provider)
+		s.log().Info("no credential for provider and owner, fetching anonymously", "provider", r.Provider, "owner", r.Owner)
 		return nil, nil
 	}
 	return credentialArgs(s.CredentialHelper, dir), nil

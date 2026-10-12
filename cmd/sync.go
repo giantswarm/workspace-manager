@@ -40,11 +40,11 @@ commits, push times, measured sizes, the session directories left) to the
 volume and, with --result-configmap, as the Job's result. A stopped
 selection, a deleted workspace's, touches no mirror.
 
-The selection is the controller's ConfigMap mounted as a file. Each provider
-instance's credential is a directory under --credentials-dir with the files
-username and token, projected from a Secret; git obtains it through this
-binary's credential helper, so no token reaches a URL, the volume or a log.
-A provider without a directory is fetched anonymously.
+The selection is the controller's ConfigMap mounted as a file. A provider
+instance's credential for one owner is the directory <provider>/<owner> under
+--credentials-dir with the files username and token, projected from a Secret;
+git obtains it through this binary's credential helper, so no token reaches a
+URL, the volume or a log. An owner without a directory is fetched anonymously.
 
 While a session directory's clone borrows a mirror's objects, the sync keeps
 every object of that mirror, reachable or not; a clone or fetch error fails
@@ -56,7 +56,7 @@ the Job and leaves the previous manifest in place.`,
 	f := cmd.Flags()
 	f.StringVar(&o.volume, "volume", envOr("WORKSPACE_MANAGER_SYNC_VOLUME", "/workspace"), "Mount point of the workspace's volume (WORKSPACE_MANAGER_SYNC_VOLUME)")
 	f.StringVar(&o.selection, "selection", envOr("WORKSPACE_MANAGER_SYNC_SELECTION", "/etc/workspace-sync/selection.json"), "The selection file: the repositories resolved for the workspace, with provider, owner, name, cloneUrl, defaultBranch and pushedAt each (WORKSPACE_MANAGER_SYNC_SELECTION)")
-	f.StringVar(&o.credentialsDir, "credentials-dir", envOr("WORKSPACE_MANAGER_SYNC_CREDENTIALS_DIR", "/var/run/secrets/workspace-sync"), "Directory with one directory per provider instance holding the files username and token (WORKSPACE_MANAGER_SYNC_CREDENTIALS_DIR)")
+	f.StringVar(&o.credentialsDir, "credentials-dir", envOr("WORKSPACE_MANAGER_SYNC_CREDENTIALS_DIR", "/var/run/secrets/workspace-sync"), "Directory with one directory <provider>/<owner> per provider instance and owner holding the files username and token (WORKSPACE_MANAGER_SYNC_CREDENTIALS_DIR)")
 	f.IntVar(&o.parallel, "parallel", envInt("WORKSPACE_MANAGER_SYNC_PARALLEL", mirror.DefaultParallel), "Clones and fetches run at once (WORKSPACE_MANAGER_SYNC_PARALLEL)")
 	f.StringVar(&o.resultConfigMap, "result-configmap", envOr("WORKSPACE_MANAGER_SYNC_RESULT_CONFIGMAP", ""), "ConfigMap in --namespace to write the manifest into under manifest.json, the Job's result; empty writes it to the volume only (WORKSPACE_MANAGER_SYNC_RESULT_CONFIGMAP)")
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace of the result ConfigMap (WORKSPACE_MANAGER_NAMESPACE)")

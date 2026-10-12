@@ -6,19 +6,29 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
 
-// Credential files a provider instance's directory holds, projected from
-// the Secret the controller gives the Job.
+// Credential files an owner's credential directory holds, projected from the
+// Secret the controller gives the Job.
 const (
-	credentialUsernameFile = "username"
-	credentialTokenFile    = "token"
+	CredentialUsernameFile = "username"
+	CredentialTokenFile    = "token"
 )
 
-// ServeCredential answers git's credential helper protocol for one
-// provider's credential directory: on "get" it reads the request git writes
+// CredentialDir is a provider instance's credential directory for one owner,
+// relative to the credentials directory and slash-separated:
+// <provider>/<owner>. An installation token is scoped to one owner, so each
+// owner a provider instance syncs has its own; the controller projects the
+// Job's Secret there and the sync reads it from there.
+func CredentialDir(provider, owner string) string {
+	return path.Join(provider, owner)
+}
+
+// ServeCredential answers git's credential helper protocol for one owner's
+// credential directory: on "get" it reads the request git writes
 // and prints the directory's username and token; "store" and "erase" do
 // nothing, so git never keeps the credential anywhere. git runs the helper as
 // `<command> <directory> <operation>`; the token travels only through this
@@ -39,11 +49,11 @@ func ServeCredential(dir, operation string, stdin io.Reader, stdout io.Writer) e
 }
 
 func readCredential(dir string) (username, token string, err error) {
-	username, err = readCredentialFile(filepath.Join(dir, credentialUsernameFile))
+	username, err = readCredentialFile(filepath.Join(dir, CredentialUsernameFile))
 	if err != nil {
 		return "", "", err
 	}
-	token, err = readCredentialFile(filepath.Join(dir, credentialTokenFile))
+	token, err = readCredentialFile(filepath.Join(dir, CredentialTokenFile))
 	if err != nil {
 		return "", "", err
 	}
@@ -62,8 +72,8 @@ func readCredentialFile(path string) (string, error) {
 	return v, nil
 }
 
-// hasCredential reports whether the provider's credential directory exists;
-// a provider without one is fetched anonymously.
+// hasCredential reports whether the owner's credential directory exists; an
+// owner without one is fetched anonymously.
 func hasCredential(dir string) (bool, error) {
 	info, err := os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {

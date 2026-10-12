@@ -41,13 +41,14 @@ DEX_CLIENT_SECRET=... go run . serve --enable-oauth \
 ```
 
 Run a sync against a directory standing in for a workspace's volume, with a
-selection file and a credential directory per provider instance (`username`
+selection file and a credential directory `<provider>/<owner>` per provider
+instance and owner (`username`
 and `token`; the token is a GitHub App installation token or a fine-grained
 personal access token with read access to the repositories):
 
 ```sh
-mkdir -p /tmp/ws-creds/github && printf 'x-access-token' > /tmp/ws-creds/github/username
-# write the token into /tmp/ws-creds/github/token without echoing it
+mkdir -p /tmp/ws-creds/github/giantswarm && printf 'x-access-token' > /tmp/ws-creds/github/giantswarm/username
+# write the token into /tmp/ws-creds/github/giantswarm/token without echoing it
 cat > /tmp/ws-selection.json <<'EOF'
 {"repositories": [{"provider": "github", "owner": "giantswarm", "name": "workspace-manager",
   "cloneUrl": "https://github.com/giantswarm/workspace-manager.git", "defaultBranch": "main",

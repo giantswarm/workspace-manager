@@ -377,12 +377,13 @@ volume mounted at `--volume`:
   repository its `provider` instance, `owner`, `name`, `cloneUrl` (http(s),
   without a credential), `defaultBranch` and `pushedAt` as the provider listed
   them.
-- **Credential:** one directory per provider instance under
-  `--credentials-dir`, projected from a Secret, with the files `username` and
+- **Credential:** one directory `<provider>/<owner>` per provider instance
+  and owner under `--credentials-dir`, projected from a Secret, with the
+  files `username` and
   `token` (on GitHub `x-access-token` and the `-agents` App's installation
   token). git obtains it through the binary's own credential helper
   (`workspace-manager git-credential <dir> get`), so no token reaches a URL,
-  a mirror's configuration, the volume or a log; a provider without a
+  a mirror's configuration, the volume or a log; an owner without a
   directory is fetched anonymously.
 - **Work:** a repository without a mirror is cloned (`git clone --mirror`
   into a temporary directory, renamed into place when complete); one whose

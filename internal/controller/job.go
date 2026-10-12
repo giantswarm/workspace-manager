@@ -226,8 +226,8 @@ func (j Jobs) applyCredentials(ctx context.Context, ws *v1alpha1.Workspace, owne
 		prefix := strconv.Itoa(i)
 		data[prefix+".username"], data[prefix+".token"] = []byte(c.Username), []byte(c.Token)
 		items = append(items,
-			corev1.KeyToPath{Key: prefix + ".username", Path: path.Join(c.Provider, c.Owner, "username")},
-			corev1.KeyToPath{Key: prefix + ".token", Path: path.Join(c.Provider, c.Owner, "token")})
+			corev1.KeyToPath{Key: prefix + ".username", Path: path.Join(mirror.CredentialDir(c.Provider, c.Owner), mirror.CredentialUsernameFile)},
+			corev1.KeyToPath{Key: prefix + ".token", Path: path.Join(mirror.CredentialDir(c.Provider, c.Owner), mirror.CredentialTokenFile)})
 	}
 	cfg := corev1apply.Secret(CredentialsName(ws), ws.Namespace).
 		WithLabels(labels).
