@@ -1,7 +1,9 @@
 // Package gitlabtest is a stub of the GitLab REST API's parts the gitlab kind
 // calls: a group's projects with its sub-groups' (paged by a Link header), a
-// user namespace's, a project's languages, with the rate-limit answers GitLab
-// gives. The sync's group access token reads every project, with its
+// user namespace's, a project's languages and its default branch's head
+// commit, with the rate-limit answers GitLab gives. An item's LastChange is
+// its head's committed date, and a Put is a push: it moves the head and the
+// project's last activity; a Comment moves the last activity alone. The sync's group access token reads every project, with its
 // statistics; a person's token reads the projects issued to it, and a group
 // the person reads nothing of is a 404, as a private group is. An item named
 // `team~api` under `acme` is the project `acme/team/api`. It goes by a clock
@@ -57,6 +59,8 @@ type Server struct {
 	ids       int64
 	listed    int
 	langReads int
+	headReads int
+	headFails int
 	requests  int
 	limits    []Limit
 }
@@ -65,6 +69,9 @@ type project struct {
 	provider.Item
 	id    int64
 	empty bool
+	// activity is the project's last_activity_at: its head's date or a
+	// later comment's.
+	activity time.Time
 }
 
 // NewServer starts a stub, stopped when t ends.
@@ -99,11 +106,32 @@ func (s *Server) put(it provider.Item, empty bool) {
 		s.ids++
 		p.id = s.ids
 	}
-	p.Item, p.empty = it, empty
+	p.Item, p.empty, p.activity = it, empty, it.LastChange
 	p.Topics = append([]string(nil), it.Topics...)
 	s.projects[it.Owner][it.Name] = p
 	s.mu.Unlock()
 	s.Clock.Advance(provider.ListingFreshness)
+}
+
+// Comment is activity on a project that leaves its head where it is: an
+// issue or a merge request comment moves its last activity to now. It moves
+// the clock past the listing's freshness so the next listing sees it.
+func (s *Server) Comment(owner, name string) {
+	s.mu.Lock()
+	p, ok := s.projects[owner][name]
+	if ok {
+		p.activity = s.Clock.Now()
+		s.projects[owner][name] = p
+	}
+	s.mu.Unlock()
+	s.Clock.Advance(provider.ListingFreshness)
+}
+
+// FailHeads answers the next n head commit requests with a server error.
+func (s *Server) FailHeads(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.headFails += n
 }
 
 // Delete removes a project, and moves the clock past the listing's
@@ -156,6 +184,13 @@ func (s *Server) LanguageReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.langReads
+}
+
+// HeadReads is the number of head commit requests served.
+func (s *Server) HeadReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.headReads
 }
 
 // Requests is the number of API requests received, rate-limited ones
@@ -249,6 +284,29 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			shares["Makefile"] = 29.5
 		}
 		writeJSON(w, http.StatusOK, shares)
+	case len(parts) == 5 && parts[0] == "projects" && parts[2] == "repository" && parts[3] == "commits":
+		id, _ := strconv.ParseInt(parts[1], 10, 64)
+		p, ok := s.byID(id)
+		if !ok || p.empty || parts[4] != "main" || person && !reads[p.Key()] {
+			fail(w, http.StatusNotFound, "404 Commit Not Found")
+			return
+		}
+		s.mu.Lock()
+		failing := s.headFails > 0
+		if failing {
+			s.headFails--
+		} else {
+			s.headReads++
+		}
+		s.mu.Unlock()
+		if failing {
+			fail(w, http.StatusInternalServerError, "500 Internal Server Error")
+			return
+		}
+		date := p.LastChange.UTC().Format("2006-01-02T15:04:05.000Z")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": fmt.Sprintf("%040x", p.LastChange.UnixNano()), "committed_date": date, "authored_date": date,
+		})
 	default:
 		fail(w, http.StatusNotFound, "404 Not Found")
 	}
@@ -314,7 +372,7 @@ func (s *Server) projectJSON(owner string, p project, statistics bool) map[strin
 	m := map[string]any{
 		"id": p.id, "path": full[strings.LastIndex(full, "/")+1:], "path_with_namespace": full,
 		"topics": topics, "archived": p.Archived, "empty_repo": p.empty,
-		"last_activity_at": p.LastChange.UTC().Format("2006-01-02T15:04:05.000Z"),
+		"last_activity_at": p.activity.UTC().Format("2006-01-02T15:04:05.000Z"),
 		"http_url_to_repo": s.URL + "/" + full + ".git", "visibility": "private",
 	}
 	if !p.empty {

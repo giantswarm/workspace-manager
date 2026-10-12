@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `gitlab` provider's last change is the committed date of the default branch's head (`/projects/:id/repository/commits/<default_branch>`), no longer `last_activity_at`, which an issue or a merge request comment moves: a comment no longer marks a project changed for the sync or for `authorize_workspace`, a push does, and `lastPush` in `list_repositories` and `preview_workspace` is the head's date. A project's head is read once and again only after its last activity moved; one that cannot be read keeps its last known date (none before the first read), is logged once and is read again by the next listing, which it never fails. ([#57](https://github.com/giantswarm/workspace-manager/issues/57))
 - The MCP endpoint refuses a request body larger than 1 MiB before mcp-go reads it whole (CVE-2026-108859, no fixed mcp-go release yet; the scan ignores it until 2026-11-12). ([#52](https://github.com/giantswarm/workspace-manager/issues/52))
 
 ### Added

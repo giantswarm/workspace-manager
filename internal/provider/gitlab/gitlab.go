@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -67,6 +68,9 @@ type Options struct {
 	// Clock is what the instance tells time and waits by; nil for the wall
 	// clock.
 	Clock provider.Clock
+	// Logger takes what a listing survives: a head commit it could not read;
+	// nil for slog.Default().
+	Logger *slog.Logger
 }
 
 // Factory builds GitLab instances with o.
@@ -89,8 +93,10 @@ type Kind struct {
 	api   *url.URL
 	http  *http.Client
 	clock provider.Clock
+	log   *slog.Logger
 	cache *provider.ListingCache
-	langs *languages
+	langs *byActivity[string]
+	heads *byActivity[time.Time]
 }
 
 // New validates v and builds the instance.
@@ -131,9 +137,12 @@ func New(v Values, o Options) (*Kind, error) {
 	if o.Clock == nil {
 		o.Clock = provider.RealClock{}
 	}
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
 	return &Kind{
-		v: v, web: web, api: api, http: o.HTTP, clock: o.Clock,
-		cache: provider.NewListingCache(o.Clock), langs: &languages{byProject: map[int64]language{}},
+		v: v, web: web, api: api, http: o.HTTP, clock: o.Clock, log: o.Logger,
+		cache: provider.NewListingCache(o.Clock), langs: newByActivity[string](), heads: newByActivity[time.Time](),
 	}, nil
 }
 
@@ -192,8 +201,8 @@ func (k *Kind) SyncCredential(ctx context.Context, secrets provider.Secrets, _ s
 }
 
 // List implements provider.Kind: owner's projects that cred, the owner's
-// SyncCredential, can see, each with its primary language; from the listing
-// cache within provider.ListingFreshness.
+// SyncCredential, can see, each with its primary language and its head's
+// date; from the listing cache within provider.ListingFreshness.
 func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
 	if err := checkOwner(owner); err != nil {
 		return nil, err
@@ -203,14 +212,15 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 		if err != nil {
 			return nil, err
 		}
-		return k.withLanguages(ctx, cred, owner, projects)
+		return k.items(ctx, cred, owner, projects, true)
 	})
 }
 
 // Readable implements provider.Kind with the person's own token: one listing
 // of the owner's projects as the person sees them, which GitLab filters by
 // what they can read; an owner the person cannot see at all (GitLab's 404)
-// holds nothing they read. Readable reports no language.
+// holds nothing they read. Readable reports no language; a named project's
+// head is read with the person's token unless known at its last activity.
 func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
 	if err := checkOwner(owner); err != nil {
 		return nil, err
@@ -227,13 +237,13 @@ func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner stri
 	for _, n := range names {
 		wanted[strings.ToLower(n)] = true
 	}
-	var items []provider.Item
+	var named []project
 	for _, p := range projects {
-		if it := p.item(owner); wanted[strings.ToLower(it.Name)] {
-			items = append(items, it)
+		if wanted[strings.ToLower(p.name(owner))] {
+			named = append(named, p)
 		}
 	}
-	return items, nil
+	return k.items(ctx, cred, owner, named, false)
 }
 
 // checkOwner refuses a sub-group as an owner: an owner is one segment of the
@@ -314,6 +324,8 @@ func (p project) name(owner string) string {
 	return strings.ReplaceAll(p.PathWithNamespace[len(owner)+1:], "/", SubgroupSeparator)
 }
 
+// item is the project's item without its language and its last change, which
+// the listing reads apart.
 func (p project) item(owner string) provider.Item {
 	it := provider.Item{
 		Owner:         owner,
@@ -321,7 +333,6 @@ func (p project) item(owner string) provider.Item {
 		Topics:        p.Topics,
 		Archived:      p.Archived,
 		Fork:          p.ForkedFrom != nil,
-		LastChange:    p.LastActivityAt,
 		CloneURL:      p.HTTPURLToRepo,
 		DefaultBranch: p.DefaultBranch,
 	}
@@ -331,50 +342,103 @@ func (p project) item(owner string) provider.Item {
 	return it
 }
 
-// languageLookups bounds the language requests a listing has in flight.
-const languageLookups = 8
+// projectLookups bounds the per-project requests a listing has in flight.
+const projectLookups = 8
 
-// languages holds each project's primary language with the last activity it
-// was read at: GitLab's listing carries no language, so a listing asks
-// `/projects/:id/languages` only for projects active since their last read.
-type languages struct {
+// byActivity holds a value read for each project with the last activity it
+// was read at. GitLab's listing carries neither a project's language nor its
+// head, and neither moves without the project's last activity moving, so a
+// listing asks for them only for projects active since their last read.
+type byActivity[T any] struct {
 	mu        sync.Mutex
-	byProject map[int64]language
+	byProject map[int64]readAt[T]
 }
 
-type language struct {
-	name string
-	at   time.Time
+type readAt[T any] struct {
+	v  T
+	at time.Time
+	// failedAt is the last activity a read failed at, which is logged once.
+	failedAt time.Time
 }
 
-func (l *languages) get(p project) (string, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	got, ok := l.byProject[p.ID]
-	return got.name, ok && got.at.Equal(p.LastActivityAt)
+func newByActivity[T any]() *byActivity[T] {
+	return &byActivity[T]{byProject: map[int64]readAt[T]{}}
 }
 
-func (l *languages) put(p project, name string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.byProject[p.ID] = language{name: name, at: p.LastActivityAt}
+// get is p's value, current when read at p's last activity.
+func (c *byActivity[T]) get(p project) (T, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	got, ok := c.byProject[p.ID]
+	return got.v, ok && got.at.Equal(p.LastActivityAt)
 }
 
-// withLanguages makes the listing's items, each with its primary language:
-// the one with the largest share, by name on a tie.
-func (k *Kind) withLanguages(ctx context.Context, cred oauth2.TokenSource, owner string, projects []project) ([]provider.Item, error) {
+func (c *byActivity[T]) put(p project, v T) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byProject[p.ID] = readAt[T]{v: v, at: p.LastActivityAt}
+}
+
+// failed records a failed read at p's last activity: the value stays the last
+// one read (the zero value before the first), and stays stale, so the next
+// listing asks again. It is true for the first failure at that activity.
+func (c *byActivity[T]) failed(p project) (T, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	got := c.byProject[p.ID]
+	first := !got.failedAt.Equal(p.LastActivityAt)
+	got.failedAt = p.LastActivityAt
+	c.byProject[p.ID] = got
+	return got.v, first
+}
+
+// items makes the projects' items, each with its head's committed date as
+// its last change (an issue or a comment moves a project's last activity,
+// only a push moves its head) and, withLanguage, its primary language: the
+// one with the largest share, by name on a tie. A head that cannot be read
+// leaves the item its last known date, or none, and the listing goes on; a
+// language that cannot be read fails it.
+func (k *Kind) items(ctx context.Context, cred oauth2.TokenSource, owner string, projects []project, withLanguage bool) ([]provider.Item, error) {
 	items := make([]provider.Item, len(projects))
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(languageLookups)
+	g.SetLimit(projectLookups)
 	for i, p := range projects {
 		items[i] = p.item(owner)
+		id := "/projects/" + strconv.FormatInt(p.ID, 10)
+		if head, ok := k.heads.get(p); ok {
+			items[i].LastChange = head
+		} else {
+			g.Go(func() error {
+				var commit struct {
+					CommittedDate time.Time `json:"committed_date"`
+				}
+				if err := k.get(gctx, cred, id+"/repository/commits/"+url.PathEscape(p.DefaultBranch), &commit); err != nil {
+					if gctx.Err() != nil {
+						return gctx.Err()
+					}
+					last, first := k.heads.failed(p)
+					if first {
+						k.log.Warn("reading a GitLab project's head; its last change stays the last one read",
+							"owner", owner, "project", p.PathWithNamespace, "branch", p.DefaultBranch, "lastChange", last, "error", err)
+					}
+					items[i].LastChange = last
+					return nil
+				}
+				k.heads.put(p, commit.CommittedDate)
+				items[i].LastChange = commit.CommittedDate
+				return nil
+			})
+		}
+		if !withLanguage {
+			continue
+		}
 		if lang, ok := k.langs.get(p); ok {
 			items[i].Language = lang
 			continue
 		}
 		g.Go(func() error {
 			var shares map[string]float64
-			if err := k.get(gctx, cred, "/projects/"+strconv.FormatInt(p.ID, 10)+"/languages", &shares); err != nil {
+			if err := k.get(gctx, cred, id+"/languages", &shares); err != nil {
 				return fmt.Errorf("listing %s: the languages of %s: %w", owner, p.PathWithNamespace, err)
 			}
 			lang := primary(shares)
