@@ -1,10 +1,13 @@
 package gitlab_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +103,7 @@ func TestServesHundredsOfProjectsFromTheCache(t *testing.T) {
 	}
 	assert.Equal(t, 5, s.Listed(), "five pages of 100")
 	assert.Equal(t, 500, s.LanguageReads(), "each project's language read once")
+	assert.Equal(t, 500, s.HeadReads(), "each project's head read once")
 
 	for range 20 {
 		again, err := k.List(context.Background(), cred, "acme")
@@ -107,7 +111,7 @@ func TestServesHundredsOfProjectsFromTheCache(t *testing.T) {
 		assert.Len(t, again, 500)
 	}
 	assert.Equal(t, 5, s.Listed(), "served from the cache after one listing")
-	assert.Equal(t, 505, s.Requests(), "no request after the first listing")
+	assert.Equal(t, 1005, s.Requests(), "no request after the first listing")
 
 	s.Clock.Advance(provider.ListingFreshness)
 	s.Put(provider.Item{Owner: "acme", Name: "repo-007", Language: "Rust", SizeKiB: 8, LastChange: s.Clock.Now()})
@@ -115,11 +119,124 @@ func TestServesHundredsOfProjectsFromTheCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 10, s.Listed(), "listed again once the freshness passed")
 	assert.Equal(t, 501, s.LanguageReads(), "only the project active since asked for its language again")
+	assert.Equal(t, 501, s.HeadReads(), "only the project active since asked for its head again")
 	for _, it := range items {
 		if it.Name == "repo-007" {
 			assert.Equal(t, "Rust", it.Language)
 		}
 	}
+}
+
+func TestTheLastChangeIsTheHeadsCommittedDate(t *testing.T) {
+	s := gitlabtest.NewServer(t)
+	pushed := s.Clock.Now()
+	s.Put(provider.Item{Owner: "acme", Name: "api", Language: "Go", LastChange: pushed})
+	s.Put(provider.Item{Owner: "acme", Name: "web", Language: "Go", LastChange: s.Clock.Now()})
+	k := instance(t, s)
+	cred := credential(t, k, s, "acme")
+	list := func() map[string]provider.Item {
+		t.Helper()
+		items, err := k.List(context.Background(), cred, "acme")
+		require.NoError(t, err)
+		byName := map[string]provider.Item{}
+		for _, it := range items {
+			byName[it.Name] = it
+		}
+		return byName
+	}
+	src := provider.Source{Owner: "acme"}
+
+	items := list()
+	assert.True(t, items["api"].LastChange.Equal(pushed), "last change %s", items["api"].LastChange)
+	recorded := provider.StateOf(provider.Select(itemsOf(items), src))
+	assert.Equal(t, 2, s.HeadReads())
+
+	s.Clock.Advance(provider.ListingFreshness)
+	list()
+	assert.Equal(t, 2, s.HeadReads(), "an unchanged last activity costs no head request")
+	assert.Equal(t, 2, s.LanguageReads())
+
+	s.Comment("acme", "api")
+	items = list()
+	assert.True(t, items["api"].LastChange.Equal(pushed), "a comment leaves the last change, at %s", items["api"].LastChange)
+	assert.True(t, provider.Diff(recorded, provider.Select(itemsOf(items), src)).None(), "a comment is no change")
+	assert.Equal(t, 3, s.HeadReads(), "the commented project's head read again, no other")
+
+	pushedAgain := s.Clock.Now()
+	s.Put(provider.Item{Owner: "acme", Name: "api", Language: "Go", LastChange: pushedAgain})
+	items = list()
+	assert.True(t, items["api"].LastChange.Equal(pushedAgain), "a push moves the last change, at %s", items["api"].LastChange)
+	assert.Equal(t, provider.Changes{Changed: []string{"acme/api"}}, provider.Diff(recorded, provider.Select(itemsOf(items), src)))
+}
+
+func itemsOf(byName map[string]provider.Item) []provider.Item {
+	out := make([]provider.Item, 0, len(byName))
+	for _, it := range byName {
+		out = append(out, it)
+	}
+	return out
+}
+
+func TestAHeadThatCannotBeReadKeepsTheLastChange(t *testing.T) {
+	s := gitlabtest.NewServer(t)
+	pushed := s.Clock.Now()
+	s.Put(provider.Item{Owner: "acme", Name: "api", Language: "Go", LastChange: pushed})
+	var logs bytes.Buffer
+	k, err := gitlab.Factory(gitlab.Options{Clock: s.Clock, Logger: slog.New(slog.NewTextHandler(&logs, nil))})(s.Values())
+	require.NoError(t, err)
+	cred := credential(t, k, s, "acme")
+	list := func() provider.Item {
+		t.Helper()
+		items, err := k.List(context.Background(), cred, "acme")
+		require.NoError(t, err, "a head that cannot be read never fails the listing")
+		require.Len(t, items, 1)
+		return items[0]
+	}
+
+	s.FailHeads(1)
+	it := list()
+	assert.True(t, it.LastChange.IsZero(), "no last change before the first read, got %s", it.LastChange)
+	assert.Equal(t, "Go", it.Language)
+	assert.Equal(t, 1, strings.Count(logs.String(), "reading a GitLab project's head"))
+
+	s.Clock.Advance(provider.ListingFreshness)
+	assert.True(t, list().LastChange.Equal(pushed), "the next listing reads the head again")
+
+	s.Comment("acme", "api")
+	s.FailHeads(2)
+	assert.True(t, list().LastChange.Equal(pushed), "the last change read before stays")
+	s.Clock.Advance(provider.ListingFreshness)
+	assert.True(t, list().LastChange.Equal(pushed))
+	assert.Equal(t, 2, strings.Count(logs.String(), "reading a GitLab project's head"), "a failure is logged once per last activity")
+	assert.Equal(t, 1, s.HeadReads())
+}
+
+func TestReadableReportsTheHeadsCommittedDate(t *testing.T) {
+	s := gitlabtest.NewServer(t)
+	pushed := s.Clock.Now()
+	s.Put(provider.Item{Owner: "acme", Name: "api", LastChange: pushed})
+	s.Put(provider.Item{Owner: "acme", Name: "web", LastChange: s.Clock.Now()})
+	k := instance(t, s)
+	person := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: s.Person("acme/api", "acme/web")})
+	readable := func() provider.Item {
+		t.Helper()
+		items, err := k.Readable(context.Background(), person, "acme", []string{"api"})
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		return items[0]
+	}
+
+	assert.True(t, readable().LastChange.Equal(pushed))
+	assert.Equal(t, 1, s.HeadReads(), "only the named project's head")
+	readable()
+	assert.Equal(t, 1, s.HeadReads(), "an unchanged last activity costs no head request")
+
+	s.Comment("acme", "api")
+	assert.True(t, readable().LastChange.Equal(pushed), "a comment is no change since the sync")
+
+	pushedAgain := s.Clock.Now()
+	s.Put(provider.Item{Owner: "acme", Name: "api", LastChange: pushedAgain})
+	assert.True(t, readable().LastChange.Equal(pushedAgain), "a push is")
 }
 
 func TestATopicGainedIsSelectedByTheNextListing(t *testing.T) {
