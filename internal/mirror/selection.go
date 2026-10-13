@@ -36,6 +36,10 @@ type Cleanup struct {
 	// complete listing: a directory whose Session the previous sync found
 	// listed and this one does not lost its Session, and goes at once.
 	Sessions map[string]Session `json:"sessions,omitempty"`
+	// Deleted is a deleted workspace's cleanup: no Session starts on it any
+	// more, so a directory whose Session the listing does not name has none
+	// to come back to and goes at once, not after the window.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // Session is a kagent Session as the cleanup reads it.

@@ -74,7 +74,8 @@ func (p *sessionsPass) leftTo(o Owner, mine bool) {
 // its Session's last turn (its creation before the first turn), or after the
 // sync that first found it for a Session kagent does not know; and at once
 // when kagent lists the workspace's Sessions and no longer lists one it
-// listed at the previous sync. Without a cleanup every directory stays. A
+// listed at the previous sync, or, on a deleted workspace, does not list its
+// Session. Without a cleanup every directory stays. A
 // directory an owner's container of the Job reported on is taken as
 // reported. One the sync can neither measure nor delete stays with the size
 // the previous sync measured and, unless another uid owns it (the next
@@ -280,6 +281,10 @@ func inventory(name string, c *Cleanup, before map[string]SessionDirectory, now 
 		dir.Name, dir.Creator, dir.LastTurn = prev.Name, prev.Creator, prev.LastTurn
 		dir.CleanupAfter = now
 		return dir, "kagent no longer lists the Session: it was deleted"
+	}
+	if c.Deleted {
+		dir.CleanupAfter = now
+		return dir, "the workspace is deleted, and kagent does not list the Session"
 	}
 	dir.CleanupAfter = dir.FirstSeen.Add(c.After()).UTC()
 	if !now.Before(dir.CleanupAfter) {

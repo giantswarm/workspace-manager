@@ -359,7 +359,8 @@ record of each Session's last turn:
 - **A deleted workspace.** The Workspace carries the finalizer
   `workspace-manager.giantswarm.io/volume`. Once deleted, its sync stops and
   no Session starts on it; its cycles (trigger `deletion`) only clean up the
-  session directories, at its schedule or at the earliest cleanup date,
+  session directories — a directory whose Session kagent's listing does
+  not name goes in the first one, a listed Session's after its window — at its schedule or at the earliest cleanup date,
   whichever comes first, or at once for a `sync_workspace` request or a
   second `delete_workspace` (after a running Job): a directory cleared
   outside a cycle is found gone without waiting, while one still there is
