@@ -41,16 +41,20 @@ type kubeFlags struct {
 	kubeconfig string
 	context    string
 	inCluster  bool
+	qps        float64
+	burst      int
 }
 
 func (k *kubeFlags) add(f *pflag.FlagSet) {
 	f.StringVar(&k.kubeconfig, "kubeconfig", envOr("KUBECONFIG", ""), "Kubeconfig path; empty uses the default loading rules or in-cluster auth (KUBECONFIG)")
 	f.StringVar(&k.context, "kube-context", envOr("KUBE_CONTEXT", ""), "Kubeconfig context override (KUBE_CONTEXT)")
 	f.BoolVar(&k.inCluster, "in-cluster", envBool("KUBERNETES_IN_CLUSTER", false), "Force in-cluster Kubernetes auth (KUBERNETES_IN_CLUSTER)")
+	f.Float64Var(&k.qps, "kube-qps", envFloat("KUBE_QPS", kube.DefaultQPS), "Requests per second to the API server, the whole process together; a tool call waits behind the controller's requests once they are spent (KUBE_QPS)")
+	f.IntVar(&k.burst, "kube-burst", envInt("KUBE_BURST", kube.DefaultBurst), "Requests to the API server allowed at once above --kube-qps (KUBE_BURST)")
 }
 
 func (k *kubeFlags) config() kube.Config {
-	return kube.Config{Kubeconfig: k.kubeconfig, Context: k.context, InCluster: k.inCluster}
+	return kube.Config{Kubeconfig: k.kubeconfig, Context: k.context, InCluster: k.inCluster, QPS: float32(k.qps), Burst: k.burst}
 }
 
 type serveOptions struct {
