@@ -64,6 +64,7 @@ type serveOptions struct {
 
 	syncCycle           time.Duration
 	sessionCleanupAfter time.Duration
+	sessionPoll         time.Duration
 	kagentAddress       string
 	kagentTokenFile     string
 	sizingFactor        float64
@@ -125,6 +126,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.storageClass, "storage-class", envOr("WORKSPACE_MANAGER_STORAGE_CLASS", ""), "The read-write-many StorageClass every workspace's volume is claimed from; empty claims none: each Workspace's VolumeClaimed condition names the missing value, and the cluster's default class is never used in its place (WORKSPACE_MANAGER_STORAGE_CLASS)")
 	f.DurationVar(&o.syncCycle, "sync-cycle", envDuration("WORKSPACE_MANAGER_SYNC_CYCLE", controller.DefaultResync), "How often the controller reconciles every Workspace without an event, and how long after a failed sync cycle it tries again, a Go duration (WORKSPACE_MANAGER_SYNC_CYCLE)")
 	f.DurationVar(&o.sessionCleanupAfter, "sessions-cleanup-after", envDuration("WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER", controller.DefaultSessionCleanupAfter), "How long a Session's directory outlives the Session's last turn, a Go duration; a directory whose Session kagent does not know outlives the sync that first found it as long (WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER)")
+	f.DurationVar(&o.sessionPoll, "sessions-poll", envDuration("WORKSPACE_MANAGER_SESSIONS_POLL", controller.DefaultSessionPoll), "How often kagent's Sessions are listed for one deleted since the last sync, whose directory then goes at once in a cleanup-only sync Job, a Go duration; one listing serves every workspace (WORKSPACE_MANAGER_SESSIONS_POLL)")
 	f.StringVar(&o.kagentAddress, "kagent-address", envOr("WORKSPACE_MANAGER_KAGENT_ADDRESS", ""), "The kagent controller's gRPC API, grpc://host:port or grpcs://host[:port], whose Sessions' last turns the session directories' cleanup works from; empty cleans up no session directory, and a deleted workspace keeps its volume (WORKSPACE_MANAGER_KAGENT_ADDRESS)")
 	f.StringVar(&o.kagentTokenFile, "kagent-token-file", envOr("WORKSPACE_MANAGER_KAGENT_TOKEN_FILE", ""), "File with the token the manager calls kagent with, read per call: a projected ServiceAccount token for kagent's audience; empty sends none (WORKSPACE_MANAGER_KAGENT_TOKEN_FILE)")
 	f.Float64Var(&o.sizingFactor, "sizing-factor", envFloat("WORKSPACE_MANAGER_SIZING_FACTOR", controller.DefaultSizing.Factor), "What a repository not yet mirrored counts towards its workspace volume's need: this factor, at least 1, times the size its provider reports; a mirrored one counts its measured size (WORKSPACE_MANAGER_SIZING_FACTOR)")
@@ -349,6 +351,7 @@ func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAut
 func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	cfg := controller.Config{
 		Namespace: o.namespace, StorageClass: o.storageClass, Resync: o.syncCycle, SessionCleanupAfter: o.sessionCleanupAfter,
+		SessionPoll:        o.sessionPoll,
 		SyncServiceAccount: o.syncServiceAccount, SyncImage: o.syncImage, SyncImagePullPolicy: corev1.PullPolicy(o.syncImagePullPolicy),
 	}
 	if o.syncCycle <= 0 {
@@ -356,6 +359,9 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	}
 	if o.sessionCleanupAfter <= 0 {
 		return cfg, fmt.Errorf("--sessions-cleanup-after must be positive, got %s", o.sessionCleanupAfter)
+	}
+	if o.sessionPoll <= 0 {
+		return cfg, fmt.Errorf("--sessions-poll must be positive, got %s", o.sessionPoll)
 	}
 	headroom, err := resource.ParseQuantity(o.sizingHeadroom)
 	if err != nil {

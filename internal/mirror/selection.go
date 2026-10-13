@@ -15,9 +15,10 @@ import (
 // Job mounts.
 type Selection struct {
 	Repositories []Repository `json:"repositories"`
-	// Stopped is the selection of a deleted workspace: its sync stopped, so
-	// no mirror is cloned, fetched or dropped, and only the session
-	// directories are cleaned up until the last is gone.
+	// Stopped is a selection that fetches nothing: no mirror is cloned,
+	// fetched or dropped, and only the session directories are cleaned up.
+	// A deleted workspace's, whose sync stopped, until its last directory
+	// is gone; and a live one's when a Session was deleted in kagent.
 	Stopped bool `json:"stopped,omitempty"`
 	// Cleanup is the session directories' cleanup; nil deletes no session
 	// directory and only measures them (the controller could not read

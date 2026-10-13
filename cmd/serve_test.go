@@ -80,6 +80,7 @@ func TestServeControllerFlags(t *testing.T) {
 	for name, def := range map[string]string{
 		"sync-cycle":               controller.DefaultResync.String(),
 		"sessions-cleanup-after":   controller.DefaultSessionCleanupAfter.String(),
+		"sessions-poll":            controller.DefaultSessionPoll.String(),
 		"sizing-factor":            "1.5",
 		"sizing-headroom":          "4Gi",
 		"sizing-headroom-share":    "0.5",
@@ -98,15 +99,17 @@ func TestServeControllerFlags(t *testing.T) {
 
 	t.Setenv("WORKSPACE_MANAGER_SYNC_CYCLE", "30m")
 	t.Setenv("WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER", "168h")
+	t.Setenv("WORKSPACE_MANAGER_SESSIONS_POLL", "1m")
 	t.Setenv("WORKSPACE_MANAGER_SIZING_FACTOR", "2")
 	f = newServeCmd().Flags()
 	assert.Equal(t, "30m0s", f.Lookup("sync-cycle").DefValue)
 	assert.Equal(t, "168h0m0s", f.Lookup("sessions-cleanup-after").DefValue)
+	assert.Equal(t, "1m0s", f.Lookup("sessions-poll").DefValue)
 	assert.Equal(t, "2", f.Lookup("sizing-factor").DefValue)
 }
 
 func validServeOptions() *serveOptions {
-	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour,
+	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour, sessionPoll: time.Minute,
 		sizingFactor: 2, sizingHeadroom: "10Gi", sizingHeadroomShare: 0.25, sizingMaxSize: "500Gi",
 		syncServiceAccount: "workspace-manager-sync", leaderElection: true, leaderIdentity: "workspace-manager-0",
 		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager"}
@@ -117,6 +120,7 @@ func TestServeControllerConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Hour, cfg.Resync)
 	assert.Equal(t, 720*time.Hour, cfg.SessionCleanupAfter)
+	assert.Equal(t, time.Minute, cfg.SessionPoll)
 	assert.Equal(t, "efs-rwx", cfg.StorageClass)
 	assert.InDelta(t, 2.0, cfg.Sizing.Factor, 0)
 	assert.Equal(t, "10Gi", cfg.Sizing.HeadroomFloor.String())
@@ -167,6 +171,7 @@ func TestServeControllerConfigFailsTheStart(t *testing.T) {
 	}{
 		"zero cycle":        {func(o *serveOptions) { o.syncCycle = 0 }, "--sync-cycle"},
 		"negative cleanup":  {func(o *serveOptions) { o.sessionCleanupAfter = -time.Hour }, "--sessions-cleanup-after"},
+		"zero poll":         {func(o *serveOptions) { o.sessionPoll = 0 }, "--sessions-poll"},
 		"bad headroom":      {func(o *serveOptions) { o.sizingHeadroom = "lots" }, "--sizing-headroom"},
 		"bad max size":      {func(o *serveOptions) { o.sizingMaxSize = "huge" }, "--sizing-max-size"},
 		"factor below one":  {func(o *serveOptions) { o.sizingFactor = 0.5 }, "sizing factor"},

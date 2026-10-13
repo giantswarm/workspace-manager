@@ -298,6 +298,9 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 			case active.Trigger == v1alpha1.TriggerDeletion:
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionFalse, v1alpha1.ReasonDeleting,
 					fmt.Sprintf("the workspace is deleted: its sync stopped, and %d session directories are left on its volume", len(sessions))))
+			case active.Trigger == v1alpha1.TriggerSessionDeleted:
+				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
+					"sync job "+active.Job+" deleted the directories of Sessions deleted in kagent; no mirror was fetched"))
 			case active.CleanupOnly:
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
 					"the selection equals the last manifest and nothing was pushed since; sync job "+active.Job+" looked after the session directories"))
