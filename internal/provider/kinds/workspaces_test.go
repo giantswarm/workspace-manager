@@ -304,6 +304,36 @@ func TestWorkspaceTools(t *testing.T) {
 
 		del := ok[api.DeleteResult](t, f.call(t, f.member, "delete_workspace", map[string]any{"workspace": "synced"}))
 		assert.Equal(t, []string{"fix-flaky-test"}, del.Sessions)
+		assert.False(t, del.AlreadyDeleting)
+	})
+
+	t.Run("a workspace being deleted is asked for its deletion cycle", func(t *testing.T) {
+		u := syncedWorkspace(t)
+		u.SetName("deleting")
+		u.SetUID("deleting-uid")
+		u.SetDeletionTimestamp(&metav1.Time{Time: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)})
+		u.SetFinalizers([]string{v1alpha1.FinalizerVolume})
+		_, err := dyn.Resource(v1alpha1.WorkspaceResource).Namespace(wsNamespace).Create(context.Background(), u, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		res := f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "deleting"})
+		synced := ok[api.SyncResult](t, res)
+		assert.True(t, synced.Deleting)
+		assert.Equal(t, "alice@acme.test", synced.RequestedBy)
+		assert.Contains(t, text(res), "runs its deletion cycle now")
+
+		res = f.call(t, f.member, "delete_workspace", map[string]any{"workspace": "deleting"})
+		del := ok[api.DeleteResult](t, res)
+		assert.True(t, del.AlreadyDeleting)
+		assert.Equal(t, []string{"fix-flaky-test"}, del.Sessions)
+		assert.Contains(t, text(res), "already being deleted: the controller runs its deletion cycle now")
+		got := ok[api.WorkspaceDetail](t, f.call(t, f.member, "get_workspace", map[string]any{"workspace": "deleting"}))
+		assert.True(t, got.Workspace.Deleting, "still there: the controller lets it go")
+		require.NotNil(t, got.Workspace.SyncRequest, "the request waits for the controller")
+		assert.Equal(t, "alice@acme.test", got.Workspace.SyncRequest.RequestedBy)
+
+		refused(t, f.call(t, f.other, "sync_workspace", map[string]any{"workspace": "deleting"}), "permission denied")
+		refused(t, f.call(t, f.other, "delete_workspace", map[string]any{"workspace": "deleting"}), "permission denied")
 	})
 }
 

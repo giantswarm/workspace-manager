@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -248,4 +249,70 @@ func TestADeletedSessionWaitsForTheRetry(t *testing.T) {
 	f.reconcile("platform")
 	assert.Len(t, f.jobs(), jobs)
 	assert.Equal(t, listed, s.count(), "no listing before the retry")
+}
+
+// TestARequestRunsADeletingWorkspacesCycleNow: a deleting workspace whose
+// last deletion cycle kept a directory waits for its next scheduled cycle;
+// a request (sync_workspace, or delete_workspace again) runs the cycle at
+// once. A directory still there is kept as by any cycle; once one finds
+// none left, the claim and the finalizer go.
+func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.withSessions("platform")
+	ws := f.workspace("platform")
+	ws.DeletionTimestamp = &metav1.Time{Time: f.clock()}
+	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Update(context.Background(), toUnstructured(t, ws), metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	// The first deletion cycle keeps u, whose Session kagent never listed.
+	f.reconcile("platform")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	require.Equal(t, v1alpha1.TriggerDeletion, ws.Status.ActiveSync.Trigger)
+	f.finishCycle(ws, f.clock(), directory("u", false))
+	jobs := len(f.jobs())
+	wait := f.reconcile("platform")
+	assert.Equal(t, time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC).Sub(f.clock()), wait, "the next deletion cycle is the schedule's")
+	assert.Len(t, f.jobs(), jobs)
+
+	request := func() {
+		patch := `{"metadata":{"annotations":{"` + v1alpha1.AnnotationSyncRequested + `":"` + f.clock().Format(time.RFC3339) + `","` + v1alpha1.AnnotationSyncRequestedBy + `":"alice@acme.test"}}}`
+		_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Patch(context.Background(), "platform", types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+		require.NoError(t, err)
+	}
+
+	// A request while u is still there: the cycle runs now, with the
+	// cleanup's window, and keeps u; the workspace and its claim stay.
+	f.advance(time.Minute)
+	request()
+	assert.Zero(t, f.reconcile("platform"), "a running Job wakes the controller by itself")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync, "the request runs the deletion cycle now")
+	assert.Equal(t, v1alpha1.TriggerDeletion, ws.Status.ActiveSync.Trigger)
+	assert.True(t, ws.Status.ActiveSync.CleanupOnly)
+	assert.Empty(t, ws.Annotations[v1alpha1.AnnotationSyncRequested], "the request is taken")
+	assert.Empty(t, ws.Annotations[v1alpha1.AnnotationSyncRequestedBy])
+	require.Len(t, f.jobs(), jobs+1)
+	sel := f.selection(ws)
+	assert.True(t, sel.Stopped)
+	assert.Empty(t, sel.Repositories)
+	require.NotNil(t, sel.Cleanup)
+	assert.Equal(t, int64(DefaultSessionCleanupAfter/time.Second), sel.Cleanup.AfterSeconds, "the window holds")
+	f.finishCycle(ws, f.clock(), directory("u", false))
+	assert.Positive(t, f.reconcile("platform"))
+	ws = f.workspace("platform")
+	assert.Contains(t, ws.Finalizers, v1alpha1.FinalizerVolume)
+	assert.Len(t, f.claims(), 1, "the volume stays while a directory is left")
+
+	// u is cleared outside a cycle; a request finds it gone at once, and the
+	// claim and the finalizer go.
+	f.advance(time.Minute)
+	request()
+	f.reconcile("platform")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	require.Len(t, f.jobs(), jobs+2)
+	f.finishCycle(ws, f.clock())
+	assert.Empty(t, f.claims(), "the claim is deleted")
+	assert.NotContains(t, f.workspace("platform").Finalizers, v1alpha1.FinalizerVolume, "the finalizer is removed")
 }

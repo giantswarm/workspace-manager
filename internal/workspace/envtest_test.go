@@ -6,6 +6,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -188,9 +189,38 @@ spec:
 		list, err = s.List(caller("umbrella-devs"))
 		require.NoError(t, err)
 		require.Empty(t, list)
-		_, err = s.Delete(caller("umbrella-devs"), "platform")
+		_, err = s.Delete(caller("umbrella-devs"), "platform", time.Now())
 		require.ErrorIs(t, err, ErrForbidden)
-		_, err = s.Delete(caller("acme-devs"), "platform")
+		_, err = s.Delete(caller("acme-devs"), "platform", time.Now())
+		require.NoError(t, err)
+
+		// A workspace held by the controller's finalizer: once it is being
+		// deleted, a sync request and a second delete each record the
+		// request for its deletion cycle on the terminating object.
+		u, err := client.Get(ctx, "weekly-custom", metav1.GetOptions{})
+		require.NoError(t, err)
+		u.SetFinalizers([]string{v1alpha1.FinalizerVolume})
+		_, err = client.Update(ctx, u, metav1.UpdateOptions{})
+		require.NoError(t, err)
+		_, err = s.Delete(caller("acme-devs"), "weekly-custom", time.Now())
+		require.NoError(t, err)
+		at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+		ws, err := s.RequestSync(caller("acme-devs"), "weekly-custom", at)
+		require.NoError(t, err)
+		require.NotNil(t, ws.DeletionTimestamp)
+		require.Equal(t, "2026-10-14T12:00:00Z", ws.Annotations[v1alpha1.AnnotationSyncRequested])
+		ws, err = s.Delete(caller("acme-devs"), "weekly-custom", at.Add(time.Minute))
+		require.NoError(t, err)
+		require.NotNil(t, ws.DeletionTimestamp, "the workspace being deleted is returned as the request left it")
+		require.Equal(t, "2026-10-14T12:01:00Z", ws.Annotations[v1alpha1.AnnotationSyncRequested])
+		require.Equal(t, "jane@example.com", ws.Annotations[v1alpha1.AnnotationSyncRequestedBy])
+		_, err = s.RequestSync(caller("umbrella-devs"), "weekly-custom", at)
+		require.ErrorIs(t, err, ErrForbidden)
+
+		u, err = client.Get(ctx, "weekly-custom", metav1.GetOptions{})
+		require.NoError(t, err)
+		u.SetFinalizers(nil)
+		_, err = client.Update(ctx, u, metav1.UpdateOptions{})
 		require.NoError(t, err)
 	})
 }
