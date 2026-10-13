@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,6 +200,7 @@ func sessionDirectories(m *mirror.Manifest) []v1alpha1.SessionDirectory {
 		if !d.CleanupAfter.IsZero() {
 			sd.CleanupAfter = &metav1.Time{Time: d.CleanupAfter}
 		}
+		sd.Error = d.Error
 		out = append(out, sd)
 	}
 	return out
@@ -284,14 +286,15 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 
 // nextDeletionCycle is when a deleted workspace's next cleanup runs: at its
 // schedule after the last one, or at the earliest cleanup date when that
-// comes first; the resync when the schedule names no time.
+// comes first; the resync when the schedule names no time. A directory the
+// last cycle could not look after waits for the schedule.
 func (c *Controller) nextDeletionCycle(ws *v1alpha1.Workspace, last time.Time) time.Time {
 	at := workspace.NextSync(ws.Spec.Sync, last)
 	if at.IsZero() {
 		at = last.Add(c.resync)
 	}
 	for _, d := range ws.Status.Sessions {
-		if d.CleanupAfter != nil && d.CleanupAfter.Before(&metav1.Time{Time: at}) {
+		if d.Error == "" && d.CleanupAfter != nil && d.CleanupAfter.Before(&metav1.Time{Time: at}) {
 			at = d.CleanupAfter.Time
 		}
 	}
@@ -329,6 +332,23 @@ func (c *Controller) patchFinalizers(ctx context.Context, ws *v1alpha1.Workspace
 	}
 	ws.Finalizers, ws.ResourceVersion = u.GetFinalizers(), u.GetResourceVersion()
 	return nil
+}
+
+// directoriesLeft is the condition for the directories a cycle could
+// neither measure nor delete, nil without one.
+func directoriesLeft(ws *v1alpha1.Workspace, sessions []v1alpha1.SessionDirectory) *metav1.Condition {
+	var left []string
+	for _, d := range sessions {
+		if d.Error != "" {
+			left = append(left, d.Session+": "+d.Error)
+		}
+	}
+	if len(left) == 0 {
+		return nil
+	}
+	c := sessionsCleanedUp(ws, metav1.ConditionFalse, v1alpha1.ReasonDirectoriesLeft,
+		fmt.Sprintf("%d session directories could neither be measured nor deleted: %s", len(left), strings.Join(left, "; ")))
+	return &c
 }
 
 func sessionsCleanedUp(ws *v1alpha1.Workspace, status metav1.ConditionStatus, reason, message string) metav1.Condition {

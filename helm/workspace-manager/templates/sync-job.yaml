@@ -4,7 +4,9 @@ the Job's own ServiceAccount from sync-rbac.yaml, the security contexts,
 the resources, the deadline and the TTL). The controller reads it at start
 (`--sync-job-template`) and adds per cycle what only it knows: the Job's
 name and owner, the workspace's volume, the selection, the credentials and
-the roots. The pod carries no selector label of the Deployment: the
+the roots, and a container of the sync container's shape run as each owner
+of a session directory the sync cannot enter (its uid and gid, the pod's
+fsGroup a supplementary group). The pod carries no selector label of the Deployment: the
 manager's NetworkPolicy and Service never match a sync pod. It mounts
 nothing of the release namespace, which a Job in `workspaces.namespace`
 cannot reach: a provider behind a private CA (a GitHub Enterprise Server) is

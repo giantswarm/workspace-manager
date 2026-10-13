@@ -97,7 +97,7 @@ func TestJobsBuildFromTemplate(t *testing.T) {
 	j := Jobs{Template: tpl}
 	items := []corev1.KeyToPath{{Key: "0.username", Path: "github/acme/username"}, {Key: "0.token", Path: "github/acme/token"}}
 
-	job, err := j.build(ws, "ab12", owner, items)
+	job, err := j.build(ws, "ab12", owner, items, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "workspace-platform-sync-ab12", job.Name)
 	assert.Equal(t, testNamespace, job.Namespace)
@@ -124,17 +124,18 @@ func TestJobsBuildFromTemplate(t *testing.T) {
 	assert.Equal(t, int32(0o400), ptr.Deref(pod.Volumes[3].Secret.DefaultMode, 0))
 	assert.Empty(t, tpl.Spec.Template.Spec.Volumes[0].Name == "", "the template is not changed")
 	assert.Len(t, tpl.Spec.Template.Spec.Volumes, 1)
+	assert.Empty(t, pod.InitContainers, "no owner recorded, no owner's container")
 
 	j.Image, j.ImagePullPolicy = "workspace-manager:dev", corev1.PullNever
 	j.Roots = []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
-	job, err = j.build(ws, "cd34", owner, nil)
+	job, err = j.build(ws, "cd34", owner, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "workspace-manager:dev", job.Spec.Template.Spec.Containers[0].Image)
 	assert.Equal(t, corev1.PullNever, job.Spec.Template.Spec.Containers[0].ImagePullPolicy)
 	assert.Contains(t, job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: "SSL_CERT_FILE", Value: "/etc/workspace-sync/ca.crt"},
 		"the roots the manager verifies with, where the selection ConfigMap puts them")
 
-	_, err = Jobs{}.build(ws, "x", owner, nil)
+	_, err = Jobs{}.build(ws, "x", owner, nil, nil)
 	assert.ErrorContains(t, err, "no sync job template")
 }
 
@@ -186,4 +187,49 @@ func TestJobsStartProjectsEachOwnersCredential(t *testing.T) {
 		{Key: "1.token", Path: "github/globex/token"},
 	}, items)
 	assert.Equal(t, "github/acme", mirror.CredentialDir("github", "acme"), "the sync reads where the Job projects")
+}
+
+// TestJobsStartRunsAContainerAsEachOwner: the owners the last manifest
+// records each get a container of the Job, run as the owner's uid and gid
+// before the sync container, with the volume and the selection but no
+// credential; the sync container reads their reports.
+func TestJobsStartRunsAContainerAsEachOwner(t *testing.T) {
+	ws := workspaceNamed("platform")
+	path := filepath.Join(t.TempDir(), "job.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(chartTemplate), 0o600))
+	tpl, err := LoadJobTemplate(path)
+	require.NoError(t, err)
+	tpl.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To[int64](1000), RunAsGroup: ptr.To[int64](1000), RunAsNonRoot: ptr.To(true)}
+	j := Jobs{Client: fake.NewClientset(), Template: tpl}
+	manifest := &mirror.Manifest{Owners: []mirror.Owner{{UID: 65532, GID: 65532}}}
+	raw, err := manifest.JSON()
+	require.NoError(t, err)
+	_, err = j.Client.CoreV1().ConfigMaps(testNamespace).Create(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: ManifestName(ws), Namespace: testNamespace},
+		Data:       map[string]string{mirror.ManifestFile: string(raw)},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	job, err := j.Start(context.Background(), ws, "ab12", &mirror.Selection{}, []Credential{{Provider: "github", Owner: "acme", Username: "u", Token: "t"}})
+	require.NoError(t, err)
+	pod := job.Spec.Template.Spec
+	require.Len(t, pod.InitContainers, 1)
+	o := pod.InitContainers[0]
+	assert.Equal(t, "owner-65532-65532", o.Name)
+	assert.Equal(t, []string{"sync", "--owner-report=/var/run/workspace-sync-owners/owner-65532-65532.json"}, o.Args)
+	assert.Equal(t, int64(65532), ptr.Deref(o.SecurityContext.RunAsUser, 0))
+	assert.Equal(t, int64(65532), ptr.Deref(o.SecurityContext.RunAsGroup, 0))
+	assert.True(t, ptr.Deref(o.SecurityContext.RunAsNonRoot, false), "the template's security context stays")
+	assert.Equal(t, []corev1.EnvVar{{Name: "HOME", Value: "/tmp"}}, o.Env, "no Kubernetes access, no result")
+	var mounts []string
+	for _, m := range o.VolumeMounts {
+		mounts = append(mounts, m.Name)
+	}
+	assert.Equal(t, []string{"tmp", "workspace", "selection", "owners"}, mounts, "no credential")
+	assert.Equal(t, int64(1000), ptr.Deref(tpl.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser, 0), "the template is not changed")
+
+	c := pod.Containers[0]
+	assert.Equal(t, int64(1000), ptr.Deref(c.SecurityContext.RunAsUser, 0))
+	assert.Contains(t, c.Env, corev1.EnvVar{Name: "WORKSPACE_MANAGER_SYNC_REPORTS_DIR", Value: "/var/run/workspace-sync-owners"})
+	assert.Contains(t, c.VolumeMounts, corev1.VolumeMount{Name: "owners", MountPath: "/var/run/workspace-sync-owners", ReadOnly: true})
 }

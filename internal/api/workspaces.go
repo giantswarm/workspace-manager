@@ -189,6 +189,8 @@ type SessionDirectory struct {
 	SizeBytes int64 `json:"sizeBytes"`
 	// CleanupAfter is when the directory is deleted.
 	CleanupAfter *time.Time `json:"cleanupAfter,omitempty"`
+	// Error is why the last sync could neither measure nor delete it.
+	Error string `json:"error,omitempty"`
 }
 
 // DeleteResult is delete_workspace's result.
@@ -482,7 +484,7 @@ func (t *workspaceTools) detail(ctx context.Context, ws *v1alpha1.Workspace) (*W
 		}
 	}
 	for _, s := range ws.Status.Sessions {
-		sd := SessionDirectory{Session: s.Session, Name: s.Name, Creator: s.Creator, Unknown: s.Unknown}
+		sd := SessionDirectory{Session: s.Session, Name: s.Name, Creator: s.Creator, Unknown: s.Unknown, Error: s.Error}
 		if s.LastTurn != nil {
 			at := s.LastTurn.UTC()
 			sd.LastTurn = &at

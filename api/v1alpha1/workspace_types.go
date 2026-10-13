@@ -364,6 +364,10 @@ type SessionDirectory struct {
 	// kagent loses its directory at once, within the manager's session poll.
 	// +optional
 	CleanupAfter *metav1.Time `json:"cleanupAfter,omitempty"`
+	// Error is why the last sync could neither measure nor delete the
+	// directory: it stays, with the size measured before.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // WorkspaceList is a list of Workspaces.

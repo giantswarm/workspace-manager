@@ -22,6 +22,7 @@ import (
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/kagent"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
+	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
 const (
@@ -315,4 +316,31 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	f.finishCycle(ws, f.clock())
 	assert.Empty(t, f.claims(), "the claim is deleted")
 	assert.NotContains(t, f.workspace("platform").Finalizers, v1alpha1.FinalizerVolume, "the finalizer is removed")
+}
+
+// TestADirectoryLeftWithAnErrorIsReportedAndWaits: a directory the cycle
+// could neither measure nor delete is named on SessionsCleanedUp, and a
+// deleted workspace's next cleanup waits for its schedule instead of
+// retrying it at once.
+func TestADirectoryLeftWithAnErrorIsReportedAndWaits(t *testing.T) {
+	ws := workspaceNamed("platform")
+	due := metav1.NewTime(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	sessions := sessionDirectories(&mirror.Manifest{Sessions: []mirror.SessionDirectory{
+		{Session: "ok", SizeBytes: 1},
+		{Session: "stuck", CleanupAfter: due.Time, Error: "measure /workspace/sessions/stuck: permission denied"},
+	}})
+	assert.Equal(t, "measure /workspace/sessions/stuck: permission denied", sessions[1].Error)
+	cond := directoriesLeft(ws, sessions)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, v1alpha1.ReasonDirectoriesLeft, cond.Reason)
+	assert.Contains(t, cond.Message, "stuck: measure /workspace/sessions/stuck: permission denied")
+	assert.Nil(t, directoriesLeft(ws, sessions[:1]))
+
+	c := &Controller{resync: time.Hour}
+	ws.Status.Sessions = sessions
+	last := due.Add(time.Minute)
+	assert.Equal(t, workspace.NextSync(ws.Spec.Sync, last), c.nextDeletionCycle(ws, last), "the stuck directory's past date does not wake the cycle")
+	sessions[1].Error = ""
+	assert.Equal(t, due.Time, c.nextDeletionCycle(ws, last))
 }

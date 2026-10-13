@@ -8,10 +8,12 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -42,7 +44,12 @@ const (
 	credentialsMountPath = "/var/run/secrets/workspace-sync" //nolint:gosec // G101: a mount path, not a credential
 	selectionFile        = "selection.json"
 	rootsFile            = "ca.crt"
+	reportsMountPath     = "/var/run/workspace-sync-owners"
 )
+
+// ownerContainerPrefix names the containers that run the session
+// directories' part of the sync as their owners, before the sync container.
+const ownerContainerPrefix = "owner-"
 
 // The names of what a Workspace's sync cycle uses, in the Workspace's
 // namespace.
@@ -136,7 +143,9 @@ func syncContainer(pod *corev1.PodSpec) (int, error) {
 	return 0, fmt.Errorf("no container named %q", SyncContainer)
 }
 
-// Start writes the cycle's input and creates its Job: the manifest ConfigMap
+// Start writes the cycle's input and creates its Job: for each owner of the
+// session directories the last manifest records, a container of the Job runs
+// as that owner before the sync container (Jobs.build); the manifest ConfigMap
 // the Job writes its result into (made ahead, owned by the Workspace so it
 // stays with it), the selection ConfigMap (the selection and the roots), the
 // credentials Secret (one per Workspace, replaced per cycle and emptied after
@@ -149,6 +158,10 @@ func (j Jobs) Start(ctx context.Context, ws *v1alpha1.Workspace, id string, sel 
 	manifest := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: ManifestName(ws), Namespace: ws.Namespace, Labels: labels, OwnerReferences: []metav1.OwnerReference{owner}}}
 	if _, err := cms.Create(ctx, manifest, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return nil, fmt.Errorf("create the manifest configmap %s: %w", manifest.Name, err)
+	}
+	owners, err := j.owners(ctx, ws)
+	if err != nil {
+		return nil, err
 	}
 
 	raw, err := json.MarshalIndent(sel, "", "  ")
@@ -169,7 +182,7 @@ func (j Jobs) Start(ctx context.Context, ws *v1alpha1.Workspace, id string, sel 
 		return nil, err
 	}
 
-	job, err := j.build(ws, id, owner, items)
+	job, err := j.build(ws, id, owner, items, owners)
 	if err != nil {
 		return nil, err
 	}
@@ -242,8 +255,26 @@ func (j Jobs) applyCredentials(ctx context.Context, ws *v1alpha1.Workspace, owne
 	return items, nil
 }
 
+// owners are the owners of the session directories the last manifest
+// records as left to another uid.
+func (j Jobs) owners(ctx context.Context, ws *v1alpha1.Workspace) ([]mirror.Owner, error) {
+	cm, err := j.Client.CoreV1().ConfigMaps(ws.Namespace).Get(ctx, ManifestName(ws), metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get the manifest configmap %s: %w", ManifestName(ws), err)
+	}
+	raw := cm.Data[mirror.ManifestFile]
+	if raw == "" {
+		return nil, nil
+	}
+	var m mirror.Manifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("parse the manifest configmap %s: %w", ManifestName(ws), err)
+	}
+	return m.Owners, nil
+}
+
 // build is the cycle's Job from the template.
-func (j Jobs) build(ws *v1alpha1.Workspace, id string, owner metav1.OwnerReference, credentialItems []corev1.KeyToPath) (*batchv1.Job, error) {
+func (j Jobs) build(ws *v1alpha1.Workspace, id string, owner metav1.OwnerReference, credentialItems []corev1.KeyToPath, owners []mirror.Owner) (*batchv1.Job, error) {
 	tpl := j.Template
 	if tpl == nil {
 		return nil, errors.New("no sync job template")
@@ -287,7 +318,53 @@ func (j Jobs) build(ws *v1alpha1.Workspace, id string, owner metav1.OwnerReferen
 		corev1.Volume{Name: "selection", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: SelectionName(ws)}}}},
 		corev1.Volume{Name: "credentials", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: CredentialsName(ws), Items: credentialItems, DefaultMode: ptr.To[int32](0o400)}}},
 	)
+	if len(owners) > 0 {
+		pod.Spec.InitContainers = append(pod.Spec.InitContainers, ownerContainers(*c, owners)...)
+		c.Env = append(c.Env, corev1.EnvVar{Name: "WORKSPACE_MANAGER_SYNC_REPORTS_DIR", Value: reportsMountPath})
+		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "owners", MountPath: reportsMountPath, ReadOnly: true})
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "owners", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(resource.MustParse("1Mi"))}}})
+	}
 	return job, nil
+}
+
+// ownerContainers run the session directories' part of the sync as each
+// owner, the uid and gid of its directories; the pod's fsGroup stays a
+// supplementary group, which writes sessions/. Each is the sync container's
+// image, resources and security context with the owner's uid and gid, the
+// volume and the selection, and no credential or Kubernetes access: it
+// reports into the owners' directory, which the sync container reads.
+func ownerContainers(sync corev1.Container, owners []mirror.Owner) []corev1.Container {
+	out := make([]corev1.Container, 0, len(owners))
+	for _, o := range owners {
+		c := corev1.Container{
+			Name:            fmt.Sprintf("%s%d-%d", ownerContainerPrefix, o.UID, o.GID),
+			Image:           sync.Image,
+			ImagePullPolicy: sync.ImagePullPolicy,
+			Args:            []string{"sync", "--owner-report=" + path.Join(reportsMountPath, mirror.ReportFile(o))},
+			Resources:       sync.Resources,
+			SecurityContext: sync.SecurityContext.DeepCopy(),
+		}
+		for _, e := range sync.Env {
+			if e.Name != "SSL_CERT_FILE" && !strings.HasPrefix(e.Name, "WORKSPACE_MANAGER_") && e.Name != "KUBERNETES_IN_CLUSTER" {
+				c.Env = append(c.Env, e)
+			}
+		}
+		if c.SecurityContext == nil {
+			c.SecurityContext = &corev1.SecurityContext{}
+		}
+		c.SecurityContext.RunAsUser, c.SecurityContext.RunAsGroup = ptr.To(o.UID), ptr.To(o.GID)
+		for _, m := range sync.VolumeMounts {
+			switch m.Name {
+			case "credentials":
+			case "owners":
+			default:
+				c.VolumeMounts = append(c.VolumeMounts, m)
+			}
+		}
+		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "owners", MountPath: reportsMountPath})
+		out = append(out, c)
+	}
+	return out
 }
 
 func withLabels(base map[string]string, workspace, id string) map[string]string {
