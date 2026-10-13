@@ -265,6 +265,9 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 	if err != nil {
 		return 0, err
 	}
+	if cleanup != nil {
+		cleanup.Deleted = true
+	}
 	id, err := cycleID()
 	if err != nil {
 		return 0, err

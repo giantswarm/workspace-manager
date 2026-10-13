@@ -333,3 +333,22 @@ func TestADirectoryTheSyncCannotMeasureDoesNotFailTheSync(t *testing.T) {
 	require.Equal(t, int64(8), inv["s2"].SizeBytes)
 	require.Empty(t, h.manifest().Owners, "the sync's own")
 }
+
+// TestADeletedWorkspacesUnlistedDirectoryGoesAtOnce: on a deleted
+// workspace no Session starts any more, so a directory whose Session
+// kagent's listing does not name goes in the first cycle, not after the
+// window; a listed Session's directory keeps its window.
+func TestADeletedWorkspacesUnlistedDirectoryGoesAtOnce(t *testing.T) {
+	h := newHarness(t)
+	stray := h.sessionDir("stray", 1)
+	live := h.sessionDir("live", 1)
+	c := cleanup(map[string]Session{"live": {LastTurn: t0}})
+	c.Deleted = true
+
+	res := h.run(t0.Add(time.Minute), &Selection{Stopped: true, Cleanup: c})
+	require.Equal(t, []string{"stray"}, res.CleanedUp)
+	require.NoDirExists(t, stray)
+	require.DirExists(t, live)
+	require.Equal(t, t0.Add(window), h.inventory()["live"].CleanupAfter)
+	require.Contains(t, h.logs.String(), "the workspace is deleted, and kagent does not list the Session")
+}

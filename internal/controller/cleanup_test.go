@@ -163,6 +163,7 @@ func TestADeletedSessionsDirectoryGoesAtOnce(t *testing.T) {
 	assert.Empty(t, sel.Repositories)
 	require.NotNil(t, sel.Cleanup)
 	assert.Empty(t, sel.Cleanup.Sessions, "neither a nor b is listed: both directories go")
+	assert.False(t, sel.Cleanup.Deleted, "a live workspace's unknown directory keeps its window")
 	assert.Equal(t, providerListings, f.listings.count(), "no provider is listed")
 
 	// While the Job runs, a look starts no second one.
@@ -265,7 +266,7 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Update(context.Background(), toUnstructured(t, ws), metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	// The first deletion cycle keeps u, whose Session kagent never listed.
+	// The first deletion cycle keeps u (the Job could not delete it).
 	f.reconcile("platform")
 	ws = f.workspace("platform")
 	require.NotNil(t, ws.Status.ActiveSync)
@@ -283,7 +284,8 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	}
 
 	// A request while u is still there: the cycle runs now, with the
-	// cleanup's window, and keeps u; the workspace and its claim stay.
+	// cleanup's window for a listed Session's directory; u kept again, the
+	// workspace and its claim stay.
 	f.advance(time.Minute)
 	request()
 	assert.Zero(t, f.reconcile("platform"), "a running Job wakes the controller by itself")
@@ -299,6 +301,7 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	assert.Empty(t, sel.Repositories)
 	require.NotNil(t, sel.Cleanup)
 	assert.Equal(t, int64(DefaultSessionCleanupAfter/time.Second), sel.Cleanup.AfterSeconds, "the window holds")
+	assert.True(t, sel.Cleanup.Deleted, "a directory whose Session kagent does not list goes at once")
 	f.finishCycle(ws, f.clock(), directory("u", false))
 	assert.Positive(t, f.reconcile("platform"))
 	ws = f.workspace("platform")
