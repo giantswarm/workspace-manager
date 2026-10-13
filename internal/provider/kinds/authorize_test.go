@@ -86,38 +86,19 @@ func authSetup(t *testing.T) *authFixture {
 	require.NoError(t, err)
 
 	dropped := authSynced.Add(-24 * time.Hour)
-	manifest, err := (&mirror.Manifest{SyncedAt: authSynced, Repositories: []mirror.Entry{
+	cs, keys := authCluster(t, []mirror.Entry{
 		{Provider: "github", Owner: "acme", Name: "api", PushedAt: authSynced.Add(-2 * time.Hour)},
 		{Provider: "github", Owner: "acme", Name: "web", PushedAt: authSynced.Add(-time.Hour)},
 		{Provider: "github", Owner: "acme", Name: "gone", PushedAt: dropped, DroppedAt: &dropped},
 		{Provider: "code", Owner: "umbrella", Name: "theirs", PushedAt: authSynced.Add(-time.Hour)},
-	}}).JSON()
-	require.NoError(t, err)
-
-	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	der, err := x509.MarshalPKCS8PrivateKey(ecKey)
-	require.NoError(t, err)
-	cs := k8sfake.NewClientset(
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "otter-manifest", Namespace: authNamespace}, Data: map[string]string{mirror.ManifestFile: string(manifest)}},
-		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "otter", Namespace: authNamespace}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "pvc-otter"}},
-		&corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "pvc-otter"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{
-			CSI: &corev1.CSIPersistentVolumeSource{Driver: "nfs.csi.k8s.io", VolumeHandle: "nfs-server#share#pvc-otter"}}}},
-		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: authNamespace}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "keys", Namespace: "wm"},
-			Data: map[string][]byte{"grant": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})}},
-	)
-	ready := v1alpha1.WorkspaceStatus{Manifest: "otter-manifest", Volume: &v1alpha1.VolumeRef{ClaimName: "otter"}}
-	unsynced := ready
+	})
+	unsynced := authReady
 	unsynced.Manifest = ""
-	unbound := ready
+	unbound := authReady
 	unbound.Volume = &v1alpha1.VolumeRef{ClaimName: "pending"}
-	ws := func(name string, status v1alpha1.WorkspaceStatus) *v1alpha1.Workspace {
-		return &v1alpha1.Workspace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: authNamespace}, Status: status}
-	}
 
 	f := &authFixture{
-		keys: &grant.KeySource{Client: cs, Namespace: "wm", Secret: "keys", Key: "grant"},
+		keys: keys,
 		tokens: authTokens{
 			"alice": {"github": gh.Person("acme/api", "acme/web", "acme/other"), "code": backend.Person("umbrella/theirs")},
 			"bob":   {"github": gh.Person("acme/api"), "code": backend.Person("umbrella/theirs")},
@@ -125,7 +106,7 @@ func authSetup(t *testing.T) *authFixture {
 		},
 	}
 	f.authorizer, err = authorize.New(authorize.Config{
-		Workspaces: authWorkspaces{"otter": ws("otter", ready), "fresh": ws("fresh", unsynced), "pending": ws("pending", unbound)},
+		Workspaces: authWorkspaces{"otter": authWorkspace("otter", authReady), "fresh": authWorkspace("fresh", unsynced), "pending": authWorkspace("pending", unbound)},
 		Core:       cs,
 		Namespace:  authNamespace,
 		Instances: []provider.Instance{
@@ -139,6 +120,37 @@ func authSetup(t *testing.T) *authFixture {
 	})
 	require.NoError(t, err)
 	return f
+}
+
+// authReady is a synced workspace's status: authCluster's manifest and
+// bound volume.
+var authReady = v1alpha1.WorkspaceStatus{Manifest: "otter-manifest", Volume: &v1alpha1.VolumeRef{ClaimName: "otter"}}
+
+func authWorkspace(name string, status v1alpha1.WorkspaceStatus) *v1alpha1.Workspace {
+	return &v1alpha1.Workspace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: authNamespace}, Status: status}
+}
+
+// authCluster holds a last sync of entries (authReady's manifest), the
+// volume it is on, a claim not bound yet ("pending") and the grant's signing
+// key.
+func authCluster(t *testing.T, entries []mirror.Entry) (*k8sfake.Clientset, *grant.KeySource) {
+	t.Helper()
+	manifest, err := (&mirror.Manifest{SyncedAt: authSynced, Repositories: entries}).JSON()
+	require.NoError(t, err)
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKCS8PrivateKey(ecKey)
+	require.NoError(t, err)
+	cs := k8sfake.NewClientset(
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "otter-manifest", Namespace: authNamespace}, Data: map[string]string{mirror.ManifestFile: string(manifest)}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "otter", Namespace: authNamespace}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "pvc-otter"}},
+		&corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "pvc-otter"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{
+			CSI: &corev1.CSIPersistentVolumeSource{Driver: "nfs.csi.k8s.io", VolumeHandle: "nfs-server#share#pvc-otter"}}}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: authNamespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "keys", Namespace: "wm"},
+			Data: map[string][]byte{"grant": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})}},
+	)
+	return cs, &grant.KeySource{Client: cs, Namespace: "wm", Secret: "keys", Key: "grant"}
 }
 
 func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
@@ -270,4 +282,80 @@ func TestASignInTheProviderRefusesAsksToConnectAgain(t *testing.T) {
 	assert.Equal(t, []authorize.Connect{{Provider: "github", URL: "https://wm.example.com/connect/github"}}, res.Connect)
 	assert.Empty(t, res.Grant)
 	assert.Empty(t, res.Changed)
+}
+
+// A workspace selecting a few repositories of an organization holding
+// thousands is checked in what it selects: GitHub answering each request in
+// 1.5 s, as from afar, the listing of 2,000 repositories alone would take
+// 20 pages, 30 s one after the other, muster's whole tool timeout.
+func TestALargeOrganizationIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
+	const latency = 1500 * time.Millisecond
+	for _, tc := range []struct {
+		name         string
+		selected     int
+		unreadable   []string
+		checkTimeout time.Duration
+		outcome      authorize.Outcome
+		reason       string
+		listed       int
+		within       time.Duration
+	}{
+		{name: "one repository", selected: 1, outcome: authorize.Granted, within: 2 * latency},
+		{name: "one repository the person cannot read is refused by name", selected: 2, unreadable: []string{"acme/r0001"},
+			outcome: authorize.Refused, reason: "you cannot read 1 repository of workspace big: acme/r0001", within: 2 * latency},
+		{name: "more repositories than a page holds take the listing, its pages at once", selected: 150,
+			outcome: authorize.Granted, listed: 20, within: 5 * latency},
+		{name: "a check past its bound is refused, saying so", selected: 1, checkTimeout: latency / 3, outcome: authorize.Refused,
+			reason: "checking your access to workspace big took longer than 500ms: github did not answer for acme in time; try again", within: latency},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gh := githubtest.NewServer(t)
+			gh.PageSize = 100
+			unreadable := map[string]bool{}
+			for _, key := range tc.unreadable {
+				unreadable[key] = true
+			}
+			var reads []string
+			var entries []mirror.Entry
+			for i := range 2000 {
+				name := fmt.Sprintf("r%04d", i)
+				gh.Put(provider.Item{Owner: "acme", Name: name, LastChange: authSynced.Add(-time.Hour)})
+				if !unreadable["acme/"+name] {
+					reads = append(reads, "acme/"+name)
+				}
+				if i < tc.selected {
+					entries = append(entries, mirror.Entry{Provider: "github", Owner: "acme", Name: name, PushedAt: authSynced.Add(-time.Hour)})
+				}
+			}
+			ghKind, err := github.Factory(github.Options{Clock: gh.Clock})(gh.Values())
+			require.NoError(t, err)
+			cs, keys := authCluster(t, entries)
+			a, err := authorize.New(authorize.Config{
+				Workspaces:   authWorkspaces{"big": authWorkspace("big", authReady)},
+				Core:         cs,
+				Namespace:    authNamespace,
+				Instances:    []provider.Instance{{Name: "github", KindName: github.KindName, Kind: ghKind}},
+				Tokens:       authTokens{"alice": {"github": gh.Person(reads...)}},
+				ConnectURL:   func(instance string) string { return "https://wm.example.com/connect/" + instance },
+				Signer:       &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
+				Broker:       "workspace-manager",
+				CheckTimeout: tc.checkTimeout,
+			})
+			require.NoError(t, err)
+
+			gh.Latency = latency
+			start := time.Now()
+			res, err := a.Authorize(context.Background(), person("alice"), "big")
+			took := time.Since(start)
+			t.Logf("%d of 2,000 repositories selected: %s in %s, %d listing pages", tc.selected, res.Outcome, took.Round(time.Millisecond), gh.Listed())
+			require.NoError(t, err)
+			assert.Equal(t, tc.outcome, res.Outcome, res.Reason)
+			assert.Equal(t, tc.reason, res.Reason)
+			assert.Equal(t, tc.unreadable, res.Unreadable)
+			assert.Equal(t, tc.listed, gh.Listed(), "listing pages")
+			assert.Less(t, took, tc.within)
+			assert.Equal(t, tc.outcome == authorize.Granted, res.Grant != "", "a grant only when granted")
+		})
+	}
 }

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/giantswarm/workspace-manager/internal/provider"
 )
@@ -185,18 +186,18 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 	return k.cache.Get(owner, func() ([]provider.Item, error) { return k.list(ctx, cred, owner) })
 }
 
-// list pages through the installation's repositories, 100 a call.
+// list pages through the installation's repositories, perPage a call.
 func (k *Kind) list(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
+	type page struct {
+		Repositories []repository `json:"repositories"`
+	}
+	pages, err := getPages[page](ctx, k, cred, k.api.String()+"/installation/repositories?per_page="+strconv.Itoa(perPage))
+	if err != nil {
+		return nil, fmt.Errorf("listing %s: %w", owner, err)
+	}
 	var items []provider.Item
-	for next := k.api.String() + "/installation/repositories?per_page=100"; next != ""; {
-		var page struct {
-			Repositories []repository `json:"repositories"`
-		}
-		var err error
-		if next, err = k.getPage(ctx, cred, next, &page); err != nil {
-			return nil, fmt.Errorf("listing %s: %w", owner, err)
-		}
-		for _, r := range page.Repositories {
+	for _, p := range pages {
+		for _, r := range p.Repositories {
 			if !strings.EqualFold(r.Owner.Login, owner) {
 				return nil, fmt.Errorf("listing %s: the credential is the App's installation on %s", owner, r.Owner.Login)
 			}
@@ -206,13 +207,28 @@ func (k *Kind) list(ctx context.Context, cred oauth2.TokenSource, owner string) 
 	return items, nil
 }
 
+// perPage is a listing page's size, GitHub's maximum. Up to as many named
+// repositories cost fewer requests asked for one by one than one listing of
+// an owner with more repositories than a page holds.
+const perPage = 100
+
+// concurrency bounds the requests one call has in flight: the pages of a
+// listing, the repositories asked for one by one.
+const concurrency = 8
+
 // Readable implements provider.Kind with the person's user-to-server token,
-// which reads what both the person and the App's installation can: one
-// listing of the owner's repositories as an organization; on a user account,
-// whose listing shows only public repositories, each named repository the
-// listing left out is asked for on its own. A repository GitHub answers 404
-// or 403 for is one the person cannot read.
+// which reads what both the person and the App's installation can. Up to
+// perPage names are each asked for on their own, concurrently, so the check
+// costs what the workspace selects, not what the owner holds. More names
+// take one listing of the owner's repositories as an organization, its pages
+// fetched concurrently; on a user account, whose listing shows only public
+// repositories, each named repository the listing left out is asked for on
+// its own. A repository GitHub answers 404 or 403 for is one the person
+// cannot read.
 func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
+	if len(names) <= perPage {
+		return k.readEach(ctx, cred, owner, names)
+	}
 	listed, isUser, err := k.listAs(ctx, cred, owner)
 	if err != nil {
 		return nil, err
@@ -231,20 +247,46 @@ func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner stri
 	if !isUser {
 		return items, nil
 	}
+	var rest []string
 	for _, n := range names {
-		if !wanted[strings.ToLower(n)] {
-			continue
+		if wanted[strings.ToLower(n)] {
+			rest = append(rest, n)
 		}
-		var r repository
-		err := k.get(ctx, cred, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(n), &r)
-		var se *statusError
-		switch {
-		case errors.As(err, &se) && !se.limited && (se.status == http.StatusNotFound || se.status == http.StatusForbidden):
-			continue
-		case err != nil:
-			return nil, fmt.Errorf("reading %s/%s: %w", owner, n, err)
+	}
+	more, err := k.readEach(ctx, cred, owner, rest)
+	return append(items, more...), err
+}
+
+// readEach asks for each of owner's repositories named in names on its own,
+// concurrently: those the person reads, in the order of names.
+func (k *Kind) readEach(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
+	found := make([]*provider.Item, len(names))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(concurrency)
+	for i, n := range names {
+		g.Go(func() error {
+			var r repository
+			err := k.get(gctx, cred, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(n), &r)
+			var se *statusError
+			switch {
+			case errors.As(err, &se) && !se.limited && (se.status == http.StatusNotFound || se.status == http.StatusForbidden):
+				return nil
+			case err != nil:
+				return fmt.Errorf("reading %s/%s: %w", owner, n, err)
+			}
+			it := r.item(owner)
+			found[i] = &it
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	var items []provider.Item
+	for _, it := range found {
+		if it != nil {
+			items = append(items, *it)
 		}
-		items = append(items, r.item(owner))
 	}
 	return items, nil
 }
@@ -252,28 +294,64 @@ func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner stri
 // listAs pages through owner's repositories as cred sees them: an
 // organization's every type, else, on a 404, a user account's.
 func (k *Kind) listAs(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, bool, error) {
-	items, err := k.listPages(ctx, cred, owner, "/orgs/"+url.PathEscape(owner)+"/repos?type=all&per_page=100")
+	query := "/repos?type=all&per_page=" + strconv.Itoa(perPage)
+	items, err := k.listPages(ctx, cred, owner, "/orgs/"+url.PathEscape(owner)+query)
 	var se *statusError
 	if !errors.As(err, &se) || se.status != http.StatusNotFound {
 		return items, false, err
 	}
-	items, err = k.listPages(ctx, cred, owner, "/users/"+url.PathEscape(owner)+"/repos?type=all&per_page=100")
+	items, err = k.listPages(ctx, cred, owner, "/users/"+url.PathEscape(owner)+query)
 	return items, true, err
 }
 
 func (k *Kind) listPages(ctx context.Context, cred oauth2.TokenSource, owner, path string) ([]provider.Item, error) {
+	pages, err := getPages[[]repository](ctx, k, cred, k.api.String()+path)
+	if err != nil {
+		return nil, fmt.Errorf("listing %s: %w", owner, err)
+	}
 	var items []provider.Item
-	for next := k.api.String() + path; next != ""; {
-		var page []repository
-		var err error
-		if next, err = k.getPage(ctx, cred, next, &page); err != nil {
-			return nil, fmt.Errorf("listing %s: %w", owner, err)
-		}
+	for _, page := range pages {
 		for _, r := range page {
 			items = append(items, r.item(owner))
 		}
 	}
 	return items, nil
+}
+
+// getPages GETs every page of the listing at first, in order. The first
+// page's `Link` header names the last one: the pages between are fetched
+// concurrently, by their number. Without a last link the pages are followed
+// one after the other.
+func getPages[P any](ctx context.Context, k *Kind, cred oauth2.TokenSource, first string) ([]P, error) {
+	pages := make([]P, 1)
+	header, err := k.getPage(ctx, cred, first, &pages[0])
+	if err != nil {
+		return nil, err
+	}
+	last, n := lastLink(header.Get("Link"))
+	if n == 0 {
+		for next := nextLink(header.Get("Link")); next != ""; next = nextLink(header.Get("Link")) {
+			pages = append(pages, *new(P))
+			if header, err = k.getPage(ctx, cred, next, &pages[len(pages)-1]); err != nil {
+				return nil, err
+			}
+		}
+		return pages, nil
+	}
+	pages = slices.Grow(pages, n-1)[:n]
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(concurrency)
+	for i := 2; i <= n; i++ {
+		u := *last
+		q := u.Query()
+		q.Set("page", strconv.Itoa(i))
+		u.RawQuery = q.Encode()
+		g.Go(func() error {
+			_, err := k.getPage(gctx, cred, u.String(), &pages[i-1])
+			return err
+		})
+	}
+	return pages, g.Wait()
 }
 
 // repository is what the listing reads of a repository; `size` is in KiB.
@@ -312,25 +390,21 @@ func (k *Kind) get(ctx context.Context, cred oauth2.TokenSource, path string, ou
 	return err
 }
 
-// getPage GETs one page and returns the URL of the next one, empty on the
-// last.
-func (k *Kind) getPage(ctx context.Context, cred oauth2.TokenSource, u string, out any) (string, error) {
+// getPage GETs one page and returns the answer's header, which links the
+// listing's other pages.
+func (k *Kind) getPage(ctx context.Context, cred oauth2.TokenSource, u string, out any) (http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if cred != nil {
 		tok, err := cred.Token()
 		if err != nil {
-			return "", fmt.Errorf("credential: %w", err)
+			return nil, fmt.Errorf("credential: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	}
-	header, err := k.do(req, http.StatusOK, out)
-	if err != nil {
-		return "", err
-	}
-	return nextLink(header.Get("Link")), nil
+	return k.do(req, http.StatusOK, out)
 }
 
 // A rate limit is waited out as GitHub says: `Retry-After` on a secondary
@@ -400,13 +474,33 @@ func rateLimitWait(resp *http.Response, message string, now time.Time) (time.Dur
 
 // nextLink extracts rel="next" from a Link header.
 func nextLink(header string) string {
+	return link(header, "next")
+}
+
+// lastLink is rel="last" of a Link header and the page number it carries; 0
+// without one.
+func lastLink(header string) (*url.URL, int) {
+	u, err := url.Parse(link(header, "last"))
+	if err != nil || u.Host == "" {
+		return nil, 0
+	}
+	n, err := strconv.Atoi(u.Query().Get("page"))
+	if err != nil || n < 2 {
+		return nil, 0
+	}
+	return u, n
+}
+
+// link extracts the URL of relation rel from a Link header, empty without
+// one.
+func link(header, rel string) string {
 	for _, part := range strings.Split(header, ",") {
 		segs := strings.Split(part, ";")
 		if len(segs) < 2 {
 			continue
 		}
 		for _, s := range segs[1:] {
-			if strings.TrimSpace(s) == `rel="next"` {
+			if strings.TrimSpace(s) == `rel="`+rel+`"` {
 				return strings.Trim(strings.TrimSpace(segs[0]), "<>")
 			}
 		}

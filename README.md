@@ -84,8 +84,13 @@ Before a Session starts on a workspace, the surface calls the MCP tool
 `authorize_workspace(workspace)` as the person. The manager reads the last
 sync's manifest (the ConfigMap `status.manifest` names) and, with the person's
 own sign-in to each provider of the workspace, checks per owner which of its
-repositories the person reads (on GitHub one listing of the owner's
-repositories with the person's user-to-server token). The answer's `outcome`:
+repositories the person reads, with the person's user-to-server token on
+GitHub: up to 100 repositories of an owner each asked for on its own
+(`GET /repos/<owner>/<name>`, eight at a time), more in one listing of the
+owner's repositories, its pages fetched eight at a time. The whole check is
+bounded by `--access-check-timeout` (20 seconds, within muster's default tool
+timeout of 30, which the chart's `muster.mcpServer.timeout` raises); a check
+past it is `refused`, saying so. The answer's `outcome`:
 
 - `granted`: the person reads every repository. `grant` is a JWT signed by
   the manager, valid for `--grant-ttl` (5 minutes), to be passed to
@@ -94,7 +99,8 @@ repositories with the person's user-to-server token). The answer's `outcome`:
   sync, which the Session fetches before its first turn.
 - `refused`: `unreadable` names the repositories the person cannot read; or
   `reason` says why the workspace cannot be started on yet: it has not
-  synced, its volume is not bound, or it is being deleted.
+  synced, its volume is not bound, or it is being deleted; or that a
+  provider did not answer within the check's bound.
 - `connect_required`: `connect` lists each provider the person has not
   connected, with its `/connect/<instance>` link.
 

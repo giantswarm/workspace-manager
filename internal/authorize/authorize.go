@@ -67,7 +67,15 @@ type Config struct {
 	// Broker is the name kagent knows the manager's token endpoint by: every
 	// provider host of a grant names it.
 	Broker string
+	// CheckTimeout bounds the providers' answers about the person's access;
+	// zero is DefaultCheckTimeout. A check that does not finish in time is a
+	// refusal saying so, before the caller's own timeout ends the call.
+	CheckTimeout time.Duration
 }
+
+// DefaultCheckTimeout is the access check's bound by default, well within
+// muster's default tool timeout of 30 s.
+const DefaultCheckTimeout = 20 * time.Second
 
 // ErrNoEmail refuses a caller whose identity carries no email, which the
 // grant names the person by: a grant without one admits nobody.
@@ -87,6 +95,12 @@ func New(cfg Config) (*Authorizer, error) {
 	}
 	if cfg.Namespace == "" || cfg.Broker == "" {
 		errs = append(errs, errors.New("authorize: the namespace and the broker name are required"))
+	}
+	if cfg.CheckTimeout < 0 {
+		errs = append(errs, fmt.Errorf("authorize: the check timeout must not be negative, got %s", cfg.CheckTimeout))
+	}
+	if cfg.CheckTimeout == 0 {
+		cfg.CheckTimeout = DefaultCheckTimeout
 	}
 	if cfg.Signer == nil {
 		errs = append(errs, errors.New("authorize: no grant signer"))
@@ -220,8 +234,11 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 		return a.connectRequired(res, name)
 	}
 
-	// What the person reads, one check per owner, against the manifest. A
-	// provider refusing the person's own token (revoked there) is a connect.
+	// What the person reads, one check per owner, against the manifest, all
+	// of it within the check's bound. A provider refusing the person's own
+	// token (revoked there) is a connect.
+	checkCtx, cancel := context.WithTimeout(ctx, a.cfg.CheckTimeout)
+	defer cancel()
 	for _, p := range providers {
 		kind := a.instances[p].Kind
 		cred := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: tokens[p]})
@@ -231,10 +248,15 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 			for i, e := range entries {
 				names[i] = e.Name
 			}
-			items, err := kind.Readable(ctx, cred, owner, names)
+			items, err := kind.Readable(checkCtx, cred, owner, names)
 			if errors.Is(err, provider.ErrCredentialRefused) {
 				res.Connect = append(res.Connect, Connect{Provider: p, URL: a.cfg.ConnectURL(p)})
 				break
+			}
+			if err != nil && ctx.Err() == nil && errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
+				res.Connect, res.Changed, res.Unreadable = nil, nil, nil
+				return refuse("checking your access to workspace %s took longer than %s: %s did not answer for %s in time; try again",
+					name, a.cfg.CheckTimeout, p, owner)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("check %s on %s: %w", owner, p, err)
