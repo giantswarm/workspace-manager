@@ -91,6 +91,7 @@ type serveOptions struct {
 	grantTTL         time.Duration
 	grantAudience    string
 	grantBroker      string
+	checkTimeout     time.Duration
 
 	tokenExchangeClientID     string
 	tokenExchangeClientSecret string
@@ -148,6 +149,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.DurationVar(&o.grantTTL, "grant-ttl", envDuration("WORKSPACE_MANAGER_GRANT_TTL", grant.DefaultTTL), "How long a workspace grant is valid, a Go duration (WORKSPACE_MANAGER_GRANT_TTL)")
 	f.StringVar(&o.grantAudience, "grant-audience", envOr("WORKSPACE_MANAGER_GRANT_AUDIENCE", "kagent"), "The workspace grant's audience: the one kagent's Session admission requires (WORKSPACE_MANAGER_GRANT_AUDIENCE)")
 	f.StringVar(&o.grantBroker, "grant-broker", envOr("WORKSPACE_MANAGER_GRANT_BROKER", "workspace-manager"), "The name kagent knows this manager's token endpoint by, which every provider host of a grant names (WORKSPACE_MANAGER_GRANT_BROKER)")
+	f.DurationVar(&o.checkTimeout, "access-check-timeout", envDuration("WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT", authorize.DefaultCheckTimeout), "How long authorize_workspace waits for the providers' answers about the person's access before it refuses, saying so, a Go duration; below the MCP client's tool timeout (muster's MCPServer `timeout`, 30s by default) (WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT)")
 	f.StringVar(&o.tokenExchangeClientID, "token-exchange-client-id", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID", ""), "The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers; empty serves no token exchange. Needs providers and OAuth (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID)")
 	f.StringVar(&o.tokenExchangeClientSecret, "token-exchange-client-secret", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET", ""), "The kagent client's secret as `<secret>/<key>` of a Secret in the manager's namespace, read on every exchange (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
@@ -436,14 +438,15 @@ func workspaceGrants(ctx context.Context, o *serveOptions, si *signIns, clients 
 		names[i] = p.Name
 	}
 	a, err := authorize.New(authorize.Config{
-		Workspaces: workspace.NewStore(clients.Dynamic(), o.namespace, orgs, names),
-		Core:       clients.Typed(),
-		Namespace:  o.namespace,
-		Instances:  providers,
-		Tokens:     si.store,
-		ConnectURL: si.clients.ConnectURL,
-		Signer:     &grant.Signer{Keys: keys, Issuer: si.baseURL, Audience: o.grantAudience, TTL: o.grantTTL},
-		Broker:     o.grantBroker,
+		Workspaces:   workspace.NewStore(clients.Dynamic(), o.namespace, orgs, names),
+		Core:         clients.Typed(),
+		Namespace:    o.namespace,
+		Instances:    providers,
+		Tokens:       si.store,
+		ConnectURL:   si.clients.ConnectURL,
+		Signer:       &grant.Signer{Keys: keys, Issuer: si.baseURL, Audience: o.grantAudience, TTL: o.grantTTL},
+		Broker:       o.grantBroker,
+		CheckTimeout: o.checkTimeout,
 	})
 	if err != nil {
 		return nil, nil, err

@@ -273,3 +273,83 @@ func TestRefusesInvalidValues(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "values: app.id, app.privateKey.key, app.privateKey.name, oauth.clientID, oauth.clientSecret.key, oauth.clientSecret.name required", err.Error())
 }
+
+// org is an organization of n repositories, r0000 on, every one of them read
+// by the person whose token it returns, listed 100 a page.
+func org(t *testing.T, n int) (*githubtest.Server, provider.Kind, oauth2.TokenSource) {
+	t.Helper()
+	s := githubtest.NewServer(t)
+	s.PageSize = 100
+	reads := make([]string, n)
+	for i := range n {
+		name := fmt.Sprintf("r%04d", i)
+		s.Put(provider.Item{Owner: "acme", Name: name})
+		reads[i] = "acme/" + name
+	}
+	return s, instance(t, s), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: s.Person(reads...)})
+}
+
+func names(n int) []string {
+	out := make([]string, n)
+	for i := range n {
+		out[i] = fmt.Sprintf("r%04d", i)
+	}
+	return out
+}
+
+func TestReadableAsksForAFewRepositoriesOnTheirOwn(t *testing.T) {
+	s, k, person := org(t, 2000)
+	items, err := k.Readable(context.Background(), person, "acme", []string{"r0042", "R1999", "missing"})
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	assert.Equal(t, "r0042", items[0].Name)
+	assert.Equal(t, "r1999", items[1].Name, "names match whatever their case")
+	assert.Equal(t, 0, s.Listed(), "no listing of the owner's 2,000 repositories")
+	assert.Equal(t, 3, s.Requests(), "one request a name")
+}
+
+func TestReadableAsksConcurrently(t *testing.T) {
+	s, k, person := org(t, 2000)
+	s.Latency = 200 * time.Millisecond
+	start := time.Now()
+	items, err := k.Readable(context.Background(), person, "acme", names(40))
+	require.NoError(t, err)
+	assert.Len(t, items, 40)
+	assert.Less(t, time.Since(start), 8*s.Latency, "40 requests in about five rounds, not 40 one after the other")
+}
+
+func TestReadableListsForMoreNamesThanAPageHolds(t *testing.T) {
+	s, k, person := org(t, 2000)
+	s.Latency = 200 * time.Millisecond
+	start := time.Now()
+	items, err := k.Readable(context.Background(), person, "acme", append(names(150), "missing"))
+	require.NoError(t, err)
+	assert.Len(t, items, 150)
+	assert.Equal(t, 20, s.Listed(), "every page of the listing, once")
+	assert.Equal(t, 20, s.Requests(), "and nothing else")
+	assert.Less(t, time.Since(start), 10*s.Latency, "the pages after the first fetched concurrently, not 20 one after the other")
+}
+
+func TestListFollowsNextLinksWithoutALastOne(t *testing.T) {
+	s := githubtest.NewServer(t)
+	s.NoLastLink = true
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		s.Put(provider.Item{Owner: "acme", Name: name})
+	}
+	k := instance(t, s)
+	items, err := k.List(context.Background(), credential(t, k, s, "acme"), "acme")
+	require.NoError(t, err)
+	assert.Len(t, items, 5)
+	assert.Equal(t, 3, s.Listed())
+}
+
+func TestReadableEndsWithTheContext(t *testing.T) {
+	s, k, person := org(t, 10)
+	s.Latency = time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := k.Readable(ctx, person, "acme", names(3))
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 5*time.Second)
+}

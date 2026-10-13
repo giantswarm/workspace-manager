@@ -233,6 +233,15 @@
                         "name": {
                             "type": "string",
                             "description": "MCPServer CR name (drives the tool prefix)."
+                        },
+                        "timeout": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "description": "How long muster waits for a tool's answer, in seconds (the MCPServer's `spec.timeout`, 1 to 300); unset keeps muster's default, 30 seconds. `authorize_workspace` bounds its access check at 20 seconds by default, within muster's default.",
+                            "maximum": 300,
+                            "minimum": 1
                         }
                     }
                 }

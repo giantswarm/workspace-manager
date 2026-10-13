@@ -303,6 +303,11 @@ muster:
     description: Workspaces of this installation, the sources agent sessions work on and their provider sign-ins, for the Agent Platform
     # -- Extra labels on the MCPServer CR.
     labels: {}  # @schema additionalProperties: true
+    # -- (int) How long muster waits for a tool's answer, in seconds (the
+    # MCPServer's `spec.timeout`, 1 to 300); unset keeps muster's default,
+    # 30 seconds. `authorize_workspace` bounds its access check at 20
+    # seconds by default, within muster's default.
+    timeout:  # @schema type: [integer, null]; minimum: 1; maximum: 300
     # -- How muster authenticates to this server; rendered only with
     # `oauth.enabled`. `forwardToken` makes muster forward the session's Dex
     # id_token byte-identical (the SSO path this chart trusts through its

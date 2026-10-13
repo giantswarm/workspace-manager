@@ -137,3 +137,18 @@ tests:
       - equal:
           path: spec.url
           value: http://workspace-manager.agent-platform.svc.cluster.local:9090/api/mcp
+
+  - it: leaves the tool timeout to muster by default
+    asserts:
+      - notExists:
+          path: spec.timeout
+
+  - it: renders the tool timeout from muster.mcpServer.timeout
+    set:
+      muster:
+        mcpServer:
+          timeout: 90
+    asserts:
+      - equal:
+          path: spec.timeout
+          value: 90

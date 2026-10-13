@@ -32,6 +32,9 @@ spec:
   {{- with .Values.muster.mcpServer.description }}
   description: {{ . | quote }}
   {{- end }}
+  {{- with .Values.muster.mcpServer.timeout }}
+  timeout: {{ . | int }}
+  {{- end }}
   {{- if .Values.oauth.enabled }}
   auth:
     type: oauth

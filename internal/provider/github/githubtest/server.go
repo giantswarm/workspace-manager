@@ -1,8 +1,9 @@
 // Package githubtest is a stub of the GitHub REST API's parts the github kind
 // calls: a GitHub App's installation on an organization or a user account,
 // its installation tokens, whose JWTs it verifies, and the installation's
-// repository listing (paged), with the rate-limit answers GitHub gives; and,
-// with a person's user-to-server token, the owner's listing and a single
+// repository listing (paged, linking the next and the last page), with the
+// rate-limit answers GitHub gives and, if asked, its latency; and, with a
+// person's user-to-server token, the owner's listing and a single
 // repository, holding what that person reads. Every repository is private:
 // a user account's listing shows a person none, as GitHub shows only public
 // ones there. It goes by a clock the kind under test shares, moved past the
@@ -64,7 +65,13 @@ type Server struct {
 	Clock *Clock
 	// PageSize is how many repositories a listing page holds.
 	PageSize int
-	key      *rsa.PrivateKey
+	// Latency is how long every API answer takes, in real time, as GitHub's
+	// do from afar; zero answers at once.
+	Latency time.Duration
+	// NoLastLink leaves rel="last" out of a listing's Link header, which
+	// then links only the next page.
+	NoLastLink bool
+	key     *rsa.PrivateKey
 
 	mu       sync.Mutex
 	repos    map[string]map[string]provider.Item
@@ -197,6 +204,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		limit, s.limits = &s.limits[0], s.limits[1:]
 	}
 	s.mu.Unlock()
+	if s.Latency > 0 {
+		select {
+		case <-time.After(s.Latency):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if limit != nil {
 		for k, vs := range limit.Header {
 			w.Header()[k] = vs
@@ -269,10 +283,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusUnauthorized, "Bad credentials")
 			return
 		}
+		// GitHub finds a repository whatever the case of its name.
 		s.mu.Lock()
-		it, known := s.repos[parts[1]][parts[2]]
+		var it provider.Item
+		known := false
+		for name, r := range s.repos[parts[1]] {
+			if strings.EqualFold(name, parts[2]) {
+				it, known = r, true
+			}
+		}
 		s.mu.Unlock()
-		if !known || !reads[parts[1]+"/"+parts[2]] {
+		if !known || !reads[parts[1]+"/"+it.Name] {
 			fail(w, http.StatusNotFound, "Not Found")
 			return
 		}
@@ -317,11 +338,19 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request, owner string,
 	page = max(page, 1)
 	from, to := min((page-1)*s.PageSize, len(all)), min(page*s.PageSize, len(all))
 	if to < len(all) {
-		next := *r.URL
-		q := next.Query()
-		q.Set("page", strconv.Itoa(page+1))
-		next.RawQuery = q.Encode()
-		w.Header().Set("Link", fmt.Sprintf(`<%s%s>; rel="next"`, s.URL, next.RequestURI()))
+		// As GitHub links them: the next page and the last.
+		at := func(n int) string {
+			u := *r.URL
+			q := u.Query()
+			q.Set("page", strconv.Itoa(n))
+			u.RawQuery = q.Encode()
+			return s.URL + u.RequestURI()
+		}
+		links := fmt.Sprintf(`<%s>; rel="next"`, at(page+1))
+		if !s.NoLastLink {
+			links += fmt.Sprintf(`, <%s>; rel="last"`, at((len(all)+s.PageSize-1)/s.PageSize))
+		}
+		w.Header().Set("Link", links)
 	}
 	out := make([]map[string]any, 0, to-from)
 	for _, it := range all[from:to] {
