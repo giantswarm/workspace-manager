@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -918,14 +917,23 @@ func TestLeaderElectionRunsOneController(t *testing.T) {
 		LeaderElection: election("replica-b")})
 	// The third holder's conflicts, armed later: the reactor is in place
 	// before any replica renews, since the fake's reactor chain is read
-	// without a lock.
-	var taken atomic.Bool
+	// without a lock. A replica's update and the third holder's takeover
+	// are serialised by mu: a renewal landing after the takeover would put
+	// the replica back as the holder, and its release would then retry its
+	// conflicts forever against a fake that ignores the release's deadline.
+	var (
+		mu    sync.Mutex
+		taken bool
+	)
 	leases := coordinationv1.SchemeGroupVersion.WithResource("leases")
-	f.core.PrependReactor("update", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
-		if taken.Load() {
+	update := k8stesting.ObjectReaction(f.core.Tracker())
+	f.core.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if taken {
 			return true, nil, apierrors.NewConflict(coordinationv1.Resource("leases"), DefaultLease, errors.New("another holder"))
 		}
-		return false, nil, nil
+		return update(action)
 	})
 	ctxA, cancelA := context.WithCancel(ctx)
 	defer cancelA()
@@ -954,6 +962,12 @@ func TestLeaderElectionRunsOneController(t *testing.T) {
 	// Another holder takes the lease from under the leader, whose renewals
 	// the API server then refuses as conflicts: ErrLeadershipLost. (The
 	// fake checks no resourceVersion, so the conflict is the reactor's.)
+	holder := func() string {
+		obj, err := f.core.Tracker().Get(leases, testNamespace, DefaultLease)
+		require.NoError(t, err)
+		return ptr.Deref(obj.(*coordinationv1.Lease).Spec.HolderIdentity, "")
+	}
+	mu.Lock()
 	obj, err := f.core.Tracker().Get(leases, testNamespace, DefaultLease)
 	require.NoError(t, err)
 	lease := obj.(*coordinationv1.Lease)
@@ -961,13 +975,15 @@ func TestLeaderElectionRunsOneController(t *testing.T) {
 	lease.Spec.AcquireTime = &metav1.MicroTime{Time: time.Now()}
 	lease.Spec.RenewTime = &metav1.MicroTime{Time: time.Now()}
 	require.NoError(t, f.core.Tracker().Update(leases, lease, testNamespace))
-	taken.Store(true)
+	taken = true
+	mu.Unlock()
 	select {
 	case err := <-doneB:
 		require.ErrorIs(t, err, ErrLeadershipLost)
 	case <-time.After(10 * time.Second):
-		t.Fatal("the replica did not notice the lost lease")
+		t.Fatalf("the replica did not notice the lost lease: the lease is held by %q, the replica leading %t", holder(), b.Leading())
 	}
+	assert.Equal(t, "replica-c", holder(), "the third holder keeps the lease")
 	assert.False(t, b.Leading())
 }
 
