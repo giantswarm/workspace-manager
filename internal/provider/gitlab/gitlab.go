@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -115,6 +116,9 @@ func New(v Values, o Options) (*Kind, error) {
 	if err != nil {
 		return nil, err
 	}
+	if api.Host == web.Host && apiPrefix(api) == "/" {
+		return nil, fmt.Errorf("values: apiURL on the git host must lie below a directory of its own, as `<url>/api/v4`, got %q", v.APIURL)
+	}
 	var missing []string
 	for field, empty := range map[string]bool{
 		"token.name":              v.Token.Name == "",
@@ -175,18 +179,25 @@ func (k *Kind) SignIn() provider.SignIn {
 }
 
 // Hosts implements provider.Kind. GitLab takes an OAuth token over git as
-// the password of the user `oauth2`, and on its API as a Bearer token. A
-// GitLab serving its API under the git host is that one host with the git
-// credential: a host takes one credential.
+// the password of the user `oauth2`, and on its API as a Bearer token, never
+// as Basic. A GitLab serving its API under the git host lists the API's
+// directory (`/api/`, which holds the REST `v4` and `graphql`) as a path
+// prefix of the git host with Bearer.
 func (k *Kind) Hosts() provider.Hosts {
 	h := provider.Hosts{
 		Git: []provider.Host{{Name: k.web.Host, Scheme: provider.SchemeBasic, User: "oauth2"}},
+		API: []provider.Host{{Name: k.api.Host, Scheme: provider.SchemeBearer}},
 		CLI: "glab",
 	}
-	if k.api.Host != k.web.Host {
-		h.API = []provider.Host{{Name: k.api.Host, Scheme: provider.SchemeBearer}}
+	if k.api.Host == k.web.Host {
+		h.API[0].PathPrefix = apiPrefix(k.api)
 	}
 	return h
+}
+
+// apiPrefix is the directory of the API's base URL: `/api/` of `/api/v4`.
+func apiPrefix(api *url.URL) string {
+	return strings.TrimSuffix(path.Dir(path.Clean("/"+api.Path)), "/") + "/"
 }
 
 // SyncCredential implements provider.Kind: the group access token from its

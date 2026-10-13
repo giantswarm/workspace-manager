@@ -53,14 +53,16 @@ type Mount struct {
 	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
-// Provider is one host the Session gets the person's credential on, from
-// the token broker named Broker for the provider instance Audience.
+// Provider is one host, or the request paths under PathPrefix on it, the
+// Session gets the person's credential on, from the token broker named
+// Broker for the provider instance Audience.
 type Provider struct {
-	Hostname string `json:"hostname"`
-	Audience string `json:"audience"`
-	Scheme   string `json:"scheme"`
-	Username string `json:"username,omitempty"`
-	Broker   string `json:"broker"`
+	Hostname   string `json:"hostname"`
+	PathPrefix string `json:"pathPrefix,omitempty"`
+	Audience   string `json:"audience"`
+	Scheme     string `json:"scheme"`
+	Username   string `json:"username,omitempty"`
+	Broker     string `json:"broker"`
 }
 
 // Grant is what a grant admits: everything but who and when.

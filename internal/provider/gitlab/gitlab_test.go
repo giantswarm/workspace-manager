@@ -348,8 +348,9 @@ func TestSelfManaged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, provider.Hosts{
 		Git: []provider.Host{{Name: "gitlab.example.com:8443", Scheme: provider.SchemeBasic, User: "oauth2"}},
+		API: []provider.Host{{Name: "gitlab.example.com:8443", PathPrefix: "/api/", Scheme: provider.SchemeBearer}},
 		CLI: "glab",
-	}, k.Hosts(), "the API under the git host takes the git host's one credential")
+	}, k.Hosts(), "git takes Basic oauth2 on the host, the API Bearer under /api/")
 	s := k.SignIn()
 	assert.Equal(t, provider.SignIn{ //nolint:gosec // G101: URLs and a Secret reference, no credential
 		AuthURL:       "https://gitlab.example.com:8443/oauth/authorize",
@@ -373,6 +374,16 @@ func TestASeparateAPIHostTakesBearer(t *testing.T) {
 	assert.Equal(t, []provider.Host{{Name: "api.example.com", Scheme: provider.SchemeBearer}}, k.Hosts().API)
 }
 
+func TestAnAPIUnderARelativeRootTakesItsDirectory(t *testing.T) {
+	k, err := gitlab.New(gitlab.Values{
+		URL:   "https://example.com/gitlab",
+		Token: provider.SecretRef{Name: "gl", Key: "token"},
+		OAuth: gitlab.OAuthValues{ClientID: "c", ClientSecret: provider.SecretRef{Name: "gl", Key: "s"}},
+	}, gitlab.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, []provider.Host{{Name: "example.com", PathPrefix: "/gitlab/api/", Scheme: provider.SchemeBearer}}, k.Hosts().API)
+}
+
 func TestDefaultsToGitLabCom(t *testing.T) {
 	k, err := gitlab.New(gitlab.Values{
 		Token: provider.SecretRef{Name: "gl", Key: "token"},
@@ -387,6 +398,12 @@ func TestRefusesInvalidValues(t *testing.T) {
 	_, err := gitlab.New(gitlab.Values{URL: "gitlab.example.com"}, gitlab.Options{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `url must be an absolute http(s) URL, got "gitlab.example.com"`)
+
+	for _, api := range []string{"https://gitlab.example.com", "https://gitlab.example.com/v4"} {
+		_, err = gitlab.New(gitlab.Values{URL: "https://gitlab.example.com", APIURL: api}, gitlab.Options{})
+		require.Error(t, err, api)
+		assert.Contains(t, err.Error(), "apiURL on the git host must lie below a directory of its own", "%s would take every path of the git host", api)
+	}
 
 	_, err = gitlab.New(gitlab.Values{}, gitlab.Options{})
 	require.Error(t, err)

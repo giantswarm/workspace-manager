@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,13 +201,25 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		h := k.Hosts()
 		assert.NotEmpty(t, h.Git, "git hosts")
 		assert.NotEmpty(t, h.CLI, "the CLI the Harness images carry")
-		seen := map[string]bool{}
+		type entry struct{ name, prefix string }
+		seen := map[entry]bool{}
+		for _, host := range h.Git {
+			assert.Empty(t, host.PathPrefix, "%s: a git host is listed as a whole host", host.Name)
+		}
 		for _, host := range slices.Concat(h.Git, h.API) {
 			assert.NotEmpty(t, host.Name)
-			assert.False(t, seen[host.Name], "%s is listed once: a host takes one credential", host.Name)
-			seen[host.Name] = true
+			e := entry{host.Name, host.PathPrefix}
+			assert.False(t, seen[e], "%s%s is listed once: a host and path prefix take one credential", host.Name, host.PathPrefix)
+			seen[e] = true
 			u, err := url.Parse("//" + host.Name)
 			assert.True(t, err == nil && u.Host == host.Name && u.User == nil, "%q is a host name with at most a port", host.Name)
+			if host.PathPrefix != "" {
+				p, err := url.Parse(host.PathPrefix)
+				assert.True(t, err == nil && p.Path == host.PathPrefix && len(p.Path) > 1 && strings.HasPrefix(p.Path, "/") && strings.HasSuffix(p.Path, "/"),
+					"%s: path prefix %q is a path starting and ending with /, not the root", host.Name, host.PathPrefix)
+				assert.True(t, slices.ContainsFunc(h.Git, func(g provider.Host) bool { return g.Name == host.Name }),
+					"%s%s narrows a git host, which takes every other path", host.Name, host.PathPrefix)
+			}
 			switch host.Scheme {
 			case provider.SchemeBasic:
 				assert.NotEmpty(t, host.User, "%s: Basic needs a user name", host.Name)
