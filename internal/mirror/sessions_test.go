@@ -247,14 +247,13 @@ func TestADirectoryOfAnotherUidIsLeftToItsOwner(t *testing.T) {
 	h := newHarness(t)
 	owner := h.otherUID()
 	dir := h.sessionDir("s1", 64)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "repo", ".git"), 0o755))
-	require.NoError(t, os.Chmod(dir, 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "repo", ".git"), 0o750))
 	listed := map[string]Session{"s1": {Name: "Fix it", LastTurn: t1}}
 
 	// The Session's user alone may enter its directory.
 	lock := func() { require.NoError(t, os.Chmod(dir, 0o000)) }
-	unlock := func() { require.NoError(t, os.Chmod(dir, 0o700)) }
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	unlock := func() { require.NoError(t, os.Chmod(dir, 0o700)) } //nolint:gosec // a directory's mode, which needs its x bit
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // a directory's mode, which needs its x bit
 	lock()
 	res := h.run(t0, &Selection{Cleanup: cleanup(listed)})
 	require.Empty(t, res.CleanedUp)
@@ -324,7 +323,7 @@ func TestADirectoryTheSyncCannotMeasureDoesNotFailTheSync(t *testing.T) {
 	locked := filepath.Join(dir, "locked")
 	require.NoError(t, os.MkdirAll(locked, 0o700))
 	require.NoError(t, os.Chmod(locked, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // a directory's mode, which needs its x bit
 	h.sessionDir("s2", 8)
 
 	h.run(t0, &Selection{Cleanup: cleanup(nil)})
