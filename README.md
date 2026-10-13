@@ -109,7 +109,8 @@ The grant's claims are kagent's JWT admission's: `iss` the manager's base URL,
 `nbf`, `iat`, `jti`; `workspace` {namespace, name}; `volume` {driver, handle}
 of the workspace's CSI volume; `mounts` `sessions/${SESSION_ID}` read-write
 and `mirrors` read-only; `changed` [`<owner>/<name>`]; and `providers`, one per
-git and API host of each provider of the workspace {hostname, audience (the
+git and API host of each provider of the workspace {hostname, pathPrefix
+(only on an API under a path of a git host, as GitLab's `/api/`), audience (the
 instance), scheme, username, broker (`--grant-broker`, the name kagent knows
 the token endpoint by)}. It carries no token.
 

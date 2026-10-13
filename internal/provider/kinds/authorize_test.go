@@ -68,6 +68,7 @@ type authFixture struct {
 	authorizer *authorize.Authorizer
 	keys       *grant.KeySource
 	tokens     authTokens
+	code       provider.Kind
 }
 
 // authSetup is a workspace on two providers at once: GitHub (the stub API) with
@@ -99,6 +100,7 @@ func authSetup(t *testing.T) *authFixture {
 
 	f := &authFixture{
 		keys: keys,
+		code: fkKind,
 		tokens: authTokens{
 			"alice": {"github": gh.Person("acme/api", "acme/web", "acme/other"), "code": backend.Person("umbrella/theirs")},
 			"bob":   {"github": gh.Person("acme/api"), "code": backend.Person("umbrella/theirs")},
@@ -174,14 +176,26 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	var audiences []string
 	hosts := map[string]bool{}
 	for _, p := range claims.Providers {
-		assert.False(t, hosts[p.Hostname], "%s once: kagent's egress refuses two credentials for one host", p.Hostname)
-		hosts[p.Hostname] = true
+		key := p.Hostname + p.PathPrefix
+		assert.False(t, hosts[key], "%s once: kagent's egress refuses two credentials for one host and path prefix", key)
+		hosts[key] = true
 		audiences = append(audiences, p.Audience)
 		assert.Equal(t, "workspace-manager", p.Broker)
-		assert.Equal(t, p.Scheme == "Basic", p.Username != "", "%s: a user name with Basic only", p.Hostname)
+		assert.Equal(t, p.Scheme == "Basic", p.Username != "", "%s: a user name with Basic only", key)
 	}
 	assert.Contains(t, audiences, "github")
 	assert.Contains(t, audiences, "code")
+	var code []grant.Provider
+	for _, p := range claims.Providers {
+		if p.Audience == "code" {
+			code = append(code, p)
+		}
+	}
+	host := f.code.Hosts().Git[0].Name
+	assert.ElementsMatch(t, []grant.Provider{
+		{Hostname: host, Audience: "code", Scheme: "Basic", Username: "oauth2", Broker: "workspace-manager"},
+		{Hostname: host, PathPrefix: "/api/", Audience: "code", Scheme: "Bearer", Broker: "workspace-manager"},
+	}, code, "one host: Basic for git, Bearer under the API's path prefix")
 
 	for _, token := range f.tokens["alice"] {
 		assert.NotContains(t, res.Grant, token, "no token in the grant")

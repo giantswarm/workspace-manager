@@ -178,25 +178,31 @@ const (
 	SchemeBearer Scheme = "Bearer"
 )
 
-// Host is one host name the person's token is set on.
+// Host is one host name, or one path prefix of it, the person's token is
+// set on.
 type Host struct {
 	// Name is the host as in a URL's authority: a host name, with a port only
 	// where it is not the scheme's default; no scheme, user or path.
 	Name string
+	// PathPrefix scopes the entry to the request paths under it: a path
+	// starting and ending with `/` (`/api/`), on a host also listed without
+	// one. Empty is the whole host.
+	PathPrefix string
 	// Scheme is how the token is set.
 	Scheme Scheme
 	// User is the user name for SchemeBasic; empty for SchemeBearer.
 	User string
 }
 
-// Hosts are a provider's run-time hosts. A host name appears once: a host
-// takes one credential, so a host serving git and the API is listed under
-// Git alone, with a scheme both take.
+// Hosts are a provider's run-time hosts. A host name and path prefix appear
+// once: they take one credential. A host serving git and an API that takes
+// the git scheme is listed under Git alone; one whose API takes another
+// scheme is listed under Git, and its API's path prefix under API.
 type Hosts struct {
-	// Git hosts serve git over HTTPS.
+	// Git hosts serve git over HTTPS, each as a whole host.
 	Git []Host
-	// API hosts serve the provider's API, which its CLI calls, where they are
-	// not git hosts.
+	// API hosts serve the provider's API, which its CLI calls: a host of its
+	// own, or a path prefix of a git host.
 	API []Host
 	// CLI is the provider's command-line tool (`gh`, `glab`).
 	CLI string

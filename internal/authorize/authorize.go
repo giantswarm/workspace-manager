@@ -336,7 +336,7 @@ func (a *Authorizer) providers(names []string) []grant.Provider {
 	for _, name := range names {
 		hosts := a.instances[name].Hosts()
 		for _, h := range slices.Concat(hosts.Git, hosts.API) {
-			out = append(out, grant.Provider{Hostname: h.Name, Audience: name, Scheme: string(h.Scheme), Username: h.User, Broker: a.cfg.Broker})
+			out = append(out, grant.Provider{Hostname: h.Name, PathPrefix: h.PathPrefix, Audience: name, Scheme: string(h.Scheme), Username: h.User, Broker: a.cfg.Broker})
 		}
 	}
 	return out

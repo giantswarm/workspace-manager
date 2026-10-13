@@ -163,11 +163,12 @@ func (k *Kind) SignIn() provider.SignIn {
 	}
 }
 
-// Hosts implements provider.Kind.
+// Hosts implements provider.Kind: git and, under `/api/`, an API taking
+// another scheme on one host, as a GitLab serves them.
 func (k *Kind) Hosts() provider.Hosts {
 	return provider.Hosts{
 		Git: []provider.Host{{Name: k.v.Host, Scheme: provider.SchemeBasic, User: "oauth2"}},
-		API: []provider.Host{{Name: "api." + k.v.Host, Scheme: provider.SchemeBearer}},
+		API: []provider.Host{{Name: k.v.Host, PathPrefix: "/api/", Scheme: provider.SchemeBearer}},
 		CLI: "fake",
 	}
 }
