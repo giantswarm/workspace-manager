@@ -20,7 +20,8 @@ const (
 	// it could not, and no directory was deleted: kagent's listing failed
 	// (KagentUnavailable), the manager runs without kagent
 	// (KagentNotConfigured) or the volume's CSI handle is not known yet
-	// (VolumePending).
+	// (VolumePending); or when the last cycle could neither measure nor
+	// delete some directories (DirectoriesLeft).
 	ConditionSessionsCleanedUp = "SessionsCleanedUp"
 )
 
@@ -36,6 +37,10 @@ const (
 	// ReasonVolumePending: the volume's CSI handle, which a Session names
 	// it by, is not known yet; no directory was deleted.
 	ReasonVolumePending = "VolumePending"
+	// ReasonDirectoriesLeft: the last cycle could neither measure nor
+	// delete some directories; the message names them and why, and each
+	// directory's status entry carries its error.
+	ReasonDirectoriesLeft = "DirectoriesLeft"
 )
 
 // FinalizerVolume keeps a deleted Workspace, and with it its volume, until

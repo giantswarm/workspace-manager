@@ -29,6 +29,10 @@ type Manifest struct {
 	Repositories []Entry   `json:"repositories"`
 	// Sessions are the session directories the sync left on the volume.
 	Sessions []SessionDirectory `json:"sessions,omitempty"`
+	// Owners are the owners of the entries under sessions/ the sync, run as
+	// another uid, left on the volume: the next cycle's Job looks after them
+	// in a container of each.
+	Owners []Owner `json:"owners,omitempty"`
 }
 
 // SessionDirectory is one directory under sessions/, named by its Session's
@@ -55,6 +59,9 @@ type SessionDirectory struct {
 	// FirstSeen for a Session kagent does not know. Zero when the sync had
 	// no cleanup window.
 	CleanupAfter time.Time `json:"cleanupAfter,omitzero"`
+	// Error is why the sync could neither measure nor delete the directory:
+	// it stays, with the size a previous sync measured.
+	Error string `json:"error,omitempty"`
 }
 
 // Entry is one mirror on the volume.
@@ -120,6 +127,9 @@ func (m *Manifest) Write(volume string) error {
 func (m *Manifest) JSON() ([]byte, error) {
 	sort.Slice(m.Repositories, func(i, j int) bool { return m.Repositories[i].Key() < m.Repositories[j].Key() })
 	sort.Slice(m.Sessions, func(i, j int) bool { return m.Sessions[i].Session < m.Sessions[j].Session })
+	sort.Slice(m.Owners, func(i, j int) bool {
+		return m.Owners[i].UID < m.Owners[j].UID || m.Owners[i].UID == m.Owners[j].UID && m.Owners[i].GID < m.Owners[j].GID
+	})
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode manifest: %w", err)

@@ -51,7 +51,13 @@ type Syncer struct {
 	Parallel int
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
-	Log *slog.Logger
+	// UID is the uid the sync runs as; nil is the process's. An entry under
+	// sessions/ another uid owns is that Owner's (RunOwner).
+	UID *int
+	// ReportsDir holds the OwnerReports of the Job's owners' containers,
+	// which ran before this sync; empty reads none.
+	ReportsDir string
+	Log        *slog.Logger
 }
 
 // Result is what a sync did, by repository key.
@@ -100,11 +106,14 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 	now := s.now().UTC().Truncate(time.Second)
 	// The session directories go first, so a directory cleaned up borrows
 	// nothing from the mirrors this sync repacks or deletes.
-	sessions, cleaned, err := s.cleanSessions(sel.Cleanup, prev, now)
+	sessions, err := s.cleanSessions(sel.Cleanup, prev, now, false)
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Manifest: &Manifest{SyncedAt: now, Sessions: sessions}, CleanedUp: cleaned}
+	res := &Result{Manifest: &Manifest{SyncedAt: now, Sessions: sessions.kept}, CleanedUp: sessions.deleted}
+	for o := range sessions.owners {
+		res.Manifest.Owners = append(res.Manifest.Owners, o)
+	}
 	if sel.Stopped {
 		s.log().Info("the workspace's sync is stopped: no mirror is fetched")
 		res.Manifest.Repositories = prev.Repositories
@@ -122,7 +131,7 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 	}
 	s.log().Info("sync done", "added", len(res.Added), "fetched", len(res.Fetched), "unchanged", len(res.Unchanged),
 		"dropped", len(res.Dropped), "removed", len(res.Removed), "mirrorsDeleted", len(res.Deleted),
-		"sessionDirectories", len(res.Manifest.Sessions), "sessionDirectoriesCleanedUp", len(res.CleanedUp))
+		"sessionDirectories", len(res.Manifest.Sessions), "sessionDirectoriesCleanedUp", len(res.CleanedUp), "owners", len(res.Manifest.Owners))
 	return res, nil
 }
 
@@ -406,6 +415,13 @@ func (s *Syncer) now() time.Time {
 		return time.Now()
 	}
 	return s.Now()
+}
+
+func (s *Syncer) uid() int {
+	if s.UID == nil {
+		return os.Getuid()
+	}
+	return *s.UID
 }
 
 func (s *Syncer) log() *slog.Logger {

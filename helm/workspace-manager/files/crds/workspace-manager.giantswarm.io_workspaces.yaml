@@ -427,6 +427,11 @@ spec:
                     creator:
                       description: Creator is the person who created the Session.
                       type: string
+                    error:
+                      description: |-
+                        Error is why the last sync could neither measure nor delete the
+                        directory: it stays, with the size measured before.
+                      type: string
                     lastTurn:
                       description: |-
                         LastTurn is the Session's last turn in kagent; absent before its first

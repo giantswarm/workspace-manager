@@ -328,10 +328,30 @@ record of each Session's last turn:
   known, no directory is deleted; the Job only measures them. The condition
   `SessionsCleanedUp` says which (`Listed`, `KagentNotConfigured`,
   `KagentUnavailable`, `VolumePending`).
+- **Another uid's directory.** The runtime creates a Session's directory as
+  the Session's user (Substrate: owned by its uid and gid, mode `0770`). A
+  volume that keeps every creator's uid and mode (Azure Files over NFS, an
+  NFS server) leaves it to that user alone; Amazon EFS's access point maps
+  every uid to its own. The sync, which cannot enter it, keeps it with the
+  size measured before and records its owner in the manifest (`owners`);
+  the next cycle's Job runs a container of each owner's (`owner-<uid>-<gid>`,
+  the sync container's image, resources and security context with the
+  owner's uid and gid, the pod's `fsGroup` a supplementary group, the volume
+  and the selection, no credential and no Kubernetes access) before the
+  sync container: `sync --owner-report` measures and deletes that owner's
+  directories alone and reports to the sync, which takes the report into
+  the manifest. No container needs a capability or root: `sessions/` is
+  the sync's, mode `2775`, so the fsGroup lets an owner's container rename
+  its directory aside. A directory owned by root, or one the sync or its
+  owner can neither measure nor delete, stays with the reason
+  (`status.sessions[].error`, `SessionsCleanedUp` with `DirectoriesLeft`)
+  and never fails the cycle; a deleted workspace's cleanup then waits for
+  its schedule.
 - **Dropped mirrors.** After the cleanup, a mirror the sync marked dropped
   is deleted once no session directory borrows from it (its clones'
   `objects/info/alternates`); one still borrowed stays, the manifest naming
-  its borrowers (`borrowedBy`).
+  its borrowers (`borrowedBy`). A directory the sync cannot read counts as
+  a borrower of every mirror.
 - **Inventory.** The manifest records each directory left (`sessions`: its
   Session's id, name, creator and last turn, the size measured by this sync,
   the cleanup date), and the status lists them (`status.sessions`), which
@@ -387,7 +407,7 @@ volume's size the same way from the providers' reported sizes.
 | Path | Written by | Holds |
 |---|---|---|
 | `mirrors/<owner>/<name>.git` | the sync | a bare mirror of each selected repository (every branch and tag) |
-| `sessions/` | the sync | the session directories; the runtime refuses a Session's mount while it is missing |
+| `sessions/` | the sync | the session directories, mode `2775` for the owners' containers; the runtime refuses a Session's mount while it is missing |
 | `sessions/<session>/` | that session | the session's clones, borrowing their objects from the mirrors (git alternates), and its work |
 | `manifest.json` | the sync | what the volume holds: each mirror's head commit, last push time and measured size |
 

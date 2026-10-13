@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -16,58 +18,231 @@ import (
 // tree under its name, and a sync removes one an interrupted deletion left.
 const deletedPrefix = ".deleted-"
 
-// cleanSessions applies the cleanup to the session directories and returns
-// the ones that stay, measured, with the ids of those it deleted. A
-// directory goes once its cleanup date has passed: the window after its
-// Session's last turn (its creation before the first turn), or after the
+// sessionsDirMode is sessions/'s mode: the group, the sync pod's fsGroup,
+// writes it, so a container of the Job run as a directory's owner renames
+// the directory aside; the setgid bit keeps the group on what is created in
+// it.
+const sessionsDirMode = 0o775 | fs.ModeSetgid
+
+// Owner is the uid and gid of an entry under sessions/ that the sync, run as
+// another uid, cannot measure or delete: a runtime creates a Session's
+// directory as the Session's user, and a volume that keeps every creator's
+// uid and mode (Azure Files over NFS, an NFS server) leaves it to that user
+// alone; Amazon EFS's access point maps every uid to its own. The next
+// cycle's Job runs the session directories' part of the sync in a container
+// of each Owner's (`sync --owner-report`) before its own.
+type Owner struct {
+	UID int64 `json:"uid"`
+	GID int64 `json:"gid"`
+}
+
+// String names the owner as `uid:gid`.
+func (o Owner) String() string { return fmt.Sprintf("%d:%d", o.UID, o.GID) }
+
+// OwnerReport is what a sync run as an Owner did with the entries under
+// sessions/ that Owner owns: the directories it kept, measured, and the ones
+// it deleted. The sync of the same Job, which runs after it, takes them into
+// its manifest.
+type OwnerReport struct {
+	Owner    Owner              `json:"owner"`
+	Sessions []SessionDirectory `json:"sessions,omitempty"`
+	Deleted  []string           `json:"deleted,omitempty"`
+}
+
+// ReportFile is an owner's report's name in the Job's reports directory.
+func ReportFile(o Owner) string { return fmt.Sprintf("owner-%d-%d.json", o.UID, o.GID) }
+
+// sessionsPass is what one pass over sessions/ found and did.
+type sessionsPass struct {
+	kept    []SessionDirectory
+	deleted []string
+	// owners are the owners of the entries this pass left to another uid.
+	owners map[Owner]bool
+}
+
+// leftTo records an entry's owner when another uid than the sync's, root
+// excepted: no container of the sync runs as root.
+func (p *sessionsPass) leftTo(o Owner, mine bool) {
+	if !mine && o.UID != 0 {
+		p.owners[o] = true
+	}
+}
+
+// cleanSessions applies the cleanup to the session directories this sync
+// can look after: every one, or with ownerOnly those owned by the uid it runs
+// as. A directory goes once its cleanup date has passed: the window after
+// its Session's last turn (its creation before the first turn), or after the
 // sync that first found it for a Session kagent does not know; and at once
 // when kagent lists the workspace's Sessions and no longer lists one it
-// listed at the previous sync. Without a cleanup every directory stays.
-func (s *Syncer) cleanSessions(c *Cleanup, prev *Manifest, now time.Time) ([]SessionDirectory, []string, error) {
-	// The sync lays out sessions/: the runtime creates only a Session's own
-	// directory under it and refuses the mount when its parent is missing.
+// listed at the previous sync. Without a cleanup every directory stays. A
+// directory an owner's container of the Job reported on is taken as
+// reported. One the sync can neither measure nor delete stays with the size
+// the previous sync measured and, unless another uid owns it (the next
+// cycle's container of that owner looks after it), the reason; it never
+// fails the sync.
+func (s *Syncer) cleanSessions(c *Cleanup, prev *Manifest, now time.Time, ownerOnly bool) (*sessionsPass, error) {
 	root := filepath.Join(s.Volume, SessionsDir)
-	if err := os.MkdirAll(root, 0o755); err != nil { //nolint:gosec // the runtime creates the sessions' directories under it
-		return nil, nil, fmt.Errorf("create sessions directory: %w", err)
+	if !ownerOnly {
+		// The sync lays out sessions/: the runtime creates only a Session's
+		// own directory under it and refuses the mount when its parent is
+		// missing.
+		if err := os.MkdirAll(root, sessionsDirMode); err != nil {
+			return nil, fmt.Errorf("create sessions directory: %w", err)
+		}
+		if err := os.Chmod(root, sessionsDirMode); err != nil && !errors.Is(err, fs.ErrPermission) {
+			return nil, fmt.Errorf("set the mode of the sessions directory: %w", err)
+		}
+	}
+	reported, reportedDeleted, err := s.readReports()
+	if err != nil {
+		return nil, err
 	}
 	dirs, err := os.ReadDir(root)
+	if ownerOnly && errors.Is(err, fs.ErrNotExist) {
+		return &sessionsPass{}, nil
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("list session directories: %w", err)
+		return nil, fmt.Errorf("list session directories: %w", err)
 	}
 	before := make(map[string]SessionDirectory, len(prev.Sessions))
 	for _, d := range prev.Sessions {
 		before[d.Session] = d
 	}
-	var kept []SessionDirectory
-	var deleted []string
+	p := &sessionsPass{deleted: reportedDeleted, owners: map[Owner]bool{}}
+	uid := s.uid()
 	for _, d := range dirs {
 		name := d.Name()
+		path := filepath.Join(root, name)
+		owner, err := ownerOf(d)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		mine := owner.UID == int64(uid)
+		if ownerOnly && !mine {
+			continue
+		}
 		if strings.HasPrefix(name, deletedPrefix) {
-			s.log().Warn("removing the leftover of an interrupted deletion", "path", filepath.Join(root, name))
-			if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
-				return nil, nil, fmt.Errorf("remove leftover session directory: %w", err)
+			s.log().Warn("removing the leftover of an interrupted deletion", "path", path)
+			if err := os.RemoveAll(path); err != nil {
+				s.log().Warn("leftover of an interrupted deletion not removed", "path", path, "owner", owner.String(), "error", err)
+				p.leftTo(owner, mine)
 			}
 			continue
 		}
 		if !d.IsDir() || strings.HasPrefix(name, ".") {
 			continue
 		}
-		dir, reason := inventory(name, c, before, now)
-		if reason != "" {
-			if err := removeAside(root, name); err != nil {
-				return nil, nil, err
-			}
-			deleted = append(deleted, name)
-			s.log().Info("session directory deleted", "session", name, "reason", reason, "lastTurn", dir.LastTurn, "cleanupAfter", dir.CleanupAfter)
+		p.leftTo(owner, mine)
+		if r, ok := reported[name]; ok {
+			p.kept = append(p.kept, r)
 			continue
 		}
-		if dir.SizeBytes, err = treeSize(filepath.Join(root, name)); err != nil {
-			return nil, nil, err
+		dir, reason := inventory(name, c, before, now)
+		// What the previous sync measured stands while this one cannot.
+		dir.SizeBytes = before[name].SizeBytes
+		if reason != "" {
+			aside := filepath.Join(root, deletedPrefix+name)
+			if err := os.Rename(path, aside); err != nil {
+				dir.Error = fmt.Sprintf("move aside for deletion: %v", err)
+			} else {
+				p.deleted = append(p.deleted, name)
+				s.log().Info("session directory deleted", "session", name, "reason", reason, "lastTurn", dir.LastTurn, "cleanupAfter", dir.CleanupAfter)
+				if err := os.RemoveAll(aside); err != nil {
+					s.log().Warn("deleted session directory not removed; the next sync removes it", "path", aside, "owner", owner.String(), "error", err)
+				}
+				continue
+			}
 		}
-		kept = append(kept, dir)
+		if dir.Error == "" {
+			if size, err := treeSize(path); err != nil {
+				dir.Error = err.Error()
+			} else {
+				dir.SizeBytes = size
+			}
+		}
+		if dir.Error != "" {
+			switch {
+			case mine || ownerOnly:
+				s.log().Warn("session directory not looked after", "session", name, "owner", owner.String(), "error", dir.Error)
+			case owner.UID == 0:
+				dir.Error = "owned by root, which no container of the sync runs as: " + dir.Error
+				s.log().Warn("session directory not looked after", "session", name, "owner", owner.String(), "error", dir.Error)
+			default:
+				// The next cycle's Job looks after it as its owner.
+				s.log().Info("session directory owned by another uid: the next cycle's sync job looks after it as its owner", "session", name, "owner", owner.String(), "error", dir.Error)
+				dir.Error = ""
+			}
+		}
+		p.kept = append(p.kept, dir)
 	}
-	sort.Strings(deleted)
+	sort.Strings(p.deleted)
+	return p, nil
+}
+
+// RunOwner looks after the session directories owned by the uid the sync
+// runs as, as cleanSessions does, and returns what it did: the run of the
+// Job's container of an Owner's, before the sync's own. It touches nothing
+// else on the volume and writes no manifest.
+func (s *Syncer) RunOwner(sel *Selection) (*OwnerReport, error) {
+	if err := sel.validate(); err != nil {
+		return nil, err
+	}
+	prev, err := ReadManifest(s.Volume)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.cleanSessions(sel.Cleanup, prev, s.now().UTC().Truncate(time.Second), true)
+	if err != nil {
+		return nil, err
+	}
+	r := &OwnerReport{Owner: Owner{UID: int64(s.uid()), GID: int64(os.Getgid())}, Sessions: p.kept, Deleted: p.deleted}
+	s.log().Info("owner's session directories done", "owner", r.Owner.String(), "sessionDirectories", len(r.Sessions), "sessionDirectoriesCleanedUp", len(r.Deleted))
+	return r, nil
+}
+
+// readReports reads the owners' reports in ReportsDir: the directories they
+// kept, by Session, and the ones they deleted.
+func (s *Syncer) readReports() (map[string]SessionDirectory, []string, error) {
+	kept := map[string]SessionDirectory{}
+	var deleted []string
+	if s.ReportsDir == "" {
+		return kept, nil, nil
+	}
+	files, err := filepath.Glob(filepath.Join(s.ReportsDir, "owner-*.json"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("list the owners' reports: %w", err)
+	}
+	for _, f := range files {
+		raw, err := os.ReadFile(f) //nolint:gosec // the reports directory is the Job's own
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the owner's report: %w", err)
+		}
+		var r OwnerReport
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, nil, fmt.Errorf("parse the owner's report %s: %w", f, err)
+		}
+		for _, d := range r.Sessions {
+			kept[d.Session] = d
+		}
+		deleted = append(deleted, r.Deleted...)
+	}
 	return kept, deleted, nil
+}
+
+// ownerOf is the entry's uid and gid.
+func ownerOf(d fs.DirEntry) (Owner, error) {
+	info, err := d.Info()
+	if err != nil {
+		return Owner{}, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return Owner{}, fmt.Errorf("no owner on %s", d.Name())
+	}
+	return Owner{UID: int64(st.Uid), GID: int64(st.Gid)}, nil
 }
 
 // inventory is a directory's record at this sync and, when it goes now, why.

@@ -290,6 +290,9 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 		if succeeded {
 			w.Status.Repositories = repositories
 			w.Status.Sessions = sessions
+			if cond := directoriesLeft(ws, sessions); cond != nil {
+				meta.SetStatusCondition(&w.Status.Conditions, *cond)
+			}
 			w.Status.NeededSize = needed
 			if volumeSize != nil {
 				w.Status.VolumeSize = volumeSize

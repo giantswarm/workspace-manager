@@ -2,6 +2,8 @@ package mirror
 
 import (
 	"context"
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -213,4 +215,121 @@ func TestAStoppedSelectionTouchesNoMirror(t *testing.T) {
 
 	_, err := h.syncer.Run(context.Background(), &Selection{Stopped: true, Repositories: []Repository{h.repo("acme", "alpha", t0)}})
 	require.ErrorContains(t, err, "a stopped selection lists no repositories")
+}
+
+// otherUID makes the harness's sync run as another uid than the one owning
+// what the test creates: the sync on a volume that keeps each creator's uid
+// (Azure Files over NFS) beside a Session run as its own user.
+func (h *harness) otherUID() Owner {
+	h.t.Helper()
+	if os.Getuid() == 0 {
+		h.t.Skip("root reads and removes every directory")
+	}
+	uid := os.Getuid() + 1
+	h.syncer.UID = &uid
+	return Owner{UID: int64(os.Getuid()), GID: int64(os.Getgid())}
+}
+
+// runOwner is the Job's container of the directories' owner.
+func (h *harness) runOwner(now time.Time, sel *Selection) *OwnerReport {
+	h.t.Helper()
+	owner := &Syncer{Volume: h.volume, Now: func() time.Time { return now }, Log: h.syncer.Log}
+	r, err := owner.RunOwner(sel)
+	require.NoError(h.t, err)
+	return r
+}
+
+// TestADirectoryOfAnotherUidIsLeftToItsOwner: the sync cannot read a
+// directory another uid owns; it keeps it with its last size, records the
+// owner and still succeeds. The owner's container of the next Job measures
+// and deletes it, and the sync takes its report into the manifest.
+func TestADirectoryOfAnotherUidIsLeftToItsOwner(t *testing.T) {
+	h := newHarness(t)
+	owner := h.otherUID()
+	dir := h.sessionDir("s1", 64)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "repo", ".git"), 0o750))
+	listed := map[string]Session{"s1": {Name: "Fix it", LastTurn: t1}}
+
+	// The Session's user alone may enter its directory.
+	lock := func() { require.NoError(t, os.Chmod(dir, 0o000)) }
+	unlock := func() { require.NoError(t, os.Chmod(dir, 0o700)) } //nolint:gosec // a directory's mode, which needs its x bit
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })                //nolint:gosec // a directory's mode, which needs its x bit
+	lock()
+	res := h.run(t0, &Selection{Cleanup: cleanup(listed)})
+	require.Empty(t, res.CleanedUp)
+	inv := h.inventory()
+	require.Equal(t, "Fix it", inv["s1"].Name)
+	require.Zero(t, inv["s1"].SizeBytes, "not measured yet")
+	require.Empty(t, inv["s1"].Error, "its owner's container looks after it")
+	require.Equal(t, []Owner{owner}, h.manifest().Owners)
+	info, err := os.Stat(filepath.Join(h.volume, SessionsDir))
+	require.NoError(t, err)
+	require.Equal(t, sessionsDirMode, info.Mode()&(fs.ModePerm|fs.ModeSetgid), "the owners' group renames in sessions/")
+
+	// The next Job: the owner's container measures it, the sync takes the
+	// report.
+	unlock()
+	report := h.runOwner(t1, &Selection{Cleanup: cleanup(listed)})
+	require.Equal(t, owner, report.Owner)
+	require.Len(t, report.Sessions, 1)
+	require.Equal(t, int64(64), report.Sessions[0].SizeBytes)
+	h.syncer.ReportsDir = t.TempDir()
+	raw, err := json.Marshal(report)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(h.syncer.ReportsDir, ReportFile(owner)), raw, 0o600))
+	lock()
+	h.run(t1, &Selection{Cleanup: cleanup(listed)})
+	require.Equal(t, int64(64), h.inventory()["s1"].SizeBytes)
+	require.Equal(t, []Owner{owner}, h.manifest().Owners)
+
+	// The Session is deleted: the owner's container deletes the directory,
+	// and the sync lists it as cleaned up.
+	unlock()
+	report = h.runOwner(t2, &Selection{Cleanup: cleanup(nil)})
+	require.Equal(t, []string{"s1"}, report.Deleted)
+	require.NoDirExists(t, dir)
+	raw, err = json.Marshal(report)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(h.syncer.ReportsDir, ReportFile(owner)), raw, 0o600))
+	res = h.run(t2, &Selection{Cleanup: cleanup(nil)})
+	require.Equal(t, []string{"s1"}, res.CleanedUp)
+	require.Empty(t, h.manifest().Sessions)
+	require.Empty(t, h.manifest().Owners, "nothing is left to another uid")
+}
+
+// TestTheOwnersContainerLooksAfterItsOwnDirectoriesAlone: a directory of
+// another uid than the container's stays untouched by it.
+func TestTheOwnersContainerLooksAfterItsOwnDirectoriesAlone(t *testing.T) {
+	h := newHarness(t)
+	h.otherUID()
+	h.run(t0, &Selection{})
+	dir := h.sessionDir("s1", 1)
+	owner := &Syncer{Volume: h.volume, UID: h.syncer.UID, Now: func() time.Time { return t1 }, Log: h.syncer.Log}
+	r, err := owner.RunOwner(&Selection{Cleanup: cleanup(nil)})
+	require.NoError(t, err)
+	require.Empty(t, r.Sessions)
+	require.Empty(t, r.Deleted)
+	require.DirExists(t, dir)
+}
+
+// TestADirectoryTheSyncCannotMeasureDoesNotFailTheSync: a directory of the
+// sync's own uid it cannot measure stays with the reason; the sync goes on.
+func TestADirectoryTheSyncCannotMeasureDoesNotFailTheSync(t *testing.T) {
+	h := newHarness(t)
+	if os.Getuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	dir := h.sessionDir("s1", 1)
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.MkdirAll(locked, 0o700))
+	require.NoError(t, os.Chmod(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // a directory's mode, which needs its x bit
+	h.sessionDir("s2", 8)
+
+	h.run(t0, &Selection{Cleanup: cleanup(nil)})
+	inv := h.inventory()
+	require.Contains(t, inv["s1"].Error, "permission denied")
+	require.Empty(t, inv["s2"].Error)
+	require.Equal(t, int64(8), inv["s2"].SizeBytes)
+	require.Empty(t, h.manifest().Owners, "the sync's own")
 }

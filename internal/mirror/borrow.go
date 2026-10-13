@@ -19,7 +19,9 @@ const borrowDepth = 2
 // objects: a clone whose git alternates file names the mirror's objects
 // directory. A Session sees the volume at its own mount, so the alternates
 // path, absolute or relative, is matched by its tail
-// mirrors/<owner>/<name>.git/objects.
+// mirrors/<owner>/<name>.git/objects. A directory the sync may not read,
+// another uid's, counts as a borrower: its objects are never pruned from
+// under it.
 func borrowers(volume, mirrorPath string) ([]string, error) {
 	sessionsDir := filepath.Join(volume, SessionsDir)
 	sessions, err := os.ReadDir(sessionsDir)
@@ -37,10 +39,10 @@ func borrowers(volume, mirrorPath string) ([]string, error) {
 		}
 		dir := filepath.Join(sessionsDir, s.Name())
 		found, err := borrowsFrom(dir, objects)
-		if err != nil {
+		if err != nil && !errors.Is(err, fs.ErrPermission) {
 			return nil, err
 		}
-		if found {
+		if found || err != nil {
 			out = append(out, s.Name())
 		}
 	}
