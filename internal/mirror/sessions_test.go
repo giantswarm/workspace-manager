@@ -253,7 +253,7 @@ func TestADirectoryOfAnotherUidIsLeftToItsOwner(t *testing.T) {
 	// The Session's user alone may enter its directory.
 	lock := func() { require.NoError(t, os.Chmod(dir, 0o000)) }
 	unlock := func() { require.NoError(t, os.Chmod(dir, 0o700)) } //nolint:gosec // a directory's mode, which needs its x bit
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // a directory's mode, which needs its x bit
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })                //nolint:gosec // a directory's mode, which needs its x bit
 	lock()
 	res := h.run(t0, &Selection{Cleanup: cleanup(listed)})
 	require.Empty(t, res.CleanedUp)
