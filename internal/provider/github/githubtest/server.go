@@ -71,7 +71,7 @@ type Server struct {
 	// NoLastLink leaves rel="last" out of a listing's Link header, which
 	// then links only the next page.
 	NoLastLink bool
-	key     *rsa.PrivateKey
+	key        *rsa.PrivateKey
 
 	mu       sync.Mutex
 	repos    map[string]map[string]provider.Item
