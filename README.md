@@ -196,8 +196,8 @@ caller, `invalid workspace` with the API server's or the manager's reason
 | `get_workspace` | `workspace` | `workspace` (the view); `mirrors`: the last sync's repositories (`provider`, `repository`, `defaultBranch`, `head`, `pushedAt`, measured `sizeBytes`, `droppedAt`); `storage` (`mirrorsBytes`, `sessionsBytes`, `neededSize`, `volumeSize`); `sessionDirectories` (`session`, `name`, `creator`, `lastTurn`, `unknown`, `sizeBytes`, `cleanupAfter`) |
 | `create_workspace` | `name`, `organization`, `sources`, `sync` (default nightly), `sizing` (`headroom`, `minimum` as quantities) | the view |
 | `update_workspace` | `name`, `sources` (replaced), `sync` and `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
-| `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume |
-| `sync_workspace` | `workspace` | `workspace`, `requestedAt`, `requestedBy`; `activeSync` when a sync Job runs at the request, after which the requested cycle starts |
+| `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume; `alreadyDeleting` when the workspace was being deleted, which runs its deletion cycle now |
+| `sync_workspace` | `workspace` | `workspace`, `requestedAt`, `requestedBy`; `activeSync` when a sync Job runs at the request, after which the requested cycle starts; `deleting` on a workspace being deleted, whose deletion cycle the request runs |
 | `list_repositories` | `organization` (a member's), `provider`, `owner`, `search` (name, ignoring case), `languages` (any of), `topics` (any of), `archived` and `fork` (`true` only those, `false` none, unset both), `page`, `pageSize` (50, at most 200) | `total` matching, `ownerTotal`, `page`, `pageSize`, `repositories` (`name`, `language`, `topics`, `archived`, `fork`, `lastPush`, `sizeKiB`), and every `languages` and `topics` value of the owner for the picker's filters |
 | `preview_workspace` | `workspace` (an existing one), or a draft's `organization`, `sources` and `sizing`; `search` (`owner/name`), `page`, `pageSize` | `total` selected now, `excluded`, `skippedArchived` and `skippedForks` (what a selector matched and those rules left out), `providerSizeKiB`, `estimatedVolumeSize`, `matching` the search, and the page's `repositories` (`provider`, `repository`, `language`, `topics`, `lastPush`, `sizeKiB`, `why`: `name`, `language <l>`, `topic <t>`) |
 
@@ -219,7 +219,8 @@ before the first cycle, the schedule's next time from now.
 request and the caller as annotations on the Workspace
 (`workspace-manager.giantswarm.io/sync-requested`, `-by`), which the
 controller serves and removes. A request made while a sync Job runs is served
-after it; nothing changed since the last sync costs no fetch.
+after it; nothing changed since the last sync costs no fetch. On a workspace
+being deleted the request runs its deletion cycle now (below).
 
 `list_repositories` and `preview_workspace` read the owner's listing with the
 provider instance's own sync credential (on GitHub the `-agents` App's
@@ -235,8 +236,10 @@ providers' reported sizes (the sizing rule below, nothing mirrored yet),
 where the StorageClass provisions one.
 
 `delete_workspace` deletes the Workspace: `authorize_workspace` refuses it
-from then on, so no new Session starts on it, and its volume claim goes with
-it by its owner reference once no running Session mounts it.
+from then on, so no new Session starts on it, and its volume claim goes once
+its deletion cycles leave no session directory (below). `delete_workspace`
+on a workspace already being deleted records a sync request, as
+`sync_workspace` does: its deletion cycle runs now.
 
 ## The sync cycle
 
@@ -337,7 +340,10 @@ record of each Session's last turn:
   `workspace-manager.giantswarm.io/volume`. Once deleted, its sync stops and
   no Session starts on it; its cycles (trigger `deletion`) only clean up the
   session directories, at its schedule or at the earliest cleanup date,
-  whichever comes first. When a cycle since the deletion leaves no
+  whichever comes first, or at once for a `sync_workspace` request or a
+  second `delete_workspace` (after a running Job): a directory cleared
+  outside a cycle is found gone without waiting, while one still there is
+  kept as by any cycle. When a cycle since the deletion leaves no
   directory, the controller deletes the volume's claim and removes the
   finalizer, and everything else the workspace owns goes with it.
 

@@ -117,11 +117,16 @@ func (s *Store) Update(ctx context.Context, ws *v1alpha1.Workspace) (*v1alpha1.W
 }
 
 // Delete removes a Workspace of an Organization the caller is a member of,
-// and returns it as it was checked.
-func (s *Store) Delete(ctx context.Context, name string) (*v1alpha1.Workspace, error) {
+// and returns it as it was checked. A Workspace already being deleted is
+// asked for its deletion cycle now, as RequestSync does, and returned as
+// the request left it.
+func (s *Store) Delete(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
 	ws, err := s.Get(ctx, name)
 	if err != nil {
 		return nil, err
+	}
+	if ws.DeletionTimestamp != nil {
+		return s.requestSync(ctx, name, at)
 	}
 	// The precondition makes sure what is deleted is what was checked.
 	if err := s.client.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &ws.UID}}); err != nil {
@@ -140,16 +145,19 @@ func (s *Store) CheckOrganization(ctx context.Context, org string) error {
 // RequestSync asks the controller for a sync cycle of a Workspace of an
 // Organization the caller is a member of, now: it records the request and
 // the caller as annotations the controller acts on and removes. A request
-// made while a cycle runs is served after it; a Workspace being deleted
-// syncs no more.
+// made while a cycle runs is served after it; on a Workspace being deleted,
+// which syncs no more, it runs the deletion cycle now, which cleans up the
+// session directories and lets the Workspace go once none is left.
 func (s *Store) RequestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
-	ws, err := s.Get(ctx, name)
-	if err != nil {
+	if _, err := s.Get(ctx, name); err != nil {
 		return nil, err
 	}
-	if ws.DeletionTimestamp != nil {
-		return nil, fmt.Errorf("%w: workspace %q is being deleted", ErrInvalid, name)
-	}
+	return s.requestSync(ctx, name, at)
+}
+
+// requestSync records the sync request on a Workspace the caller passed the
+// check for.
+func (s *Store) requestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
 	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{
 		v1alpha1.AnnotationSyncRequested:   at.UTC().Format(time.RFC3339),
 		v1alpha1.AnnotationSyncRequestedBy: identity.Caller(ctx),

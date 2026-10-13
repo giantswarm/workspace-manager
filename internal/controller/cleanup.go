@@ -207,9 +207,10 @@ func sessionDirectories(m *mirror.Manifest) []v1alpha1.SessionDirectory {
 // reconcileDeleted runs a deleted workspace to its end: its sync stopped, its
 // Job only cleans up the session directories, at the workspace's schedule
 // or at the earliest cleanup date, whichever comes first (a failed one again
-// after the resync); once a cycle since the deletion leaves no directory,
-// the volume claim is deleted and the finalizer removed, and everything else
-// the workspace owns goes with it.
+// after the resync), or at once for a sync request (sync_workspace, or
+// delete_workspace again), served after a running Job; once a cycle since
+// the deletion leaves no directory, the volume claim is deleted and the
+// finalizer removed, and everything else the workspace owns goes with it.
 func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspace) (time.Duration, error) {
 	if !slices.Contains(ws.Finalizers, v1alpha1.FinalizerVolume) {
 		return 0, nil
@@ -240,13 +241,20 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 		return 0, c.removeFinalizer(ctx, ws)
 	}
 	now := c.now()
-	if last != nil && last.Trigger == v1alpha1.TriggerDeletion {
+	requested := ws.Annotations[v1alpha1.AnnotationSyncRequested] != ""
+	if last != nil && last.Trigger == v1alpha1.TriggerDeletion && !requested {
 		at := last.Time.Add(c.resync)
 		if cleaned {
 			at = c.nextDeletionCycle(ws, last.Time.Time)
 		}
 		if at.After(now) {
 			return at.Sub(now), nil
+		}
+	}
+	if requested {
+		log = log.With("requestedAt", ws.Annotations[v1alpha1.AnnotationSyncRequested], "requestedBy", ws.Annotations[v1alpha1.AnnotationSyncRequestedBy])
+		if err := c.clearRequest(ctx, ws); err != nil {
+			return 0, err
 		}
 	}
 

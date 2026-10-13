@@ -114,6 +114,9 @@ type SyncResult struct {
 	// ActiveSync is the sync Job running at the request, after which the
 	// requested cycle starts.
 	ActiveSync *ActiveSync `json:"activeSync,omitempty"`
+	// Deleting is true on a workspace being deleted: the request runs its
+	// deletion cycle, which only cleans up the session directories.
+	Deleting bool `json:"deleting,omitempty"`
 }
 
 // Volume is the workspace's volume.
@@ -194,6 +197,9 @@ type DeleteResult struct {
 	// Sessions are the Sessions with a directory on the volume at the
 	// delete.
 	Sessions []string `json:"sessions"`
+	// AlreadyDeleting is true when the workspace was being deleted before
+	// the call: the call asked for its deletion cycle now instead.
+	AlreadyDeleting bool `json:"alreadyDeleting,omitempty"`
 }
 
 // workspaceTools serve the Workspace tools: every read and write goes
@@ -339,7 +345,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("delete_workspace",
-		mcp.WithDescription("Delete a workspace of your Organization: its sync stops and no new Session starts on it. Returns the Sessions that still have a directory on its volume."),
+		mcp.WithDescription("Delete a workspace of your Organization: its sync stops and no new Session starts on it. Returns the Sessions that still have a directory on its volume. On a workspace already being deleted, it runs the deletion cycle now: session directories found gone let the workspace and its volume go without waiting for the next scheduled cycle."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(false),
@@ -350,16 +356,21 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		ws, err := t.store.Delete(ctx, name)
+		ws, err := t.store.Delete(ctx, name, t.now())
 		if err != nil {
 			return toolError("delete workspace", err), nil
 		}
-		res := DeleteResult{Workspace: name, Sessions: []string{}}
+		res := DeleteResult{Workspace: name, Sessions: []string{}, AlreadyDeleting: ws.DeletionTimestamp != nil}
 		for _, s := range ws.Status.Sessions {
 			res.Sessions = append(res.Sessions, s.Session)
 		}
-		slog.InfoContext(ctx, "workspace deleted", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization, "sessions", len(res.Sessions))
 		text := fmt.Sprintf("Deleted workspace %s: its sync stops and no new Session starts on it.", name)
+		if res.AlreadyDeleting {
+			slog.InfoContext(ctx, "workspace deletion cycle requested", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization, "sessions", len(res.Sessions))
+			text = fmt.Sprintf("Workspace %s is already being deleted: the controller runs its deletion cycle now, and the workspace goes once no session directory is left.", name)
+		} else {
+			slog.InfoContext(ctx, "workspace deleted", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization, "sessions", len(res.Sessions))
+		}
 		if len(res.Sessions) > 0 {
 			text += fmt.Sprintf(" %d Sessions still have a directory on it: %s.", len(res.Sessions), strings.Join(res.Sessions, ", "))
 		}
@@ -367,7 +378,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("sync_workspace",
-		mcp.WithDescription("Sync a workspace of your Organization now, ahead of its cycle: the controller lists its sources, fetches what changed since the last sync and grows its volume where its StorageClass provisions a size; nothing changed costs no fetch. A request made while a sync runs is served after it. get_workspace shows the request, the running sync Job and the outcome."),
+		mcp.WithDescription("Sync a workspace of your Organization now, ahead of its cycle: the controller lists its sources, fetches what changed since the last sync and grows its volume where its StorageClass provisions a size; nothing changed costs no fetch. A request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -382,10 +393,14 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		if err != nil {
 			return toolError("sync workspace", err), nil
 		}
-		res := SyncResult{Workspace: name, RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy], ActiveSync: activeSyncOf(ws.Status.ActiveSync)}
+		res := SyncResult{Workspace: name, RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy], ActiveSync: activeSyncOf(ws.Status.ActiveSync),
+			Deleting: ws.DeletionTimestamp != nil}
 		res.RequestedAt, _ = time.Parse(time.RFC3339, ws.Annotations[v1alpha1.AnnotationSyncRequested])
 		slog.InfoContext(ctx, "workspace sync requested", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization)
 		text := fmt.Sprintf("Sync of workspace %s requested: the controller starts its cycle now.", name)
+		if res.Deleting {
+			text = fmt.Sprintf("Deletion cycle of workspace %s requested: the workspace is being deleted, and the controller runs its deletion cycle now.", name)
+		}
 		if res.ActiveSync != nil {
 			text = fmt.Sprintf("Sync of workspace %s requested: sync job %s runs, and the requested cycle starts after it.", name, res.ActiveSync.Job)
 		}
