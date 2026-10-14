@@ -69,46 +69,6 @@ apiVersion: workspace-manager.giantswarm.io/v1alpha1
 kind: Workspace
 metadata: {name: no-source}
 spec: {organization: acme, sources: []}`, "spec.sources: Invalid value"},
-		{"invalid weekday", `
-apiVersion: workspace-manager.giantswarm.io/v1alpha1
-kind: Workspace
-metadata: {name: bad-weekday}
-spec:
-  organization: acme
-  sources: [{provider: github, owner: acme, repositories: [api]}]
-  sync: {schedule: custom, weekdays: [monday, funday], hour: 3}`, `spec.sync.weekdays[1]: Unsupported value: "funday"`},
-		{"hour above 23", `
-apiVersion: workspace-manager.giantswarm.io/v1alpha1
-kind: Workspace
-metadata: {name: bad-hour}
-spec:
-  organization: acme
-  sources: [{provider: github, owner: acme, repositories: [api]}]
-  sync: {schedule: custom, weekdays: [monday], hour: 24}`, "spec.sync.hour: Invalid value: 24"},
-		{"negative hour", `
-apiVersion: workspace-manager.giantswarm.io/v1alpha1
-kind: Workspace
-metadata: {name: negative-hour}
-spec:
-  organization: acme
-  sources: [{provider: github, owner: acme, repositories: [api]}]
-  sync: {schedule: custom, weekdays: [monday], hour: -1}`, "spec.sync.hour: Invalid value: -1"},
-		{"custom without weekdays", `
-apiVersion: workspace-manager.giantswarm.io/v1alpha1
-kind: Workspace
-metadata: {name: custom-no-days}
-spec:
-  organization: acme
-  sources: [{provider: github, owner: acme, repositories: [api]}]
-  sync: {schedule: custom, hour: 3}`, "weekdays and hour are set for, and only for, a custom schedule"},
-		{"weekdays on nightly", `
-apiVersion: workspace-manager.giantswarm.io/v1alpha1
-kind: Workspace
-metadata: {name: nightly-days}
-spec:
-  organization: acme
-  sources: [{provider: github, owner: acme, repositories: [api]}]
-  sync: {schedule: nightly, weekdays: [monday]}`, "weekdays and hour are set for, and only for, a custom schedule"},
 		{"negative headroom", `
 apiVersion: workspace-manager.giantswarm.io/v1alpha1
 kind: Workspace
@@ -156,12 +116,16 @@ spec:
 		require.NoError(t, err)
 		ws, err := fromUnstructured(u)
 		require.NoError(t, err)
-		require.Equal(t, v1alpha1.ScheduleNightly, ws.Spec.Sync.Schedule)
 		require.Equal(t, v1alpha1.TopicMatchAny, ws.Spec.Sources[1].Filters.Topics.Match)
 		require.False(t, ws.Spec.Sources[1].IncludeArchived)
 		require.False(t, ws.Spec.Sources[1].IncludeForks)
 
-		_, err = create(t, `
+	})
+
+	t.Run("a sync schedule is dropped, not rejected", func(t *testing.T) {
+		// A workspace written before the schedule was removed still carries
+		// spec.sync: the API server prunes it, and the workspace loads.
+		u, err := create(t, `
 apiVersion: workspace-manager.giantswarm.io/v1alpha1
 kind: Workspace
 metadata: {name: weekly-custom}
@@ -170,6 +134,12 @@ spec:
   sources: [{provider: github, owner: acme, filters: {topics: {match: all, names: [agent, go]}}}]
   sync: {schedule: custom, weekdays: [monday, thursday], hour: 0}`)
 		require.NoError(t, err)
+		_, found, err := unstructured.NestedFieldNoCopy(u.Object, "spec", "sync")
+		require.NoError(t, err)
+		require.False(t, found, "spec.sync is pruned")
+		ws, err := fromUnstructured(u)
+		require.NoError(t, err)
+		require.Equal(t, "acme", ws.Spec.Organization)
 	})
 
 	t.Run("organization is immutable", func(t *testing.T) {

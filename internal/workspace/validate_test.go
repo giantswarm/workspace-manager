@@ -12,7 +12,7 @@ import (
 func workspace(name, org string, providers ...string) *v1alpha1.Workspace {
 	ws := &v1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
-		Spec:       v1alpha1.WorkspaceSpec{Organization: org, Sync: v1alpha1.Sync{Schedule: v1alpha1.ScheduleNightly}},
+		Spec:       v1alpha1.WorkspaceSpec{Organization: org},
 	}
 	for _, p := range providers {
 		ws.Spec.Sources = append(ws.Spec.Sources, v1alpha1.Source{Provider: p, Owner: "acme", Repositories: []string{"api"}})

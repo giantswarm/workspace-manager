@@ -1,6 +1,6 @@
 // Package controller is the manager's controller: leader-elected among the
 // replicas, it watches the Workspaces of one namespace and runs each one's
-// sync cycle (the schedule, every change, every sync request): it lists the
+// sync cycle (every change, every sync request): it lists the
 // workspace's owners, claims and sizes its read-write-many volume from the
 // installation's StorageClass, starts the sync Job when something changed
 // and records the outcome in the Workspace's status, which nothing else
@@ -40,6 +40,10 @@ const DefaultResync = 10 * time.Minute
 // DefaultSessionCleanupAfter is how long a Session's directory outlives the
 // Session's last turn: 30 days.
 const DefaultSessionCleanupAfter = 30 * 24 * time.Hour
+
+// DeletionRecheck is how long after its last cycle a deleted workspace whose
+// session directories have no earlier cleanup date is looked after again.
+const DeletionRecheck = 24 * time.Hour
 
 // DefaultSessionPoll is how often kagent's Sessions are listed for the ones
 // deleted since the last sync, whose directories go at once.
@@ -281,8 +285,8 @@ func (c *Controller) Run(ctx context.Context) error {
 }
 
 // run watches the Workspaces and their sync Jobs and reconciles each
-// Workspace on every change, every resync, every Job event and when its
-// schedule comes due, until ctx ends. A reconcile that failed on the API
+// Workspace on every change, every resync, every Job event and when a
+// session directory's cleanup date comes, until ctx ends. A reconcile that failed on the API
 // server is retried with backoff.
 func (c *Controller) run(ctx context.Context) error {
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
@@ -389,7 +393,8 @@ func (c *Controller) process(ctx context.Context, queue workqueue.TypedRateLimit
 // outcome of the Job of the running one, and says how long until the next
 // one is due (zero for none). An error is the API server's: the caller
 // retries with backoff. With no cycle due, a Session deleted in kagent has
-// its directory deleted at once (sessionsDeleted). A Workspace being deleted
+// its directory deleted at once, and a directory past its cleanup date goes
+// at that date (housekeep). A Workspace being deleted
 // syncs no more; its cycles only clean up its session directories until the
 // last is gone (reconcileDeleted).
 func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (time.Duration, error) {
@@ -422,7 +427,7 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 	now := c.now()
 	trigger := c.trigger(ws, now, claim)
 	if trigger == "" {
-		return c.sessionsDeleted(ctx, ws, now, claim)
+		return c.housekeep(ctx, ws, now, claim)
 	}
 	return c.cycle(ctx, ws, trigger, claim)
 }

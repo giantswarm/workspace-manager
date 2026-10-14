@@ -60,6 +60,7 @@ spec:
             - --storage-class={{ . }}
             {{- end }}
             - --sync-cycle={{ .Values.sync.cycle }}
+            - --sync-refresh-after={{ .Values.sync.refreshAfter }}
             - --sessions-cleanup-after={{ .Values.sessions.cleanupAfter }}
             - --sessions-poll={{ .Values.sessions.poll }}
             {{- with .Values.kagent.address }}

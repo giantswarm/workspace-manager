@@ -49,6 +49,19 @@ func (w authWorkspaces) Get(_ context.Context, name string) (*v1alpha1.Workspace
 	return nil, fmt.Errorf("get workspace %q: not found", name)
 }
 
+// RequestSync records the request as the store does, by its annotation.
+func (w authWorkspaces) RequestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
+	ws, err := w.Get(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if ws.Annotations == nil {
+		ws.Annotations = map[string]string{}
+	}
+	ws.Annotations[v1alpha1.AnnotationSyncRequested] = at.UTC().Format(time.RFC3339)
+	return ws, nil
+}
+
 // authTokens are the people's sign-ins: person → instance → access token.
 type authTokens map[string]map[string]string
 
@@ -68,6 +81,7 @@ func person(subject string) *identity.Identity {
 
 type authFixture struct {
 	authorizer *authorize.Authorizer
+	workspaces authWorkspaces
 	keys       *grant.KeySource
 	tokens     authTokens
 	code       provider.Kind
@@ -109,8 +123,9 @@ func authSetup(t *testing.T) *authFixture {
 			"carol": {"github": gh.Person("acme/api", "acme/web")},
 		},
 	}
+	f.workspaces = authWorkspaces{"otter": authWorkspace("otter", authReady), "fresh": authWorkspace("fresh", unsynced), "pending": authWorkspace("pending", unbound)}
 	f.authorizer, err = authorize.New(authorize.Config{
-		Workspaces: authWorkspaces{"otter": authWorkspace("otter", authReady), "fresh": authWorkspace("fresh", unsynced), "pending": authWorkspace("pending", unbound)},
+		Workspaces: f.workspaces,
 		Core:       cs,
 		Namespace:  authNamespace,
 		Instances: []provider.Instance{
@@ -245,6 +260,64 @@ func TestTheGrantNamesTheCallerAsKagentNamesTheCreator(t *testing.T) {
 	res, err = f.authorizer.Authorize(context.Background(), &identity.Identity{Subject: "alice"}, "otter")
 	require.ErrorIs(t, err, authorize.ErrNoEmail)
 	assert.Nil(t, res)
+}
+
+// A granted check requests a sync once the last one is older than the
+// refresh threshold (an hour by default), and the grant does not wait for
+// it: the mirrors are refreshed at Session start, never on a schedule.
+func TestAGrantPastTheRefreshThresholdRequestsASync(t *testing.T) {
+	now := time.Now()
+	for name, c := range map[string]struct {
+		status    func(*v1alpha1.WorkspaceStatus)
+		requested bool
+	}{
+		"never synced": {func(s *v1alpha1.WorkspaceStatus) {}, true},
+		"synced within the hour": {func(s *v1alpha1.WorkspaceStatus) {
+			s.LastSync = lastSync(now.Add(-59*time.Minute), v1alpha1.TriggerChange)
+		}, false},
+		"synced over an hour ago": {func(s *v1alpha1.WorkspaceStatus) {
+			s.LastSync = lastSync(now.Add(-61*time.Minute), v1alpha1.TriggerRequest)
+		}, true},
+		"only cleaned up since": {func(s *v1alpha1.WorkspaceStatus) {
+			s.LastSync = lastSync(now.Add(-time.Minute), v1alpha1.TriggerCleanup)
+		}, true},
+		"a Session deleted since": {func(s *v1alpha1.WorkspaceStatus) {
+			s.LastSync = lastSync(now.Add(-time.Minute), v1alpha1.TriggerSessionDeleted)
+		}, true},
+		"a sync running":           {func(s *v1alpha1.WorkspaceStatus) { s.ActiveSync = &v1alpha1.ActiveSync{Job: "otter-sync-ab12"} }, false},
+		"an old cycle's last sync": {func(s *v1alpha1.WorkspaceStatus) { s.LastSync = lastSync(now.Add(-2*time.Hour), "schedule") }, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := authSetup(t)
+			ws := f.workspaces["otter"]
+			c.status(&ws.Status)
+			res, err := f.authorizer.Authorize(context.Background(), person("alice"), "otter")
+			require.NoError(t, err)
+			require.Equal(t, authorize.Granted, res.Outcome, res.Reason)
+			assert.NotEmpty(t, res.Grant, "the grant does not wait for the sync")
+			assert.Equal(t, c.requested, res.SyncRequested)
+			assert.Equal(t, c.requested, ws.Annotations[v1alpha1.AnnotationSyncRequested] != "")
+
+			if c.requested {
+				res, err = f.authorizer.Authorize(context.Background(), person("alice"), "otter")
+				require.NoError(t, err)
+				assert.False(t, res.SyncRequested, "a sync requested already is not requested again")
+			}
+		})
+	}
+}
+
+func TestARefusedCheckRequestsNoSync(t *testing.T) {
+	f := authSetup(t)
+	res, err := f.authorizer.Authorize(context.Background(), person("bob"), "otter")
+	require.NoError(t, err)
+	require.Equal(t, authorize.Refused, res.Outcome)
+	assert.False(t, res.SyncRequested)
+	assert.Empty(t, f.workspaces["otter"].Annotations[v1alpha1.AnnotationSyncRequested])
+}
+
+func lastSync(at time.Time, trigger v1alpha1.SyncTrigger) *v1alpha1.LastSync {
+	return &v1alpha1.LastSync{Time: metav1.NewTime(at), Result: v1alpha1.SyncSucceeded, Trigger: trigger}
 }
 
 func TestAPersonMissingARepositoryIsRefusedWithItsName(t *testing.T) {

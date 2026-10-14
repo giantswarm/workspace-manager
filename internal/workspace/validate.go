@@ -15,7 +15,7 @@ var ErrInvalid = errors.New("invalid workspace")
 
 // Validate checks what the CRD's schema cannot: every source names a provider
 // instance the installation configures. The schema's own rules (a selector per
-// source, the schedule, non-negative sizing) are the API server's.
+// source, non-negative sizing) are the API server's.
 func Validate(ws *v1alpha1.Workspace, providers []string) error {
 	var errs []error
 	for i, s := range ws.Spec.Sources {

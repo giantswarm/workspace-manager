@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,54 +65,4 @@ func Volume(ctx context.Context, core kubernetes.Interface, namespace string, ws
 	}
 	ref.Driver, ref.Handle = pv.Spec.CSI.Driver, pv.Spec.CSI.VolumeHandle
 	return ref, "", nil
-}
-
-// SyncHour is the hour of the day, UTC, a nightly or weekly sync runs at.
-const SyncHour = 3
-
-// WeeklySyncDay is the day a weekly sync runs on.
-const WeeklySyncDay = time.Sunday
-
-var weekdays = map[v1alpha1.Weekday]time.Weekday{
-	"sunday": time.Sunday, "monday": time.Monday, "tuesday": time.Tuesday, "wednesday": time.Wednesday,
-	"thursday": time.Thursday, "friday": time.Friday, "saturday": time.Saturday,
-}
-
-// NextSync is the first scheduled sync of s after after: nightly at SyncHour,
-// weekly on WeeklySyncDay at SyncHour, custom on its weekdays at its hour,
-// all UTC. A workspace also syncs after every change and on request, which no
-// schedule says. Zero for a custom schedule without weekdays or hour.
-func NextSync(s v1alpha1.Sync, after time.Time) time.Time {
-	hour := SyncHour
-	days := map[time.Weekday]bool{}
-	switch s.Schedule {
-	case v1alpha1.ScheduleWeekly:
-		days[WeeklySyncDay] = true
-	case v1alpha1.ScheduleCustom:
-		if s.Hour == nil {
-			return time.Time{}
-		}
-		hour = int(*s.Hour)
-		for _, d := range s.Weekdays {
-			if wd, ok := weekdays[d]; ok {
-				days[wd] = true
-			}
-		}
-		if len(days) == 0 {
-			return time.Time{}
-		}
-	default:
-		for _, wd := range weekdays {
-			days[wd] = true
-		}
-	}
-	after = after.UTC()
-	day := time.Date(after.Year(), after.Month(), after.Day(), hour, 0, 0, 0, time.UTC)
-	for range 8 {
-		if day.After(after) && days[day.Weekday()] {
-			return day
-		}
-		day = day.AddDate(0, 0, 1)
-	}
-	return time.Time{}
 }

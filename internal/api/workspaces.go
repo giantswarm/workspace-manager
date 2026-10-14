@@ -32,7 +32,6 @@ type CreateInput struct {
 	Name         string            `json:"name" jsonschema:"The workspace's name: lower-case letters, digits and '-', unique in the installation"`
 	Organization string            `json:"organization" jsonschema:"The Organization the workspace belongs to, for good; you must be a member"`
 	Sources      []v1alpha1.Source `json:"sources" jsonschema:"One owner on one provider instance each, with at least one selector: repositories by name, filters.languages or filters.topics"`
-	Sync         *v1alpha1.Sync    `json:"sync,omitempty" jsonschema:"When the mirrors are fetched: nightly (the default), weekly, or custom weekdays at an hour (UTC)"`
 	Sizing       *Sizing           `json:"sizing,omitempty" jsonschema:"Overrides of the volume's computed size where its StorageClass provisions one"`
 }
 
@@ -40,7 +39,6 @@ type CreateInput struct {
 type UpdateInput struct {
 	Name    string            `json:"name" jsonschema:"The workspace's name"`
 	Sources []v1alpha1.Source `json:"sources" jsonschema:"The workspace's sources, replacing the current ones"`
-	Sync    *v1alpha1.Sync    `json:"sync,omitempty" jsonschema:"Replaces the sync cycle when given; kept otherwise"`
 	Sizing  *Sizing           `json:"sizing,omitempty" jsonschema:"Replaces the sizing overrides when given ({} clears them); kept otherwise"`
 	// ResourceVersion, when given, refuses the update if the workspace
 	// changed since it was read.
@@ -52,19 +50,17 @@ type Workspace struct {
 	Name            string            `json:"name"`
 	Organization    string            `json:"organization"`
 	Sources         []v1alpha1.Source `json:"sources"`
-	Sync            v1alpha1.Sync     `json:"sync"`
 	Sizing          *Sizing           `json:"sizing,omitempty"`
 	ResourceVersion string            `json:"resourceVersion"`
 	CreatedAt       time.Time         `json:"createdAt"`
 	// Deleting is true once the workspace is being deleted: no new Session
 	// starts on it.
 	Deleting bool `json:"deleting,omitempty"`
-	// LastSync is the last sync cycle's time and result; NextSync when the
-	// schedule starts the next one, the time the controller's timer is set
-	// for; ActiveSync the sync Job running now; SyncRequest a sync_workspace
-	// request the controller has not taken up yet.
+	// LastSync is the last sync cycle's time and result; ActiveSync the sync
+	// Job running now; SyncRequest a sync request (sync_workspace, or
+	// authorize_workspace past the refresh threshold) the controller has not
+	// taken up yet.
 	LastSync    *LastSync    `json:"lastSync,omitempty"`
-	NextSync    time.Time    `json:"nextSync,omitzero"`
 	ActiveSync  *ActiveSync  `json:"activeSync,omitempty"`
 	SyncRequest *SyncRequest `json:"syncRequest,omitempty"`
 	// Repositories is the number of repositories the last sync resolved.
@@ -92,7 +88,8 @@ type Workspace struct {
 type LastSync struct {
 	Time   time.Time `json:"time"`
 	Result string    `json:"result"`
-	// Trigger is what started the cycle: schedule, change, request or retry.
+	// Trigger is what started the cycle: change, request, retry, cleanup,
+	// deletion or sessionDeleted.
 	Trigger string `json:"trigger,omitempty"`
 	// Job is the sync Job the cycle ran; empty for a cycle that ran none.
 	Job     string `json:"job,omitempty"`
@@ -261,7 +258,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("get_workspace",
-		mcp.WithDescription("Get a workspace of your Organization: its selection, sync cycle, last and next sync, the last sync's repositories with their measured mirror sizes, what its volume stores, and the Sessions with a directory on it, with sizes and cleanup dates."),
+		mcp.WithDescription("Get a workspace of your Organization: its selection, its last and running sync, the last sync's repositories with their measured mirror sizes, what its volume stores, and the Sessions with a directory on it, with sizes and cleanup dates."),
 		nameArg,
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
@@ -284,7 +281,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("create_workspace",
-		mcp.WithDescription("Create a workspace of an Organization you are a member of. It syncs after the save and then on its cycle. An invalid spec is refused with the reason and nothing is written."),
+		mcp.WithDescription("Create a workspace of an Organization you are a member of. It syncs after the save, and again when a Session starts on it and its last sync is older than the refresh threshold. An invalid spec is refused with the reason and nothing is written."),
 		mcp.WithInputSchema[CreateInput](),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithOpenWorldHintAnnotation(false),
@@ -296,10 +293,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		}
 		ws := &v1alpha1.Workspace{
 			ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: t.namespace},
-			Spec:       v1alpha1.WorkspaceSpec{Organization: in.Organization, Sources: in.Sources, Sync: v1alpha1.Sync{Schedule: v1alpha1.ScheduleNightly}},
-		}
-		if in.Sync != nil {
-			ws.Spec.Sync = *in.Sync
+			Spec:       v1alpha1.WorkspaceSpec{Organization: in.Organization, Sources: in.Sources},
 		}
 		var err error
 		if ws.Spec.Sizing, err = in.Sizing.spec(); err != nil {
@@ -318,7 +312,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("update_workspace",
-		mcp.WithDescription("Change a workspace of your Organization: its sources, and its sync cycle and sizing when given. Its Organization never changes. It syncs after the save."),
+		mcp.WithDescription("Change a workspace of your Organization: its sources, and its sizing when given. Its Organization never changes. It syncs after the save."),
 		mcp.WithInputSchema[UpdateInput](),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -335,9 +329,6 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		}
 		next := current.DeepCopy()
 		next.Spec.Sources = in.Sources
-		if in.Sync != nil {
-			next.Spec.Sync = *in.Sync
-		}
 		if in.Sizing != nil {
 			if next.Spec.Sizing, err = in.Sizing.spec(); err != nil {
 				return toolError("update workspace", err), nil
@@ -359,7 +350,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("delete_workspace",
-		mcp.WithDescription("Delete a workspace of your Organization: its sync stops and no new Session starts on it. Returns the Sessions that still have a directory on its volume. On a workspace already being deleted, it runs the deletion cycle now: session directories found gone let the workspace and its volume go without waiting for the next scheduled cycle."),
+		mcp.WithDescription("Delete a workspace of your Organization: its sync stops and no new Session starts on it. Returns the Sessions that still have a directory on its volume. On a workspace already being deleted, it runs the deletion cycle now: session directories found gone let the workspace and its volume go without waiting for the next cleanup date."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(false),
@@ -392,7 +383,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("sync_workspace",
-		mcp.WithDescription("Sync a workspace of your Organization now, ahead of its cycle: the controller lists its sources, fetches what changed since the last sync and grows its volume where its StorageClass provisions a size; nothing changed costs no fetch. A request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome."),
+		mcp.WithDescription("Sync a workspace of your Organization now: the controller lists its sources, fetches what changed since the last sync and grows its volume where its StorageClass provisions a size; nothing changed costs no fetch. A request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -429,7 +420,6 @@ func (t *workspaceTools) view(ctx context.Context, ws *v1alpha1.Workspace) (Work
 		Name:            ws.Name,
 		Organization:    ws.Spec.Organization,
 		Sources:         ws.Spec.Sources,
-		Sync:            ws.Spec.Sync,
 		Sizing:          sizingOf(ws.Spec.Sizing),
 		ResourceVersion: ws.ResourceVersion,
 		CreatedAt:       ws.CreationTimestamp.UTC(),
@@ -446,15 +436,6 @@ func (t *workspaceTools) view(ctx context.Context, ws *v1alpha1.Workspace) (Work
 	if s := ws.Status.StoredSize; s != nil {
 		stored := s.Value()
 		w.StoredBytes = &stored
-	}
-	// The controller's own timer, set from the last cycle's end; before the
-	// first cycle, the schedule's next time from now.
-	switch {
-	case w.Deleting:
-	case ws.Status.NextSync != nil:
-		w.NextSync = ws.Status.NextSync.UTC()
-	default:
-		w.NextSync = workspace.NextSync(ws.Spec.Sync, t.now())
 	}
 	if ls := ws.Status.LastSync; ls != nil {
 		w.LastSync = &LastSync{Time: ls.Time.UTC(), Result: string(ls.Result), Trigger: string(ls.Trigger), Job: ls.Job, Message: ls.Message}

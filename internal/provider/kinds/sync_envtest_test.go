@@ -62,12 +62,11 @@ func (c *stoppedClock) Set(t time.Time) {
 
 // TestSyncCycleEnvtest runs the controller against a real API server serving
 // the chart's CRD, with the GitHub stub as the provider: a workspace syncs
-// after its creation, on its schedule and on sync_workspace; the no-op check
-// costs no Job when nothing changed; a push makes the next cycle's Job fetch
-// that repository alone; a repository gaining the topic joins at the next
-// cycle; the volume is claimed and grown per the sizing rule on a class that
-// provisions a size; and nextSync is the schedule's next time after the last
-// cycle, the one the controller's timer is set for.
+// after its creation and on a sync request, never on a schedule; the no-op
+// check costs no Job when nothing changed; a push makes the next cycle's Job
+// fetch that repository alone; a repository gaining the topic joins at the
+// next cycle; and the volume is claimed and grown per the sizing rule on a
+// class that provisions a size.
 func TestSyncCycleEnvtest(t *testing.T) {
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "helm", "workspace-manager", "files", "crds")},
@@ -202,7 +201,7 @@ func TestSyncCycleEnvtest(t *testing.T) {
 		created := ok[api.Workspace](t, f.call(t, f.member, "create_workspace", map[string]any{"name": "sync", "organization": "acme",
 			"sources": []any{map[string]any{"provider": "github", "owner": "acme", "repositories": []string{"repo-001", "repo-002"},
 				"filters": map[string]any{"topics": map[string]any{"names": []string{"sync-envtest"}}}}}}))
-		assert.Equal(t, workspace.NextSync(created.Sync, time.Now()), created.NextSync, "before the first cycle, the schedule's next time from now")
+		assert.Equal(t, "sync", created.Name)
 
 		ws := running(v1alpha1.TriggerChange)
 		assert.Len(t, jobs(), 1)
@@ -223,7 +222,7 @@ func TestSyncCycleEnvtest(t *testing.T) {
 		assert.Equal(t, "5Gi", v.VolumeSize)
 	})
 
-	t.Run("the measured mirrors grow the volume and set the next sync", func(t *testing.T) {
+	t.Run("the measured mirrors grow the volume", func(t *testing.T) {
 		ws := get()
 		got := complete(ws, clock.Now(), mirrored("repo-001", 2<<30, pushed.Add(time.Minute)), mirrored("repo-002", 3<<30, pushed.Add(2*time.Minute)))
 		assert.Equal(t, v1alpha1.SyncSucceeded, got.Status.LastSync.Result)
@@ -234,27 +233,23 @@ func TestSyncCycleEnvtest(t *testing.T) {
 		assert.Equal(t, "9Gi", got.Status.VolumeSize.String())
 		assert.Equal(t, "9Gi", claim().Spec.Resources.Requests.Storage().String())
 		assert.Equal(t, "Synced", meta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionSynced).Reason)
-		// The timer and the view read one value: the schedule after the cycle.
-		next := workspace.NextSync(got.Spec.Sync, got.Status.LastSync.Time.Time)
-		assert.Equal(t, time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC), next)
-		assert.Equal(t, next, got.Status.NextSync.UTC())
-		assert.Equal(t, next, view().NextSync)
 	})
 
-	t.Run("the schedule's cycle with nothing changed starts no Job", func(t *testing.T) {
+	t.Run("a day passes without a cycle; a request with nothing changed starts no Job", func(t *testing.T) {
 		before := get()
-		clock.Set(before.Status.NextSync.Time)
+		clock.Set(before.Status.LastSync.Time.Add(24 * time.Hour))
+		f.call(t, f.member, "get_workspace", map[string]any{"workspace": "sync"})
+		assert.Equal(t, before.Status.LastSync.Time.UTC(), get().Status.LastSync.Time.UTC(), "nothing syncs on a schedule")
+		ok[api.SyncResult](t, f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "sync"}))
 		var got *v1alpha1.Workspace
 		require.Eventually(t, func() bool {
 			got = get()
-			return got.Status.LastSync != nil && got.Status.LastSync.Trigger == v1alpha1.TriggerSchedule
-		}, 30*time.Second, 200*time.Millisecond, "the schedule's cycle runs")
+			return got.Status.LastSync != nil && got.Status.LastSync.Trigger == v1alpha1.TriggerRequest
+		}, 30*time.Second, 200*time.Millisecond, "the requested cycle runs")
 		assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)
 		assert.Empty(t, got.Status.LastSync.Job)
 		assert.Equal(t, clock.Now().UTC(), got.Status.LastSync.Time.UTC())
 		assert.Len(t, jobs(), 1, "no second Job")
-		assert.Equal(t, time.Date(2026, 10, 16, 3, 0, 0, 0, time.UTC), got.Status.NextSync.UTC(), "the night after")
-		assert.Equal(t, got.Status.NextSync.UTC(), view().NextSync)
 		assert.Equal(t, v1alpha1.ReasonNoChange, meta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionSynced).Reason)
 	})
 
@@ -277,16 +272,14 @@ func TestSyncCycleEnvtest(t *testing.T) {
 		assert.Equal(t, v1alpha1.TriggerRequest, got.Status.LastSync.Trigger)
 		assert.Equal(t, v1alpha1.SyncSucceeded, got.Status.LastSync.Result)
 		assert.Equal(t, "9Gi", got.Status.VolumeSize.String(), "the same need: nothing to grow")
-		assert.Equal(t, workspace.NextSync(got.Spec.Sync, got.Status.LastSync.Time.Time), got.Status.NextSync.UTC())
 	})
 
 	t.Run("a repository gaining the topic joins at the next cycle, the volume grown ahead", func(t *testing.T) {
 		// A gibibyte reported: 1.5Gi estimated until it is mirrored.
 		f.gh.Put(provider.Item{Owner: "acme", Name: "repo-003", Language: "Go", SizeKiB: 1 << 20, LastChange: pushed, Topics: []string{"sync-envtest"}})
-		before := get()
-		clock.Set(before.Status.NextSync.Time)
+		ok[api.SyncResult](t, f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "sync"}))
 
-		ws := running(v1alpha1.TriggerSchedule)
+		ws := running(v1alpha1.TriggerRequest)
 		assert.Len(t, jobs(), 3)
 		sel := selection()
 		assert.Len(t, sel, 3)

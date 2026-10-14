@@ -15,14 +15,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/kagent"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
-	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
 const (
@@ -156,7 +154,6 @@ func TestADeletedSessionsDirectoryGoesAtOnce(t *testing.T) {
 	require.NotNil(t, ws.Status.ActiveSync)
 	assert.Equal(t, v1alpha1.TriggerSessionDeleted, ws.Status.ActiveSync.Trigger)
 	assert.True(t, ws.Status.ActiveSync.CleanupOnly)
-	assert.Nil(t, ws.Status.NextSync, "no schedule while a Job runs")
 	require.Len(t, f.jobs(), jobs+1, "one Job for every deleted Session")
 	sel := f.selection(ws)
 	assert.True(t, sel.Stopped, "the Job fetches no mirror")
@@ -184,15 +181,65 @@ func TestADeletedSessionsDirectoryGoesAtOnce(t *testing.T) {
 	cond := syncedCondition(t, ws)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Contains(t, cond.Message, "Sessions deleted in kagent")
-	require.NotNil(t, ws.Status.NextSync)
-	assert.Equal(t, time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC), ws.Status.NextSync.UTC(), "the schedule stands")
 
-	// Only an unknown directory is left: no look, the schedule is next.
+	// Only an unknown directory without a cleanup date is left: no look,
+	// nothing due.
 	listed = s.count()
 	f.advance(DefaultSessionPoll)
-	assert.Equal(t, ws.Status.NextSync.Sub(f.clock()), f.reconcile("platform"))
+	assert.Zero(t, f.reconcile("platform"))
 	assert.Equal(t, listed, s.count())
 	assert.Len(t, f.jobs(), jobs+1)
+}
+
+// TestADirectoryGoesAtItsCleanupDate: with no sync due, a live workspace's
+// session directory goes at its own cleanup date, in a cleanup-only Job that
+// lists no provider and fetches no mirror; a directory the Job leaves behind
+// is not looked after again before the resync.
+func TestADirectoryGoesAtItsCleanupDate(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.withSessions("platform")
+	f.requestSync("platform")
+	f.reconcile("platform")
+	ws := f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	due := f.clock().Add(2 * time.Hour)
+	u := directory("u", false)
+	u.CleanupAfter = due
+	f.finishCycle(ws, f.clock(), u)
+	ws = f.workspace("platform")
+	require.Len(t, ws.Status.Sessions, 1)
+	require.NotNil(t, ws.Status.Sessions[0].CleanupAfter)
+	listings, jobs := f.listings.count(), len(f.jobs())
+
+	assert.Equal(t, 2*time.Hour, f.reconcile("platform"), "the controller wakes at the cleanup date")
+	assert.Len(t, f.jobs(), jobs)
+
+	f.advance(2 * time.Hour)
+	assert.Zero(t, f.reconcile("platform"), "a running Job wakes the controller by itself")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	assert.Equal(t, v1alpha1.TriggerCleanup, ws.Status.ActiveSync.Trigger)
+	assert.True(t, ws.Status.ActiveSync.CleanupOnly)
+	require.Len(t, f.jobs(), jobs+1)
+	sel := f.selection(ws)
+	assert.True(t, sel.Stopped, "the Job fetches no mirror")
+	assert.Empty(t, sel.Repositories)
+	require.NotNil(t, sel.Cleanup, "kagent's Sessions are listed for the cleanup")
+	assert.Equal(t, listings, f.listings.count(), "no provider is listed")
+
+	// The Job leaves u behind: no second Job before the resync.
+	f.finishCycle(ws, f.clock(), u)
+	ws = f.workspace("platform")
+	assert.Equal(t, v1alpha1.TriggerCleanup, ws.Status.LastSync.Trigger)
+	assert.Equal(t, v1alpha1.SyncNoChange, ws.Status.LastSync.Result)
+	assert.Contains(t, syncedCondition(t, ws).Message, "past their cleanup date")
+	assert.Equal(t, time.Hour, f.reconcile("platform"))
+	assert.Len(t, f.jobs(), jobs+1)
+
+	f.advance(time.Hour)
+	f.reconcile("platform")
+	require.Len(t, f.jobs(), jobs+2, "again at the resync")
+	assert.Equal(t, v1alpha1.TriggerCleanup, f.workspace("platform").Status.ActiveSync.Trigger)
 }
 
 // TestADeletedSessionWaitsWhileKagentFails: a failed listing deletes
@@ -254,7 +301,7 @@ func TestADeletedSessionWaitsForTheRetry(t *testing.T) {
 }
 
 // TestARequestRunsADeletingWorkspacesCycleNow: a deleting workspace whose
-// last deletion cycle kept a directory waits for its next scheduled cycle;
+// last deletion cycle kept a directory waits for the recheck;
 // a request (sync_workspace, or delete_workspace again) runs the cycle at
 // once. A directory still there is kept as by any cycle; once one finds
 // none left, the claim and the finalizer go.
@@ -274,14 +321,10 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	f.finishCycle(ws, f.clock(), directory("u", false))
 	jobs := len(f.jobs())
 	wait := f.reconcile("platform")
-	assert.Equal(t, time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC).Sub(f.clock()), wait, "the next deletion cycle is the schedule's")
+	assert.Equal(t, DeletionRecheck, wait, "the next deletion cycle is the recheck's")
 	assert.Len(t, f.jobs(), jobs)
 
-	request := func() {
-		patch := `{"metadata":{"annotations":{"` + v1alpha1.AnnotationSyncRequested + `":"` + f.clock().Format(time.RFC3339) + `","` + v1alpha1.AnnotationSyncRequestedBy + `":"alice@acme.test"}}}`
-		_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Patch(context.Background(), "platform", types.MergePatchType, []byte(patch), metav1.PatchOptions{})
-		require.NoError(t, err)
-	}
+	request := func() { f.requestSync("platform") }
 
 	// A request while u is still there: the cycle runs now, with the
 	// cleanup's window for a listed Session's directory; u kept again, the
@@ -323,7 +366,7 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 
 // TestADirectoryLeftWithAnErrorIsReportedAndWaits: a directory the cycle
 // could neither measure nor delete is named on SessionsCleanedUp, and a
-// deleted workspace's next cleanup waits for its schedule instead of
+// deleted workspace's next cleanup waits for the recheck instead of
 // retrying it at once.
 func TestADirectoryLeftWithAnErrorIsReportedAndWaits(t *testing.T) {
 	ws := workspaceNamed("platform")
@@ -343,7 +386,7 @@ func TestADirectoryLeftWithAnErrorIsReportedAndWaits(t *testing.T) {
 	c := &Controller{resync: time.Hour}
 	ws.Status.Sessions = sessions
 	last := due.Add(time.Minute)
-	assert.Equal(t, workspace.NextSync(ws.Spec.Sync, last), c.nextDeletionCycle(ws, last), "the stuck directory's past date does not wake the cycle")
+	assert.Equal(t, last.Add(DeletionRecheck), c.nextDeletionCycle(ws, last), "the stuck directory's past date does not wake the cycle")
 	sessions[1].Error = ""
 	assert.Equal(t, due.Time, c.nextDeletionCycle(ws, last))
 }

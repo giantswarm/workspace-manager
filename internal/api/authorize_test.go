@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,10 @@ import (
 type oneWorkspace struct{ ws *v1alpha1.Workspace }
 
 func (o oneWorkspace) Get(context.Context, string) (*v1alpha1.Workspace, error) { return o.ws, nil }
+
+func (o oneWorkspace) RequestSync(context.Context, string, time.Time) (*v1alpha1.Workspace, error) {
+	return o.ws, nil
+}
 
 type noSignIns struct{}
 
