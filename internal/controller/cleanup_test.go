@@ -364,6 +364,27 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	assert.NotContains(t, f.workspace("platform").Finalizers, v1alpha1.FinalizerVolume, "the finalizer is removed")
 }
 
+// TestADeletingWorkspaceStartsOneDeletionJob: where the status names no Job
+// (a CRD that prunes status.activeSync), a deleting workspace's every event
+// would start one more deletion Job, since no cycle's end is ever recorded;
+// one runs, and the next waits for its end.
+func TestADeletingWorkspaceStartsOneDeletionJob(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.withSessions("platform")
+	jobs := len(f.jobs())
+	f.pruneActiveSync()
+	ws := f.workspace("platform")
+	ws.DeletionTimestamp = &metav1.Time{Time: f.clock()}
+	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Update(context.Background(), toUnstructured(t, ws), metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	for range 3 {
+		f.reconcile("platform")
+	}
+	assert.Equal(t, jobs+1, len(f.jobs()), "one deletion Job")
+	assert.Equal(t, 1, len(f.running()))
+}
+
 // TestADirectoryLeftWithAnErrorIsReportedAndWaits: a directory the cycle
 // could neither measure nor delete is named on SessionsCleanedUp, and a
 // deleted workspace's next cleanup waits for the recheck instead of
