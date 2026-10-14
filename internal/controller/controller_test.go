@@ -906,6 +906,114 @@ func TestStatusUpdateRetriesOnConflict(t *testing.T) {
 	require.NotNil(t, f.workspace("platform").Status.ActiveSync)
 }
 
+// pruneActiveSync makes the fake API server drop status.activeSync from
+// every status write, as a Workspace CRD older than the manager does.
+func (f *fixture) pruneActiveSync() {
+	f.dyn.PrependReactor("update", "workspaces", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if u, ok := a.(k8stesting.UpdateAction); ok && u.GetSubresource() == "status" {
+			if obj, ok := u.GetObject().(*unstructured.Unstructured); ok {
+				unstructured.RemoveNestedField(obj.Object, "status", "activeSync")
+			}
+		}
+		return false, nil, nil
+	})
+}
+
+// endJob ends a sync Job as the Job controller would.
+func (f *fixture) endJob(job batchv1.Job, at time.Time) {
+	f.t.Helper()
+	job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(at)})
+	_, err := f.core.BatchV1().Jobs(testNamespace).UpdateStatus(context.Background(), &job, metav1.UpdateOptions{})
+	require.NoError(f.t, err)
+}
+
+// running are the sync Jobs that have not ended.
+func (f *fixture) running() []batchv1.Job {
+	f.t.Helper()
+	var out []batchv1.Job
+	for _, job := range f.jobs() {
+		if Finished(&job) == nil {
+			out = append(out, job)
+		}
+	}
+	return out
+}
+
+// TestTwoChangesCloseTogetherStartOneSyncJob: two change triggers 43 ms
+// apart start one sync Job, although the status names none (a CRD that
+// prunes status.activeSync); the Job's end starts one more cycle, which
+// serves the second change.
+func TestTwoChangesCloseTogetherStartOneSyncJob(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.pruneActiveSync()
+
+	f.reconcile("platform")
+	require.Equal(t, 1, len(f.jobs()))
+	require.Nil(t, f.workspace("platform").Status.ActiveSync, "the status names no Job")
+
+	f.advance(43 * time.Millisecond)
+	f.updateSpec("platform", func(ws *v1alpha1.Workspace) { ws.Spec.Sources[0].Repositories = []string{"api"} })
+	assert.Zero(t, f.reconcile("platform"), "the Job's end wakes the controller")
+	require.Equal(t, 1, len(f.jobs()), "no second Job beside the running one")
+	assert.Equal(t, 1, f.listings.count(), "no cycle while the Job runs")
+
+	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
+	ws := f.workspace("platform")
+	f.writeManifest(ws, f.clock(), entry(api, 2<<20), entry(web, 3<<20))
+	f.endJob(f.jobs()[0], f.clock())
+	f.reconcile("platform")
+	assert.Equal(t, 2, len(f.jobs()), "the next cycle serves the second change: web leaves")
+	assert.Equal(t, 1, len(f.running()))
+	f.reconcile("platform")
+	assert.Equal(t, 2, len(f.jobs()), "one more cycle at most")
+}
+
+// TestALostStatusWriteStartsNoSecondJob: a cycle whose status write failed
+// after its Job started is tried again without a second Job on the volume.
+func TestALostStatusWriteStartsNoSecondJob(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	refused := false
+	f.dyn.PrependReactor("update", "workspaces", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if u, ok := a.(k8stesting.UpdateAction); ok && u.GetSubresource() == "status" && !refused {
+			refused = true
+			return true, nil, apierrors.NewInternalError(errors.New("etcd timeout"))
+		}
+		return false, nil, nil
+	})
+	_, err := f.c.Reconcile(context.Background(), f.workspace("platform"))
+	require.Error(t, err)
+	require.Equal(t, 1, len(f.jobs()))
+
+	f.reconcile("platform")
+	assert.Equal(t, 1, len(f.jobs()), "the retry waits for the Job its status write would have named")
+}
+
+// TestRunStartsOneSyncJobPerBurst: the loop, woken by two changes 43 ms
+// apart and by its own status writes, keeps one sync Job running for the
+// Workspace, even where the status names none.
+func TestRunStartsOneSyncJobPerBurst(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.pruneActiveSync()
+	done := make(chan error, 1)
+	go func() { done <- f.c.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return len(f.jobs()) > 0 }, 10*time.Second, 5*time.Millisecond)
+	f.updateSpec("platform", func(ws *v1alpha1.Workspace) { ws.Spec.Sources[0].Repositories = []string{"api"} })
+	time.Sleep(43 * time.Millisecond)
+	f.updateSpec("platform", func(ws *v1alpha1.Workspace) { ws.Spec.Sources[0].Repositories = []string{"web"} })
+	assert.Never(t, func() bool { return len(f.jobs()) > 1 }, time.Second, 10*time.Millisecond, "one sync Job per Workspace")
+
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not stop with its context")
+	}
+}
+
 // TestRunSyncsEveryWorkspace: the loop runs the cycle of a Workspace that
 // exists at start and of one created later, is woken by its Job's end, and
 // stops with its context.

@@ -264,6 +264,9 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 			return 0, err
 		}
 	}
+	if running, err := c.syncRunning(ctx, ws); err != nil || running {
+		return 0, err
+	}
 	claim, err := c.volumes.Get(ctx, ws)
 	if err != nil {
 		return 0, err

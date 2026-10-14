@@ -391,7 +391,8 @@ func (c *Controller) process(ctx context.Context, queue workqueue.TypedRateLimit
 
 // Reconcile runs the Workspace's sync cycle when one is due, or records the
 // outcome of the Job of the running one, and says how long until the next
-// one is due (zero for none). An error is the API server's: the caller
+// one is due (zero for none). No cycle starts while a sync Job of the
+// Workspace runs, named in the status or not. An error is the API server's: the caller
 // retries with backoff. With no cycle due, a Session deleted in kagent has
 // its directory deleted at once, and a directory past its cleanup date goes
 // at that date (housekeep). A Workspace being deleted
@@ -415,6 +416,9 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 			return 0, err
 		}
 	}
+	if running, err := c.syncRunning(ctx, ws); err != nil || running {
+		return 0, err
+	}
 	if ws.Status.StoredSize == nil && ws.Status.Manifest != "" {
 		if err := c.recordStored(ctx, ws); err != nil {
 			return 0, err
@@ -430,6 +434,20 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 		return c.housekeep(ctx, ws, now, claim)
 	}
 	return c.cycle(ctx, ws, trigger, claim)
+}
+
+// syncRunning reports whether a sync Job of the Workspace runs that its
+// status does not name: no cycle starts beside it on the same volume, and
+// its end wakes the Workspace for the next one, which serves every trigger
+// that came meanwhile.
+func (c *Controller) syncRunning(ctx context.Context, ws *v1alpha1.Workspace) (bool, error) {
+	job, err := c.jobs.Running(ctx, ws)
+	if err != nil || job == nil {
+		return false, err
+	}
+	c.log.Warn("sync job runs that the status does not name: the next cycle waits for its end", "workspace", ws.Name, "job", job.Name,
+		"hint", "a status write lost after the Job started, or a Workspace CRD older than the manager that prunes status.activeSync")
+	return true, nil
 }
 
 // get reads the Workspace anew.

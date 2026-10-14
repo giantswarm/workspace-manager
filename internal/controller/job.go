@@ -15,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -225,6 +226,25 @@ func (j Jobs) Get(ctx context.Context, ws *v1alpha1.Workspace, name string) (*ba
 		return nil, fmt.Errorf("get the sync job %s: %w", name, err)
 	}
 	return job, nil
+}
+
+// Running is a sync Job of the Workspace that has not ended, nil for none,
+// read live: the Workspace's label on its Jobs says whether a sync runs on
+// its volume even where the status names none (a status write lost after the
+// Job started, or a Workspace CRD older than the manager, which prunes
+// status.activeSync).
+func (j Jobs) Running(ctx context.Context, ws *v1alpha1.Workspace) (*batchv1.Job, error) {
+	selector := labels.SelectorFromSet(labels.Set{LabelWorkspace: ws.Name}).String()
+	list, err := j.Client.BatchV1().Jobs(ws.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list the sync jobs of workspace %s: %w", ws.Name, err)
+	}
+	for i := range list.Items {
+		if Finished(&list.Items[i]) == nil {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // Finished is the condition a Job ended with, Complete or Failed; nil while
