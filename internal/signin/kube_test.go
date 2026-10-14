@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -182,6 +183,39 @@ func TestAccessTokenErrorsCarryNoSecret(t *testing.T) {
 	all := logs.String() + strings.Join(errs, "\n")
 	assertNoSecret(t, all, append(bytesOf("access-0", "refresh-0", "access-x", "access-5", "refresh-5", "access-7", "refresh-7", "client-secret"), testKey)...)
 	assertNoSecret(t, strings.Join(errs, "\n"), []byte(testPerson))
+}
+
+// TestSignInSurvivesARestart is a roll between connect and authorize: the pod
+// that stored the sign-in is gone, and its replacement starts with nothing
+// in memory but the keys Secret and the API server.
+func TestSignInSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	client := fake.NewClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "signin-keys", Namespace: testNamespace},
+		Data:       map[string][]byte{"k1": testKey},
+	})
+	ts := newTokenServer(t, 0)
+	start := func(identity string) *KubeStore {
+		keys, err := LoadKeyring(ctx, client, testNamespace, "signin-keys", "k1")
+		require.NoError(t, err)
+		s, err := NewKubeStore(Options{Client: client, Namespace: testNamespace, Keyring: keys, OAuth2: ts.configs(), Identity: identity})
+		require.NoError(t, err)
+		return s
+	}
+
+	before := start("workspace-manager-old")
+	require.NoError(t, before.Put(ctx, testPerson, "github", &oauth2.Token{AccessToken: "access-0", RefreshToken: "refresh-0", Expiry: time.Now().Add(time.Hour)}))
+	require.NoError(t, before.Put(ctx, "someone-else", "github", expired("5")))
+
+	after := start("workspace-manager-new")
+	at, err := after.AccessToken(ctx, testPerson, "github")
+	require.NoError(t, err, "the replacement pod reads the sign-in its predecessor stored")
+	require.Equal(t, "access-0", at)
+	require.Zero(t, ts.total(), "a valid token is used as is, no new sign-in or refresh")
+
+	at, err = after.AccessToken(ctx, "someone-else", "github")
+	require.NoError(t, err, "an expired sign-in stored before the roll refreshes after it")
+	require.Equal(t, "access-6", at)
 }
 
 func TestStoreRefusesBadAddresses(t *testing.T) {
