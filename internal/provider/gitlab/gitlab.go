@@ -227,14 +227,25 @@ func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) 
 	})
 }
 
-// Readable implements provider.Kind with the person's own token: one listing
-// of the owner's projects as the person sees them, which GitLab filters by
+// Readable implements provider.Kind with the person's own token. Up to
+// perPage names are each asked for on their own (`/projects/<path>`),
+// concurrently, so the check costs what the workspace selects, not what the
+// owner holds. More names take one listing of the owner's projects as the
+// person sees them, its pages fetched concurrently, which GitLab filters by
 // what they can read; an owner the person cannot see at all (GitLab's 404)
-// holds nothing they read. Readable reports no language; a named project's
-// head is read with the person's token unless known at its last activity.
+// holds nothing they read. A project GitLab answers 404 or 403 for is one the
+// person cannot read. Readable reports no language; a named project's head is
+// read with the person's token unless known at its last activity.
 func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]provider.Item, error) {
 	if err := checkOwner(owner); err != nil {
 		return nil, err
+	}
+	if len(names) <= perPage {
+		named, err := k.readEach(ctx, cred, owner, names)
+		if err != nil {
+			return nil, err
+		}
+		return k.items(ctx, cred, owner, named, false)
 	}
 	projects, err := k.listAs(ctx, cred, owner, false)
 	var se *statusError
@@ -257,6 +268,46 @@ func (k *Kind) Readable(ctx context.Context, cred oauth2.TokenSource, owner stri
 	return k.items(ctx, cred, owner, named, false)
 }
 
+// readEach asks for each of owner's projects named in names on its own,
+// concurrently: those the person reads, in the order of names. A project
+// with nothing to mirror, or found elsewhere than under its name (GitLab
+// follows a renamed project's old path), is one the listing would not have
+// named either.
+func (k *Kind) readEach(ctx context.Context, cred oauth2.TokenSource, owner string, names []string) ([]project, error) {
+	found := make([]*project, len(names))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(projectLookups)
+	for i, n := range names {
+		g.Go(func() error {
+			var p project
+			full := owner + "/" + strings.ReplaceAll(n, SubgroupSeparator, "/")
+			err := k.get(gctx, cred, "/projects/"+url.PathEscape(full), &p)
+			var se *statusError
+			switch {
+			case errors.As(err, &se) && !se.limited && (se.status == http.StatusNotFound || se.status == http.StatusForbidden):
+				return nil
+			case err != nil:
+				return fmt.Errorf("reading %s: %w", full, err)
+			}
+			if p.EmptyRepo || p.DefaultBranch == "" || !p.under(owner) || !strings.EqualFold(p.name(owner), n) {
+				return nil
+			}
+			found[i] = &p
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	var projects []project
+	for _, p := range found {
+		if p != nil {
+			projects = append(projects, *p)
+		}
+	}
+	return projects, nil
+}
+
 // checkOwner refuses a sub-group as an owner: an owner is one segment of the
 // volume's layout, and a group's listing takes its sub-groups' projects.
 func checkOwner(owner string) error {
@@ -271,7 +322,7 @@ func checkOwner(owner string) error {
 // a 404, a user namespace's. Statistics (the repository size) are asked for
 // with the sync credential only, which may read them.
 func (k *Kind) listAs(ctx context.Context, cred oauth2.TokenSource, owner string, statistics bool) ([]project, error) {
-	q := url.Values{"per_page": {"100"}, "order_by": {"id"}, "sort": {"asc"}}
+	q := url.Values{"per_page": {strconv.Itoa(perPage)}, "order_by": {"id"}, "sort": {"asc"}}
 	if statistics {
 		q.Set("statistics", "true")
 	}
@@ -288,13 +339,12 @@ func (k *Kind) listAs(ctx context.Context, cred oauth2.TokenSource, owner string
 }
 
 func (k *Kind) listPages(ctx context.Context, cred oauth2.TokenSource, owner, path string) ([]project, error) {
+	pages, err := k.getPages(ctx, cred, k.api.String()+path)
+	if err != nil {
+		return nil, fmt.Errorf("listing %s: %w", owner, err)
+	}
 	var out []project
-	for next := k.api.String() + path; next != ""; {
-		var page []project
-		var err error
-		if next, err = k.getPage(ctx, cred, next, &page); err != nil {
-			return nil, fmt.Errorf("listing %s: %w", owner, err)
-		}
+	for _, page := range pages {
 		for _, p := range page {
 			// An empty project has nothing to mirror; a project outside the
 			// owner's namespace is not the owner's.
@@ -305,6 +355,42 @@ func (k *Kind) listPages(ctx context.Context, cred oauth2.TokenSource, owner, pa
 		}
 	}
 	return out, nil
+}
+
+// getPages GETs every page of the listing at first, in order. The first
+// page's `Link` header names the last one: the pages between are fetched
+// concurrently, by their number. Without a last link (GitLab leaves it out
+// past 10,000 projects) the pages are followed one after the other.
+func (k *Kind) getPages(ctx context.Context, cred oauth2.TokenSource, first string) ([][]project, error) {
+	pages := make([][]project, 1)
+	header, err := k.getPage(ctx, cred, first, &pages[0])
+	if err != nil {
+		return nil, err
+	}
+	last, n := lastLink(header.Get("Link"))
+	if n == 0 {
+		for next := link(header.Get("Link"), "next"); next != ""; next = link(header.Get("Link"), "next") {
+			pages = append(pages, nil)
+			if header, err = k.getPage(ctx, cred, next, &pages[len(pages)-1]); err != nil {
+				return nil, err
+			}
+		}
+		return pages, nil
+	}
+	pages = slices.Grow(pages, n-1)[:n]
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(projectLookups)
+	for i := 2; i <= n; i++ {
+		u := *last
+		q := u.Query()
+		q.Set("page", strconv.Itoa(i))
+		u.RawQuery = q.Encode()
+		g.Go(func() error {
+			_, err := k.getPage(gctx, cred, u.String(), &pages[i-1])
+			return err
+		})
+	}
+	return pages, g.Wait()
 }
 
 // project is what the listing reads of a project; the repository size is in
@@ -353,8 +439,13 @@ func (p project) item(owner string) provider.Item {
 	return it
 }
 
-// projectLookups bounds the per-project requests a listing has in flight.
+// projectLookups bounds the requests one call has in flight: the pages of a
+// listing, the projects asked for one by one, their languages and heads.
 const projectLookups = 8
+
+// perPage is a listing page's size, GitLab's largest, and the most names
+// Readable asks for one by one: past it, the listing is the cheaper check.
+const perPage = 100
 
 // byActivity holds a value read for each project with the last activity it
 // was read at. GitLab's listing carries neither a project's language nor its
@@ -479,25 +570,20 @@ func (k *Kind) get(ctx context.Context, cred oauth2.TokenSource, path string, ou
 	return err
 }
 
-// getPage GETs one page and returns the URL of the next one, empty on the
-// last.
-func (k *Kind) getPage(ctx context.Context, cred oauth2.TokenSource, u string, out any) (string, error) {
+// getPage GETs one page and returns its header, which links the next.
+func (k *Kind) getPage(ctx context.Context, cred oauth2.TokenSource, u string, out any) (http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if cred != nil {
 		tok, err := cred.Token()
 		if err != nil {
-			return "", fmt.Errorf("credential: %w", err)
+			return nil, fmt.Errorf("credential: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	}
-	header, err := k.do(req, out)
-	if err != nil {
-		return "", err
-	}
-	return nextLink(header.Get("Link")), nil
+	return k.do(req, out)
 }
 
 // A rate limit (429) is waited out as GitLab says: `Retry-After`, else the
@@ -532,7 +618,7 @@ func (k *Kind) once(req *http.Request, out any) (http.Header, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		se := &statusError{method: req.Method, path: req.URL.Path, status: resp.StatusCode, message: errorMessage(resp.Body)}
+		se := &statusError{method: req.Method, path: req.URL.EscapedPath(), status: resp.StatusCode, message: errorMessage(resp.Body)}
 		se.resetIn, se.limited = rateLimitWait(resp, k.clock.Now())
 		return nil, se
 	}
@@ -573,15 +659,29 @@ func rateLimitWait(resp *http.Response, now time.Time) (time.Duration, bool) {
 	return time.Minute, true
 }
 
-// nextLink extracts rel="next" from a Link header.
-func nextLink(header string) string {
+// lastLink parses rel="last" from a Link header and its page number; zero
+// without one.
+func lastLink(header string) (*url.URL, int) {
+	u, err := url.Parse(link(header, "last"))
+	if err != nil || u.Host == "" {
+		return nil, 0
+	}
+	n, err := strconv.Atoi(u.Query().Get("page"))
+	if err != nil || n < 2 {
+		return nil, 0
+	}
+	return u, n
+}
+
+// link extracts the URL of rel from a Link header.
+func link(header, rel string) string {
 	for _, part := range strings.Split(header, ",") {
 		segs := strings.Split(part, ";")
 		if len(segs) < 2 {
 			continue
 		}
 		for _, s := range segs[1:] {
-			if strings.TrimSpace(s) == `rel="next"` {
+			if strings.TrimSpace(s) == `rel="`+rel+`"` {
 				return strings.Trim(strings.TrimSpace(segs[0]), "<>")
 			}
 		}

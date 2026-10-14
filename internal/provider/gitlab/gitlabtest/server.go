@@ -1,7 +1,7 @@
 // Package gitlabtest is a stub of the GitLab REST API's parts the gitlab kind
-// calls: a group's projects with its sub-groups' (paged by a Link header), a
-// user namespace's, a project's languages and its default branch's head
-// commit, with the rate-limit answers GitLab gives. An item's LastChange is
+// calls: a group's projects with its sub-groups' (paged by a Link header to
+// the next page and the last), a user namespace's, a project by its path, a
+// project's languages and its default branch's head commit, with the rate-limit answers GitLab gives. An item's LastChange is
 // its head's committed date, and a Put is a push: it moves the head and the
 // project's last activity; a Comment moves the last activity alone. The sync's group access token reads every project, with its
 // statistics; a person's token reads the projects issued to it, and a group
@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,12 @@ type Server struct {
 	Clock *providertest.Clock
 	// PageSize is how many projects a listing page holds.
 	PageSize int
+	// Latency is how long every API answer takes, in real time, as a GitLab
+	// far away does.
+	Latency time.Duration
+	// NoLastLink leaves rel="last" out of a listing's Link header, as GitLab
+	// does past 10,000 projects.
+	NoLastLink bool
 
 	mu        sync.Mutex
 	projects  map[string]map[string]project // owner → item name → project
@@ -60,6 +67,7 @@ type Server struct {
 	listed    int
 	langReads int
 	headReads int
+	projReads int
 	headFails int
 	requests  int
 	limits    []Limit
@@ -179,6 +187,13 @@ func (s *Server) Listed() int {
 	return s.listed
 }
 
+// ProjectReads is the number of projects asked for by path, found or not.
+func (s *Server) ProjectReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.projReads
+}
+
 // LanguageReads is the number of project language requests served.
 func (s *Server) LanguageReads() int {
 	s.mu.Lock()
@@ -217,7 +232,8 @@ func (s *Server) Secrets() provider.Secrets {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
-	path, ok := strings.CutPrefix(r.URL.Path, "/api/v4/")
+	// The escaped path: a project's path is one segment, its slashes %2F.
+	path, ok := strings.CutPrefix(r.URL.EscapedPath(), "/api/v4/")
 	if !ok || r.Method != http.MethodGet {
 		fail(w, http.StatusNotFound, "404 Not Found")
 		return
@@ -229,6 +245,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		limit, s.limits = &s.limits[0], s.limits[1:]
 	}
 	s.mu.Unlock()
+	if s.Latency > 0 {
+		select {
+		case <-time.After(s.Latency):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if limit != nil {
 		for k, vs := range limit.Header {
 			w.Header()[k] = vs
@@ -268,6 +291,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.page(w, r, owner, all, !person && r.URL.Query().Get("statistics") == "true")
+	case len(parts) == 2 && parts[0] == "projects":
+		s.mu.Lock()
+		s.projReads++
+		s.mu.Unlock()
+		full, err := url.PathUnescape(parts[1])
+		p, owner, ok := s.byPath(full)
+		if err != nil || !ok || person && !reads[p.Key()] {
+			fail(w, http.StatusNotFound, "404 Project Not Found")
+			return
+		}
+		writeJSON(w, http.StatusOK, s.projectJSON(owner, p, false))
 	case len(parts) == 3 && parts[0] == "projects" && parts[2] == "languages":
 		id, _ := strconv.ParseInt(parts[1], 10, 64)
 		p, ok := s.byID(id)
@@ -326,6 +360,21 @@ func (s *Server) list(owner string, reads map[string]bool) []project {
 	return all
 }
 
+// byPath is the project at full, `<owner>/<sub-groups and name>`, as GitLab
+// finds it: regardless of case.
+func (s *Server) byPath(full string) (project, string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for owner, ps := range s.projects {
+		for name, p := range ps {
+			if strings.EqualFold(owner+"/"+strings.ReplaceAll(name, "~", "/"), full) {
+				return p, owner, true
+			}
+		}
+	}
+	return project{}, "", false
+}
+
 func (s *Server) byID(id int64) (project, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -350,11 +399,19 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request, owner string, all 
 	page = max(page, 1)
 	from, to := min((page-1)*s.PageSize, len(all)), min(page*s.PageSize, len(all))
 	if to < len(all) {
-		next := *r.URL
-		q := next.Query()
-		q.Set("page", strconv.Itoa(page+1))
-		next.RawQuery = q.Encode()
-		w.Header().Set("Link", fmt.Sprintf(`<%s%s>; rel="next"`, s.URL, next.RequestURI()))
+		// As GitLab links them: the next page and the last.
+		at := func(n int) string {
+			u := *r.URL
+			q := u.Query()
+			q.Set("page", strconv.Itoa(n))
+			u.RawQuery = q.Encode()
+			return s.URL + u.RequestURI()
+		}
+		links := fmt.Sprintf(`<%s>; rel="next"`, at(page+1))
+		if !s.NoLastLink {
+			links += fmt.Sprintf(`, <%s>; rel="last"`, at((len(all)+s.PageSize-1)/s.PageSize))
+		}
+		w.Header().Set("Link", links)
 	}
 	out := make([]map[string]any, 0, to-from)
 	for _, p := range all[from:to] {

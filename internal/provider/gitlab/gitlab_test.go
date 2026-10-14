@@ -269,6 +269,94 @@ func TestReadableNamesSubgroupProjects(t *testing.T) {
 	assert.Equal(t, []string{"team~api"}, names(items))
 }
 
+// A large group is checked in what the workspace selects: GitLab answering
+// each request after a round trip, the listing of the 1,800 projects the
+// person reads alone takes 18 of them one after the other, and every readable project's head one more,
+// eight at a time.
+func TestReadableChecksALargeGroupInWhatIsNamed(t *testing.T) {
+	const latency = 200 * time.Millisecond
+	for _, tc := range []struct {
+		name       string
+		named      int
+		noLastLink bool
+		listed     int
+		projects   int
+		within     time.Duration
+	}{
+		// A project and its head: 2 round trips, where the listing took 19.
+		{name: "one project", named: 1, projects: 1, within: 6 * latency},
+		// 13 rounds of projects, 12 of heads.
+		{name: "a page of projects, each on its own", named: 100, projects: 100, within: 35 * latency},
+		// The first page, 3 rounds of the other 17, 17 of heads.
+		{name: "more than a page take the listing, its pages at once", named: 150, listed: 18, within: 30 * latency},
+		// 18 pages one after the other, 17 rounds of heads.
+		{name: "without a last link the pages follow one another", named: 150, noLastLink: true, listed: 18, within: 50 * latency},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := gitlabtest.NewServer(t)
+			s.PageSize = 100
+			s.NoLastLink = tc.noLastLink
+			var reads, named, want []string
+			for i := range 2000 {
+				name := fmt.Sprintf("team~r%04d", i)
+				s.Put(provider.Item{Owner: "acme", Name: name, LastChange: s.Clock.Now()})
+				if i%10 != 3 {
+					reads = append(reads, "acme/"+name)
+				}
+				if i < tc.named {
+					named = append(named, name)
+					if i%10 != 3 {
+						want = append(want, name)
+					}
+				}
+			}
+			k := instance(t, s)
+			person := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: s.Person(reads...)})
+
+			s.Latency = latency
+			start := time.Now()
+			items, err := k.Readable(context.Background(), person, "acme", named)
+			took := time.Since(start)
+			t.Logf("%d of 2,000 projects named: %d readable in %s, %d listing pages, %d project reads",
+				tc.named, len(items), took.Round(time.Millisecond), s.Listed(), s.ProjectReads())
+			require.NoError(t, err)
+			assert.ElementsMatch(t, want, names(items), "every tenth project the person cannot read is left out")
+			assert.Equal(t, tc.listed, s.Listed(), "listing pages")
+			assert.Equal(t, tc.projects, s.ProjectReads(), "projects asked for on their own")
+			assert.Less(t, took, tc.within)
+		})
+	}
+}
+
+func TestReadableLeavesOutWhatTheListingWould(t *testing.T) {
+	s := gitlabtest.NewServer(t)
+	s.Put(provider.Item{Owner: "acme", Name: "api", LastChange: s.Clock.Now()})
+	s.PutEmpty("acme", "nothing-yet")
+	s.Put(provider.Item{Owner: "other", Name: "api", LastChange: s.Clock.Now()})
+	k := instance(t, s)
+	person := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: s.Person("acme/api", "acme/nothing-yet", "other/api")})
+
+	items, err := k.Readable(context.Background(), person, "acme", []string{"api", "nothing-yet", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api"}, names(items), "an empty project and one that does not exist are not readable")
+	assert.Equal(t, s.URL+"/acme/api.git", items[0].CloneURL)
+
+	items, err = k.Readable(context.Background(), person, "private", []string{"api"})
+	require.NoError(t, err)
+	assert.Empty(t, items, "a group the person cannot see holds nothing they read")
+	assert.Zero(t, s.Listed(), "no listing for a few names")
+}
+
+func TestReadableFailsOnAnAnswerOtherThanNotReadable(t *testing.T) {
+	s := gitlabtest.NewServer(t)
+	s.Put(provider.Item{Owner: "acme", Name: "api", LastChange: s.Clock.Now()})
+	k := instance(t, s)
+	_, err := k.Readable(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "revoked"}), "acme", []string{"api"})
+	require.ErrorIs(t, err, provider.ErrCredentialRefused, "a revoked sign-in asks to connect again")
+	assert.Contains(t, err.Error(), "reading acme/api: GET /api/v4/projects/acme%2Fapi: 401")
+}
+
 func TestMissingToken(t *testing.T) {
 	s := gitlabtest.NewServer(t)
 	k := instance(t, s)
