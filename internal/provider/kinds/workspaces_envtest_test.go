@@ -46,8 +46,6 @@ func TestWorkspaceToolsEnvtest(t *testing.T) {
 		}{
 			{map[string]any{"name": "no-selector", "organization": "acme", "sources": []any{map[string]any{"provider": "github", "owner": "acme"}}},
 				"a source needs at least one selector"},
-			{map[string]any{"name": "bad-hour", "organization": "acme", "sources": platformSources, "sync": map[string]any{"schedule": "custom", "weekdays": []string{"monday"}, "hour": 24}},
-				"spec.sync.hour"},
 			{map[string]any{"name": "Not_A_Name", "organization": "acme", "sources": platformSources}, "metadata.name"},
 		} {
 			refused(t, f.call(t, f.member, "create_workspace", c.args), "invalid workspace: ")

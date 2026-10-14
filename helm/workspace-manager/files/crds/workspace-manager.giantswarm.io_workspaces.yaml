@@ -199,50 +199,6 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: atomic
-              sync:
-                default:
-                  schedule: nightly
-                description: Sync is when the mirrors are fetched.
-                properties:
-                  hour:
-                    description: Hour of the day, 0 to 23 UTC, a custom schedule syncs
-                      at.
-                    format: int32
-                    maximum: 23
-                    minimum: 0
-                    type: integer
-                  schedule:
-                    default: nightly
-                    description: Schedule is nightly, weekly, or custom (chosen weekdays
-                      at an hour).
-                    enum:
-                    - nightly
-                    - weekly
-                    - custom
-                    type: string
-                  weekdays:
-                    description: Weekdays a custom schedule syncs on.
-                    items:
-                      description: Weekday is a day of the week.
-                      enum:
-                      - monday
-                      - tuesday
-                      - wednesday
-                      - thursday
-                      - friday
-                      - saturday
-                      - sunday
-                      type: string
-                    maxItems: 7
-                    type: array
-                    x-kubernetes-list-type: set
-                required:
-                - schedule
-                type: object
-                x-kubernetes-validations:
-                - message: weekdays and hour are set for, and only for, a custom schedule
-                  rule: 'self.schedule == ''custom'' ? (has(self.weekdays) && size(self.weekdays)
-                    > 0 && has(self.hour)) : (!has(self.weekdays) && !has(self.hour))'
             required:
             - organization
             - sources
@@ -268,12 +224,13 @@ spec:
                   trigger:
                     description: Trigger is what started the cycle.
                     enum:
-                    - schedule
                     - change
                     - request
                     - retry
+                    - cleanup
                     - deletion
                     - sessionDeleted
+                    - schedule
                     type: string
                 required:
                 - job
@@ -376,12 +333,13 @@ spec:
                   trigger:
                     description: Trigger is what started the cycle.
                     enum:
-                    - schedule
                     - change
                     - request
                     - retry
+                    - cleanup
                     - deletion
                     - sessionDeleted
+                    - schedule
                     type: string
                 required:
                 - result
@@ -399,13 +357,6 @@ spec:
                   need.
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
-              nextSync:
-                description: |-
-                  NextSync is when the schedule starts the next cycle, computed from the
-                  last one; absent for a custom schedule without a day. A change of the
-                  workspace and sync_workspace start one before.
-                format: date-time
-                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the spec generation the last sync cycle started

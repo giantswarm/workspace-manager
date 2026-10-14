@@ -6,7 +6,10 @@
 // repositories pushed to since the sync. Otherwise a refusal naming the
 // repositories, or, for a provider the person has not connected, its connect
 // link. It runs before the workspace's volume is mounted anywhere, because
-// the volume's content is readable in the Session from its first turn.
+// the volume's content is readable in the Session from its first turn. A
+// granted check on a workspace whose last sync is older than the refresh
+// threshold also requests a sync, which the Session does not wait for: the
+// mirrors are refreshed at Session start, never on a schedule.
 //
 // The person has two names here. Their sign-ins are keyed by the Dex subject
 // (package signin). The grant names them by email: kagent's Session admission
@@ -20,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -38,9 +42,10 @@ import (
 )
 
 // Workspaces reads a Workspace for the caller in the context, after its
-// Organization check (workspace.Store).
+// Organization check, and records a sync request on it (workspace.Store).
 type Workspaces interface {
 	Get(ctx context.Context, name string) (*v1alpha1.Workspace, error)
+	RequestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error)
 }
 
 // Tokens are the people's sign-ins (signin.Store).
@@ -71,7 +76,15 @@ type Config struct {
 	// zero is DefaultCheckTimeout. A check that does not finish in time is a
 	// refusal saying so, before the caller's own timeout ends the call.
 	CheckTimeout time.Duration
+	// RefreshAfter is the refresh threshold: a granted check on a workspace
+	// whose last sync is older requests a sync; zero is DefaultRefreshAfter.
+	RefreshAfter time.Duration
+	// Now is the clock; nil is time.Now.
+	Now func() time.Time
 }
+
+// DefaultRefreshAfter is the refresh threshold by default.
+const DefaultRefreshAfter = time.Hour
 
 // DefaultCheckTimeout is the access check's bound by default, well within
 // muster's default tool timeout of 30 s.
@@ -101,6 +114,15 @@ func New(cfg Config) (*Authorizer, error) {
 	}
 	if cfg.CheckTimeout == 0 {
 		cfg.CheckTimeout = DefaultCheckTimeout
+	}
+	if cfg.RefreshAfter < 0 {
+		errs = append(errs, fmt.Errorf("authorize: the refresh threshold must not be negative, got %s", cfg.RefreshAfter))
+	}
+	if cfg.RefreshAfter == 0 {
+		cfg.RefreshAfter = DefaultRefreshAfter
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	if cfg.Signer == nil {
 		errs = append(errs, errors.New("authorize: no grant signer"))
@@ -155,6 +177,10 @@ type Result struct {
 	Unreadable []string `json:"unreadable,omitempty"`
 	// Connect are the providers the person has not connected.
 	Connect []Connect `json:"connect,omitempty"`
+	// SyncRequested is true when the check requested a sync of the
+	// workspace, its last one being older than the refresh threshold; the
+	// Session does not wait for it.
+	SyncRequested bool `json:"syncRequested,omitempty"`
 }
 
 // Authorize checks the caller id against the workspace name: their sign-ins
@@ -299,7 +325,41 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 		return nil, err
 	}
 	res.Outcome, res.Grant, res.ExpiresAt = Granted, token, &expiry
+	res.SyncRequested = a.refresh(ctx, ws)
 	return res, nil
+}
+
+// refresh requests a sync of a workspace whose last sync is older than the
+// refresh threshold, and reports whether it did. A sync that runs or is
+// requested already is not requested again; a last cycle that only cleaned
+// up session directories listed no provider, so it refreshed nothing. A
+// failed request is logged: the grant stands, and the next Session start
+// asks again.
+func (a *Authorizer) refresh(ctx context.Context, ws *v1alpha1.Workspace) bool {
+	if ws.Status.ActiveSync != nil || ws.Annotations[v1alpha1.AnnotationSyncRequested] != "" {
+		return false
+	}
+	now := a.cfg.Now()
+	if last := ws.Status.LastSync; last != nil && !cleanupOnly(last.Trigger) && now.Sub(last.Time.Time) < a.cfg.RefreshAfter {
+		return false
+	}
+	if _, err := a.cfg.Workspaces.RequestSync(ctx, ws.Name, now); err != nil {
+		slog.WarnContext(ctx, "workspace sync not requested", identity.LogAttr(ctx), "workspace", ws.Name, "error", err)
+		return false
+	}
+	slog.InfoContext(ctx, "workspace sync requested: the last sync is older than the refresh threshold", identity.LogAttr(ctx),
+		"workspace", ws.Name, "refreshAfter", a.cfg.RefreshAfter)
+	return true
+}
+
+// cleanupOnly reports whether a cycle so triggered only cleans up session
+// directories, listing and fetching nothing.
+func cleanupOnly(t v1alpha1.SyncTrigger) bool {
+	switch t {
+	case v1alpha1.TriggerCleanup, v1alpha1.TriggerSessionDeleted, v1alpha1.TriggerDeletion:
+		return true
+	}
+	return false
 }
 
 // connectRequired answers with the providers to connect, and nothing about

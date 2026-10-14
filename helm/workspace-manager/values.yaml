@@ -81,9 +81,14 @@ sync:
   # -- How often the controller reconciles every Workspace without an event,
   # and how long after a failed sync cycle it tries again, a Go duration
   # (`10m`, `1h`): a claim deleted out from under a Workspace is made again by
-  # then. Each Workspace's own `spec.sync` (nightly, weekly or custom) says
-  # when its mirrors are fetched. Passed to `serve` as its `sync-cycle` flag.
+  # then. Nothing syncs on a schedule: a Workspace syncs after every change,
+  # on `sync_workspace`, and when a Session starts on it past `refreshAfter`.
+  # Passed to `serve` as its `sync-cycle` flag.
   cycle: 10m
+  # -- The refresh threshold, a Go duration: `authorize_workspace` requests a
+  # sync of a Workspace whose last sync is older, without the Session waiting
+  # for it. Passed to `serve` as its `sync-refresh-after` flag.
+  refreshAfter: 1h
   # The sync Job the controller starts per cycle that has something to fetch,
   # in `workspaces.namespace`, from the template the chart renders
   # (`<fullname>-sync-job`): this image as the Job's ServiceAccount

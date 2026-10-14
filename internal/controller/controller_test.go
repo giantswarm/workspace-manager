@@ -137,7 +137,6 @@ func workspaceNamed(name string) *v1alpha1.Workspace {
 		Spec: v1alpha1.WorkspaceSpec{
 			Organization: testOwner,
 			Sources:      []v1alpha1.Source{{Provider: testProvider, Owner: testOwner, Repositories: []string{"api", "web"}}},
-			Sync:         v1alpha1.Sync{Schedule: v1alpha1.ScheduleNightly},
 		},
 	}
 }
@@ -224,6 +223,15 @@ func (f *fixture) updateSpec(name string, mutate func(*v1alpha1.Workspace)) {
 }
 
 // reconcile runs Reconcile on the stored Workspace, as the loop does.
+// requestSync records a sync request as sync_workspace and
+// authorize_workspace do.
+func (f *fixture) requestSync(name string) {
+	f.t.Helper()
+	patch := `{"metadata":{"annotations":{"` + v1alpha1.AnnotationSyncRequested + `":"` + f.clock().Format(time.RFC3339) + `","` + v1alpha1.AnnotationSyncRequestedBy + `":"alice@acme.test"}}}`
+	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Patch(context.Background(), name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	require.NoError(f.t, err)
+}
+
 func (f *fixture) reconcile(name string) time.Duration {
 	f.t.Helper()
 	requeue, err := f.c.Reconcile(context.Background(), f.workspace(name))
@@ -385,7 +393,6 @@ func TestFirstCycleClaimsAndStartsTheJob(t *testing.T) {
 	assert.Equal(t, ws.Generation, ws.Status.ObservedGeneration)
 	assert.Equal(t, v1alpha1.TriggerChange, ws.Status.ActiveSync.Trigger)
 	assert.Equal(t, testNow, ws.Status.ActiveSync.StartedAt.UTC())
-	assert.Nil(t, ws.Status.NextSync, "no schedule while a Job runs")
 	assert.Nil(t, ws.Status.LastSync)
 	assert.Equal(t, ManifestName(ws), ws.Status.Manifest)
 	require.NotNil(t, ws.Status.Volume)
@@ -408,8 +415,8 @@ func TestFirstCycleClaimsAndStartsTheJob(t *testing.T) {
 }
 
 // TestCycleEndsWithTheJob: once the Job completed, the cycle's outcome is
-// the manifest: the repositories, the measured need, the next scheduled
-// sync (the nightly hour after the Job's end), the credential emptied.
+// the manifest: the repositories, the measured need, the credential
+// emptied; nothing is due after it.
 func TestCycleEndsWithTheJob(t *testing.T) {
 	f := newFixture(t, testClass, workspaceNamed("platform"))
 	ws := f.firstCycle("platform")
@@ -427,9 +434,6 @@ func TestCycleEndsWithTheJob(t *testing.T) {
 	assert.Equal(t, ended, got.Status.LastSync.Time.UTC())
 	assert.Equal(t, []string{"acme/api", "acme/web"}, got.Status.Repositories)
 	assert.Equal(t, "5Mi", got.Status.NeededSize.String(), "the measured mirrors")
-	require.NotNil(t, got.Status.NextSync)
-	assert.Equal(t, workspace.NextSync(ws.Spec.Sync, ended), got.Status.NextSync.UTC(), "the schedule from the cycle's end")
-	assert.Equal(t, time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC), got.Status.NextSync.UTC())
 	cond := syncedCondition(t, got)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, v1alpha1.ReasonSynced, cond.Reason)
@@ -437,10 +441,32 @@ func TestCycleEndsWithTheJob(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, secret.Data, "the credential lives only while the Job runs")
 
-	// Nothing is due until the schedule: the loop sleeps until then.
-	requeue := f.reconcile("platform")
-	assert.Equal(t, got.Status.NextSync.Sub(f.clock()), requeue)
+	// Nothing is due: no schedule, no timer.
+	assert.Zero(t, f.reconcile("platform"))
 	assert.Equal(t, 1, f.listings.count(), "no listing while nothing is due")
+}
+
+// TestNothingSyncsOnASchedule: a synced workspace with nothing requested
+// and nothing changed lists nothing, however long it waits; a request
+// (sync_workspace, or authorize_workspace past the refresh threshold)
+// starts the next cycle.
+func TestNothingSyncsOnASchedule(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	ws := f.firstCycle("platform")
+	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
+	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+
+	for range 14 {
+		f.advance(12 * time.Hour)
+		assert.Zero(t, f.reconcile("platform"), "no timer")
+	}
+	assert.Equal(t, 1, f.listings.count(), "a week passes without a listing")
+
+	f.requestSync("platform")
+	f.reconcile("platform")
+	got := f.workspace("platform")
+	assert.Equal(t, 2, f.listings.count())
+	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.LastSync.Trigger)
 }
 
 // TestAStoredSizeIsRecordedForAWorkspaceSyncedWithoutOne: a Workspace whose
@@ -465,30 +491,30 @@ func TestAStoredSizeIsRecordedForAWorkspaceSyncedWithoutOne(t *testing.T) {
 	assert.Equal(t, listings, f.listings.count(), "no cycle ran")
 }
 
-// TestNoChangeCostsOneListing: a scheduled cycle whose selection equals the
+// TestNoChangeCostsOneListing: a requested cycle whose selection equals the
 // manifest, with no newer push, ends with NoChange after one listing: no
-// Job, no fetch, the next schedule set.
+// Job, no fetch, nothing due after it.
 func TestNoChangeCostsOneListing(t *testing.T) {
 	f := newFixture(t, testClass, workspaceNamed("platform"))
 	ws := f.firstCycle("platform")
 	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
 	require.Equal(t, 1, f.listings.count())
 
-	// The nightly hour comes.
-	f.advance(got.Status.NextSync.Sub(testNow))
+	// A Session starts past the refresh threshold.
+	f.advance(2 * time.Hour)
+	f.requestSync("platform")
 	requeue := f.reconcile("platform")
 
-	got = f.workspace("platform")
+	got := f.workspace("platform")
 	assert.Equal(t, 2, f.listings.count(), "the cycle lists once")
 	assert.Len(t, f.jobs(), 1, "no second Job")
 	assert.Nil(t, got.Status.ActiveSync)
 	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)
-	assert.Equal(t, v1alpha1.TriggerSchedule, got.Status.LastSync.Trigger)
+	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.LastSync.Trigger)
 	assert.Empty(t, got.Status.LastSync.Job)
 	assert.Equal(t, f.clock(), got.Status.LastSync.Time.UTC())
-	assert.Equal(t, time.Date(2026, 10, 16, 3, 0, 0, 0, time.UTC), got.Status.NextSync.UTC(), "the night after")
-	assert.Equal(t, got.Status.NextSync.Sub(f.clock()), requeue)
+	assert.Zero(t, requeue, "nothing due")
 	cond := syncedCondition(t, got)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, v1alpha1.ReasonNoChange, cond.Reason)
@@ -503,16 +529,17 @@ func TestAPushStartsAJobForTheChangedRepository(t *testing.T) {
 	f := newFixture(t, testClass, workspaceNamed("platform"))
 	ws := f.firstCycle("platform")
 	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
 
 	pushed := f.clock().Add(time.Hour)
 	f.listings.put(item("web", pushed, 1024))
-	f.advance(got.Status.NextSync.Sub(testNow))
+	f.advance(2 * time.Hour)
+	f.requestSync("platform")
 	assert.Zero(t, f.reconcile("platform"))
 
-	got = f.workspace("platform")
+	got := f.workspace("platform")
 	require.NotNil(t, got.Status.ActiveSync, "a Job for the push")
-	assert.Equal(t, v1alpha1.TriggerSchedule, got.Status.ActiveSync.Trigger)
+	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.ActiveSync.Trigger)
 	assert.Len(t, f.jobs(), 2)
 	sel := f.selection(got)
 	require.Len(t, sel.Repositories, 2)
@@ -532,15 +559,16 @@ func TestARepositoryJoinsAtTheNextCycle(t *testing.T) {
 	f.listings.put(api)
 	ws = f.firstCycle("platform")
 	require.Len(t, f.selection(ws).Repositories, 1, "api alone carries the topic")
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20))
+	f.completeCycle(ws, testNow, entry(api, 2<<20))
 
 	web := item("web", testNow.Add(-24*time.Hour), 4096)
 	web.Topics = []string{"mcp"}
 	f.listings.put(web)
-	f.advance(got.Status.NextSync.Sub(testNow))
+	f.advance(2 * time.Hour)
+	f.requestSync("platform")
 	f.reconcile("platform")
 
-	got = f.workspace("platform")
+	got := f.workspace("platform")
 	require.NotNil(t, got.Status.ActiveSync)
 	sel := f.selection(got)
 	require.Len(t, sel.Repositories, 2)
@@ -557,17 +585,13 @@ func TestSyncRequestStartsACycleNow(t *testing.T) {
 	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
 	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
 
-	request := func() {
-		patch := `{"metadata":{"annotations":{"` + v1alpha1.AnnotationSyncRequested + `":"` + f.clock().Format(time.RFC3339) + `","` + v1alpha1.AnnotationSyncRequestedBy + `":"alice@acme.test"}}}`
-		_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Patch(context.Background(), "platform", types.MergePatchType, []byte(patch), metav1.PatchOptions{})
-		require.NoError(t, err)
-	}
+	request := func() { f.requestSync("platform") }
 	f.advance(time.Hour)
 	request()
 	f.reconcile("platform")
 
 	got := f.workspace("platform")
-	assert.Equal(t, 2, f.listings.count(), "the request lists at once, off the schedule")
+	assert.Equal(t, 2, f.listings.count(), "the request lists at once")
 	assert.Empty(t, got.Annotations[v1alpha1.AnnotationSyncRequested], "the request is taken")
 	assert.Empty(t, got.Annotations[v1alpha1.AnnotationSyncRequestedBy])
 	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result, "nothing changed: no fetch for the request either")
@@ -592,8 +616,7 @@ func TestSyncRequestStartsACycleNow(t *testing.T) {
 	assert.Equal(t, 4, f.listings.count())
 }
 
-// TestASpecChangeStartsACycle: a new generation starts a cycle without
-// waiting for the schedule.
+// TestASpecChangeStartsACycle: a new generation starts a cycle at once.
 func TestASpecChangeStartsACycle(t *testing.T) {
 	f := newFixture(t, testClass, workspaceNamed("platform"))
 	ws := f.firstCycle("platform")
@@ -608,32 +631,6 @@ func TestASpecChangeStartsACycle(t *testing.T) {
 	assert.Equal(t, v1alpha1.TriggerChange, got.Status.ActiveSync.Trigger)
 	assert.Equal(t, int64(4), got.Status.ObservedGeneration)
 	assert.Len(t, f.selection(got).Repositories, 1)
-}
-
-// TestCustomScheduleFiresOnItsDays: a custom schedule starts a cycle on its
-// weekdays at its hour and at no other time.
-func TestCustomScheduleFiresOnItsDays(t *testing.T) {
-	ws := workspaceNamed("platform")
-	ws.Spec.Sync = v1alpha1.Sync{Schedule: v1alpha1.ScheduleCustom, Weekdays: []v1alpha1.Weekday{"monday", "friday"}, Hour: ptr.To[int32](6)}
-	f := newFixture(t, testClass, ws)
-	ws = f.firstCycle("platform")
-	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
-	friday := time.Date(2026, 10, 16, 6, 0, 0, 0, time.UTC)
-	assert.Equal(t, friday, got.Status.NextSync.UTC())
-
-	// Thursday 06:00 is no day of the schedule.
-	f.advance(18 * time.Hour)
-	requeue := f.reconcile("platform")
-	assert.Equal(t, 1, f.listings.count(), "no cycle on a Thursday")
-	assert.Equal(t, friday.Sub(f.clock()), requeue)
-
-	f.advance(24 * time.Hour)
-	f.reconcile("platform")
-	got = f.workspace("platform")
-	assert.Equal(t, 2, f.listings.count(), "Friday 06:00 starts the cycle")
-	assert.Equal(t, v1alpha1.TriggerSchedule, got.Status.LastSync.Trigger)
-	assert.Equal(t, time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC), got.Status.NextSync.UTC(), "Monday next")
 }
 
 // TestAFailedListingIsRetriedAtTheResync: a provider's listing error ends
@@ -651,7 +648,6 @@ func TestAFailedListingIsRetriedAtTheResync(t *testing.T) {
 	assert.Equal(t, v1alpha1.SyncFailed, got.Status.LastSync.Result)
 	assert.Equal(t, v1alpha1.TriggerChange, got.Status.LastSync.Trigger)
 	assert.Contains(t, got.Status.LastSync.Message, "503")
-	assert.Equal(t, testNow.Add(time.Hour), got.Status.NextSync.UTC())
 	cond := syncedCondition(t, got)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, v1alpha1.ReasonListingFailed, cond.Reason)
@@ -683,6 +679,7 @@ func TestAFailedJobKeepsTheManifest(t *testing.T) {
 
 	f.listings.put(item("web", f.clock().Add(time.Hour), 1024))
 	f.advance(15 * time.Hour)
+	f.requestSync("platform")
 	f.reconcile("platform")
 	ws = f.workspace("platform")
 	require.NotNil(t, ws.Status.ActiveSync)
@@ -700,7 +697,6 @@ func TestAFailedJobKeepsTheManifest(t *testing.T) {
 	assert.Equal(t, "acme/web: git fetch: exit status 128", got.Status.LastSync.Message)
 	assert.Equal(t, ws.Status.ActiveSync.Job, got.Status.LastSync.Job)
 	assert.Equal(t, []string{"acme/api", "acme/web"}, got.Status.Repositories, "the last manifest's")
-	assert.Equal(t, ended.Add(time.Hour), got.Status.NextSync.UTC(), "the retry at the resync")
 	cond := syncedCondition(t, got)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, v1alpha1.ReasonSyncFailed, cond.Reason)
@@ -724,6 +720,7 @@ func TestAJobGoneStillCounts(t *testing.T) {
 
 	f.listings.put(item("api", f.clock(), 1024))
 	f.advance(15 * time.Hour)
+	f.requestSync("platform")
 	f.reconcile("platform")
 	ws = f.workspace("platform")
 	require.NotNil(t, ws.Status.ActiveSync)
@@ -804,7 +801,8 @@ func TestAProvisionedClassIsSizedAndGrown(t *testing.T) {
 	// A push and a sync that measured 12 GiB: the need passes the headroom,
 	// the share grows to 12 + 6 = 18 GiB after the sync.
 	f.listings.put(item("web", f.clock().Add(time.Hour), 2<<20))
-	f.advance(got.Status.NextSync.Sub(testNow))
+	f.advance(2 * time.Hour)
+	f.requestSync("platform")
 	f.reconcile("platform")
 	ws = f.workspace("platform")
 	require.NotNil(t, ws.Status.ActiveSync)
@@ -839,7 +837,8 @@ func TestAProvisionedClassIsSizedAndGrown(t *testing.T) {
 	assert.Equal(t, "18Gi", got.Status.GrewFrom.String())
 
 	// The next cycle, with nothing changed, grows nothing: the marker goes.
-	f.advance(got.Status.NextSync.Sub(f.clock()))
+	f.advance(2 * time.Hour)
+	f.requestSync("platform")
 	f.reconcile("platform")
 	got = f.workspace("platform")
 	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)

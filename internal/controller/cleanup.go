@@ -60,29 +60,41 @@ func (c *Controller) cleanup(ctx context.Context, ws *v1alpha1.Workspace) (*mirr
 		fmt.Sprintf("kagent lists %d Sessions on the volume; their directories go %s after the last turn", len(out.Sessions), c.sessionCleanupAfter)), nil
 }
 
-// sessionsDeleted deletes at once the directories of Sessions kagent no
-// longer lists, on a live workspace with no cycle due: a cleanup-only Job
-// that fetches nothing and touches no mirror but a dropped one the deleted
-// directories were the last to borrow from. Without such a Session it says
-// how long until the next look: the poll interval, or the schedule when that
+// housekeep cleans up session directories on a live workspace with no cycle
+// due, in a cleanup-only Job that fetches nothing and touches no mirror but a
+// dropped one the deleted directories were the last to borrow from: at once
+// for a Session kagent no longer lists, and at a directory's own cleanup
+// date. Without either it says how long until the next look: the poll
+// interval, or the earliest cleanup date or a failed cycle's retry when that
 // comes first. A failed last cycle waits for its retry, whose Job cleans up
 // too; so does a directory the Job could not delete, at the next cycle.
-func (c *Controller) sessionsDeleted(ctx context.Context, ws *v1alpha1.Workspace, now time.Time, claim *corev1.PersistentVolumeClaim) (time.Duration, error) {
+func (c *Controller) housekeep(ctx context.Context, ws *v1alpha1.Workspace, now time.Time, claim *corev1.PersistentVolumeClaim) (time.Duration, error) {
 	wake := c.wake(ws, now)
 	last := ws.Status.LastSync
-	if c.sessions == nil || claim == nil || (last != nil && last.Result == v1alpha1.SyncFailed) || !slices.ContainsFunc(ws.Status.Sessions, known) {
+	if c.sessions == nil || claim == nil || (last != nil && last.Result == v1alpha1.SyncFailed) {
 		return wake, nil
 	}
-	next := c.sessionPoll
-	if wake > 0 && wake < next {
-		next = wake
+	next := wake
+	var trigger v1alpha1.SyncTrigger
+	if at := c.cleanupAt(ws); !at.IsZero() && !at.After(now) {
+		trigger = v1alpha1.TriggerCleanup
 	}
-	listed, err := c.listed.get(ctx, c.sessions, now, c.sessionPoll)
-	if err != nil {
-		c.log.Warn("deleted Sessions not looked for: kagent's listing failed", "workspace", ws.Name, "error", err)
-		return next, nil
+	if slices.ContainsFunc(ws.Status.Sessions, known) {
+		if next == 0 || c.sessionPoll < next {
+			next = c.sessionPoll
+		}
+		if trigger == "" {
+			listed, err := c.listed.get(ctx, c.sessions, now, c.sessionPoll)
+			if err != nil {
+				c.log.Warn("deleted Sessions not looked for: kagent's listing failed", "workspace", ws.Name, "error", err)
+				return next, nil
+			}
+			if len(goneSessions(ws, listed)) > 0 {
+				trigger = v1alpha1.TriggerSessionDeleted
+			}
+		}
 	}
-	if len(goneSessions(ws, listed)) == 0 {
+	if trigger == "" {
 		return next, nil
 	}
 	// The cleanup lists kagent anew, so the Job works from the listing it
@@ -92,11 +104,13 @@ func (c *Controller) sessionsDeleted(ctx context.Context, ws *v1alpha1.Workspace
 		return 0, err
 	}
 	if cleanup == nil {
-		return next, nil
+		return max(next, c.resync), nil
 	}
-	gone := goneSessions(ws, cleanup.Sessions)
-	if len(gone) == 0 {
-		return next, nil
+	var gone []string
+	if trigger == v1alpha1.TriggerSessionDeleted {
+		if gone = goneSessions(ws, cleanup.Sessions); len(gone) == 0 {
+			return next, nil
+		}
 	}
 	id, err := cycleID()
 	if err != nil {
@@ -108,8 +122,7 @@ func (c *Controller) sessionsDeleted(ctx context.Context, ws *v1alpha1.Workspace
 	// manifest.
 	name := JobName(ws, id)
 	if err := c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
-		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerSessionDeleted, CleanupOnly: true}
-		w.Status.NextSync = nil
+		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: name, StartedAt: metav1.NewTime(now), Trigger: trigger, CleanupOnly: true}
 		meta.SetStatusCondition(&w.Status.Conditions, cond)
 		return true
 	}); err != nil {
@@ -118,8 +131,32 @@ func (c *Controller) sessionsDeleted(ctx context.Context, ws *v1alpha1.Workspace
 	if _, err := c.jobs.Start(ctx, ws, id, &mirror.Selection{Repositories: []mirror.Repository{}, Stopped: true, Cleanup: cleanup}, nil); err != nil {
 		return 0, err
 	}
-	c.log.Info("sync job started for the directories of deleted Sessions", "workspace", ws.Name, "trigger", v1alpha1.TriggerSessionDeleted, "job", name, "sessions", gone)
+	c.log.Info("sync job started for the session directories", "workspace", ws.Name, "trigger", trigger, "job", name, "sessions", gone)
 	return 0, nil
+}
+
+// cleanupAt is the earliest cleanup date of the workspace's session
+// directories, zero for none: a directory the last cycle could not look
+// after (its error) waits for the next cycle, and without kagent no
+// directory is cleaned up. A cleanup that ran less than a resync ago is not
+// repeated before the resync, so a directory its Job left behind does not
+// start one Job after the other.
+func (c *Controller) cleanupAt(ws *v1alpha1.Workspace) time.Time {
+	if c.sessions == nil {
+		return time.Time{}
+	}
+	var at time.Time
+	for _, d := range ws.Status.Sessions {
+		if d.Error == "" && d.CleanupAfter != nil && (at.IsZero() || d.CleanupAfter.Time.Before(at)) {
+			at = d.CleanupAfter.Time
+		}
+	}
+	if last := ws.Status.LastSync; !at.IsZero() && last != nil && last.Trigger == v1alpha1.TriggerCleanup {
+		if retry := last.Time.Add(c.resync); at.Before(retry) {
+			at = retry
+		}
+	}
+	return at
 }
 
 // goneSessions are the ids of the workspace's directories whose Session
@@ -207,8 +244,8 @@ func sessionDirectories(m *mirror.Manifest) []v1alpha1.SessionDirectory {
 }
 
 // reconcileDeleted runs a deleted workspace to its end: its sync stopped, its
-// Job only cleans up the session directories, at the workspace's schedule
-// or at the earliest cleanup date, whichever comes first (a failed one again
+// Job only cleans up the session directories, at the earliest cleanup date
+// or a day after the last cycle, whichever comes first (a failed one again
 // after the resync), or at once for a sync request (sync_workspace, or
 // delete_workspace again), served after a running Job; once a cycle since
 // the deletion leaves no directory, the volume claim is deleted and the
@@ -279,7 +316,6 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 	log.Info("sync job started for the session directories", "job", job.Name)
 	return 0, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerDeletion, CleanupOnly: true}
-		w.Status.NextSync = nil
 		meta.SetStatusCondition(&w.Status.Conditions, cond)
 		meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionFalse, v1alpha1.ReasonDeleting,
 			fmt.Sprintf("the workspace is deleted: its sync stopped, and sync job %s cleans up its %d session directories", job.Name, len(ws.Status.Sessions))))
@@ -287,17 +323,14 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 	})
 }
 
-// nextDeletionCycle is when a deleted workspace's next cleanup runs: at its
-// schedule after the last one, or at the earliest cleanup date when that
-// comes first; the resync when the schedule names no time. A directory the
-// last cycle could not look after waits for the schedule.
+// nextDeletionCycle is when a deleted workspace's next cleanup runs: at the
+// earliest cleanup date, or DeletionRecheck after the last cycle when that
+// comes first. A directory the last cycle could not look after waits for the
+// recheck.
 func (c *Controller) nextDeletionCycle(ws *v1alpha1.Workspace, last time.Time) time.Time {
-	at := workspace.NextSync(ws.Spec.Sync, last)
-	if at.IsZero() {
-		at = last.Add(c.resync)
-	}
+	at := last.Add(DeletionRecheck)
 	for _, d := range ws.Status.Sessions {
-		if d.Error == "" && d.CleanupAfter != nil && d.CleanupAfter.Before(&metav1.Time{Time: at}) {
+		if d.Error == "" && d.CleanupAfter != nil && d.CleanupAfter.Time.Before(at) {
 			at = d.CleanupAfter.Time
 		}
 	}

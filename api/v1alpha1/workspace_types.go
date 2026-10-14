@@ -42,11 +42,6 @@ type WorkspaceSpec struct {
 	// +listType=atomic
 	Sources []Source `json:"sources"`
 
-	// Sync is when the mirrors are fetched.
-	// +kubebuilder:default={schedule: nightly}
-	// +optional
-	Sync Sync `json:"sync,omitempty"`
-
 	// Sizing overrides the computed size of the workspace's volume, where its
 	// StorageClass provisions a size. There is no cap.
 	// +optional
@@ -144,45 +139,6 @@ type TopicFilter struct {
 	Names []string `json:"names"`
 }
 
-// Schedule is a sync cycle.
-// +kubebuilder:validation:Enum=nightly;weekly;custom
-type Schedule string
-
-const (
-	// ScheduleNightly syncs every night, the default.
-	ScheduleNightly Schedule = "nightly"
-	// ScheduleWeekly syncs once a week.
-	ScheduleWeekly Schedule = "weekly"
-	// ScheduleCustom syncs on the chosen weekdays at the chosen hour.
-	ScheduleCustom Schedule = "custom"
-)
-
-// Weekday is a day of the week.
-// +kubebuilder:validation:Enum=monday;tuesday;wednesday;thursday;friday;saturday;sunday
-type Weekday string
-
-// Sync is the workspace's sync cycle. A workspace also syncs after every
-// change and on request.
-//
-// +kubebuilder:validation:XValidation:rule="self.schedule == 'custom' ? (has(self.weekdays) && size(self.weekdays) > 0 && has(self.hour)) : (!has(self.weekdays) && !has(self.hour))",message="weekdays and hour are set for, and only for, a custom schedule"
-type Sync struct {
-	// Schedule is nightly, weekly, or custom (chosen weekdays at an hour).
-	// +kubebuilder:default=nightly
-	Schedule Schedule `json:"schedule"`
-
-	// Weekdays a custom schedule syncs on.
-	// +kubebuilder:validation:MaxItems=7
-	// +listType=set
-	// +optional
-	Weekdays []Weekday `json:"weekdays,omitempty"`
-
-	// Hour of the day, 0 to 23 UTC, a custom schedule syncs at.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=23
-	// +optional
-	Hour *int32 `json:"hour,omitempty"`
-}
-
 // Sizing overrides the volume's computed size, where its StorageClass
 // provisions one.
 type Sizing struct {
@@ -210,13 +166,13 @@ const (
 	SyncNoChange SyncResult = "NoChange"
 )
 
-// SyncTrigger is what started a sync cycle.
-// +kubebuilder:validation:Enum=schedule;change;request;retry;deletion;sessionDeleted
+// SyncTrigger is what started a sync cycle. The enum also admits "schedule",
+// which no cycle starts with any more: a cycle running at the upgrade
+// records it when it ends.
+// +kubebuilder:validation:Enum=change;request;retry;cleanup;deletion;sessionDeleted;schedule
 type SyncTrigger string
 
 const (
-	// TriggerSchedule: the workspace's sync cycle came due.
-	TriggerSchedule SyncTrigger = "schedule"
 	// TriggerChange: the workspace's spec changed, or its volume was claimed
 	// anew.
 	TriggerChange SyncTrigger = "change"
@@ -224,6 +180,9 @@ const (
 	TriggerRequest SyncTrigger = "request"
 	// TriggerRetry: the previous cycle failed.
 	TriggerRetry SyncTrigger = "retry"
+	// TriggerCleanup: a session directory's cleanup date came; the cycle
+	// only cleans up the session directories and fetches nothing.
+	TriggerCleanup SyncTrigger = "cleanup"
 	// TriggerDeletion: the workspace is deleted; the cycle only cleans up
 	// its session directories, until the last is gone and the volume goes
 	// with the workspace.
@@ -253,12 +212,6 @@ type WorkspaceStatus struct {
 	// LastSync is the last sync cycle's time and result.
 	// +optional
 	LastSync *LastSync `json:"lastSync,omitempty"`
-
-	// NextSync is when the schedule starts the next cycle, computed from the
-	// last one; absent for a custom schedule without a day. A change of the
-	// workspace and sync_workspace start one before.
-	// +optional
-	NextSync *metav1.Time `json:"nextSync,omitempty"`
 
 	// ActiveSync is the sync Job running now.
 	// +optional

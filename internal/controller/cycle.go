@@ -31,9 +31,11 @@ type Listings interface {
 }
 
 // trigger is what starts a cycle now, empty for nothing: a sync request, a
-// changed spec, a volume claimed anew, a first sync, a retry of a failed
-// cycle once the resync has passed, or the schedule come due. A cycle that
-// failed less than a resync ago starts again only for a request or a change.
+// changed spec, a volume claimed anew, a first sync, or a retry of a failed
+// cycle once the resync has passed. A cycle that failed less than a resync
+// ago starts again only for a request or a change. Nothing starts one on a
+// schedule: authorize_workspace requests one once the last is older than
+// the refresh threshold.
 func (c *Controller) trigger(ws *v1alpha1.Workspace, now time.Time, claim *corev1.PersistentVolumeClaim) v1alpha1.SyncTrigger {
 	if ws.Annotations[v1alpha1.AnnotationSyncRequested] != "" {
 		return v1alpha1.TriggerRequest
@@ -54,29 +56,21 @@ func (c *Controller) trigger(ws *v1alpha1.Workspace, now time.Time, claim *corev
 	if claim == nil {
 		return v1alpha1.TriggerChange
 	}
-	if next := workspace.NextSync(ws.Spec.Sync, last.Time.Time); !next.IsZero() && !next.After(now) {
-		return v1alpha1.TriggerSchedule
-	}
 	return ""
 }
 
-// wake is how long until the next cycle is due, zero for none: the schedule
-// after the last cycle, or the retry of a failed one.
+// wake is how long until the next look is due, zero for none: the retry of
+// a failed cycle, or the earliest cleanup date of a session directory.
 func (c *Controller) wake(ws *v1alpha1.Workspace, now time.Time) time.Duration {
 	last := ws.Status.LastSync
 	if last == nil || ws.Status.ActiveSync != nil {
 		return 0
 	}
-	var at time.Time
+	at := c.cleanupAt(ws)
 	if last.Result == v1alpha1.SyncFailed {
 		at = last.Time.Add(c.resync)
-	} else {
-		at = workspace.NextSync(ws.Spec.Sync, last.Time.Time)
 	}
-	if at.IsZero() {
-		return 0
-	}
-	return max(at.Sub(now), time.Second)
+	return wakeAt(at, now)
 }
 
 // cycle runs one sync cycle: the request annotations go, each owner is
@@ -163,10 +157,9 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	if !changed && !cleanupOnly {
 		now := c.now()
 		log.Info("sync cycle done: no change", "repositories", len(items), "need", needed.String())
-		return c.wakeAfter(ws, now), c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
+		return wakeAt(c.cleanupAt(ws), now), c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 			w.Status.ObservedGeneration = ws.Generation
 			w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncNoChange, Trigger: trigger}
-			w.Status.NextSync = nextSync(w.Spec.Sync, now)
 			w.Status.NeededSize, w.Status.VolumeSize = &needed, volumeSize
 			w.Status.StoredSize, w.Status.GrewFrom = storedSize(manifest, ws.Status.Sessions), grewFrom
 			w.Status.Manifest = ManifestName(ws)
@@ -199,7 +192,6 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	return 0, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ObservedGeneration = ws.Generation
 		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: trigger, CleanupOnly: cleanupOnly}
-		w.Status.NextSync = nil
 		w.Status.NeededSize, w.Status.VolumeSize = &needed, volumeSize
 		w.Status.GrewFrom = grewFrom
 		w.Status.Manifest = ManifestName(ws)
@@ -289,10 +281,6 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 	return true, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ActiveSync = nil
 		w.Status.LastSync = &last
-		w.Status.NextSync = nextSync(w.Spec.Sync, ended)
-		if w.DeletionTimestamp != nil {
-			w.Status.NextSync = nil
-		}
 		if succeeded {
 			w.Status.Repositories = repositories
 			w.Status.Sessions = sessions
@@ -315,6 +303,9 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 			case active.Trigger == v1alpha1.TriggerSessionDeleted:
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
 					"sync job "+active.Job+" deleted the directories of Sessions deleted in kagent; no mirror was fetched"))
+			case active.Trigger == v1alpha1.TriggerCleanup:
+				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
+					"sync job "+active.Job+" cleaned up the session directories past their cleanup date; no mirror was fetched"))
 			case active.CleanupOnly:
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
 					"the selection equals the last manifest and nothing was pushed since; sync job "+active.Job+" looked after the session directories"))
@@ -322,7 +313,6 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonSynced, "sync job "+active.Job+" succeeded"))
 			}
 		} else {
-			w.Status.NextSync = &metav1.Time{Time: ended.Add(c.resync)}
 			meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionFalse, v1alpha1.ReasonSyncFailed, last.Message))
 		}
 		return true
@@ -386,15 +376,14 @@ func (c *Controller) recordStored(ctx context.Context, ws *v1alpha1.Workspace) e
 	})
 }
 
-// fail records a cycle that ended before its Job: the result, the condition,
-// the share's size before the cycle grew it (nil for none) and the next try
-// at the resync. Extra conditions are set with it.
+// fail records a cycle that ended before its Job: the result, the condition
+// and the share's size before the cycle grew it (nil for none); the next try
+// is at the resync. Extra conditions are set with it.
 func (c *Controller) fail(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, grewFrom *resource.Quantity, reason, message string, conds ...metav1.Condition) error {
 	now := c.now()
 	return c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ObservedGeneration = ws.Generation
 		w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncFailed, Trigger: trigger, Message: message}
-		w.Status.NextSync = &metav1.Time{Time: now.Add(c.resync)}
 		w.Status.GrewFrom = grewFrom
 		for _, cond := range conds {
 			meta.SetStatusCondition(&w.Status.Conditions, cond)
@@ -459,12 +448,12 @@ func (c *Controller) syncError(ctx context.Context, ws *v1alpha1.Workspace, cond
 	return "sync job failed"
 }
 
-func (c *Controller) wakeAfter(ws *v1alpha1.Workspace, now time.Time) time.Duration {
-	next := workspace.NextSync(ws.Spec.Sync, now)
-	if next.IsZero() {
+// wakeAt is how long from now until at, zero for none.
+func wakeAt(at, now time.Time) time.Duration {
+	if at.IsZero() {
 		return 0
 	}
-	return max(next.Sub(now), time.Second)
+	return max(at.Sub(now), time.Second)
 }
 
 // changesSince compares the selection with the manifest's live entries: a
@@ -525,14 +514,6 @@ func repositoriesOf(m *mirror.Manifest) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func nextSync(s v1alpha1.Sync, after time.Time) *metav1.Time {
-	next := workspace.NextSync(s, after)
-	if next.IsZero() {
-		return nil
-	}
-	return &metav1.Time{Time: next}
 }
 
 func synced(ws *v1alpha1.Workspace, status metav1.ConditionStatus, reason, message string) metav1.Condition {

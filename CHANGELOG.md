@@ -9,7 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The workspace sync schedule: `spec.sync` (`schedule`, `weekdays`, `hour`) leaves the CRD, `create_workspace` and `update_workspace` and the workspace view, `nextSync` leaves the status and the view, and no cycle starts with the trigger `schedule`. The mirrors are refreshed at Session start instead (below). A stored Workspace that carries `spec.sync` loads and reconciles with the field dropped, and a tool call still passing `sync` is served with it ignored. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
+
 ### Added
+
+- `authorize_workspace` requests a sync of a granted workspace whose last sync is older than the refresh threshold (`--sync-refresh-after`, the chart's `sync.refreshAfter`, 1h), without the Session waiting for it, and says so in `syncRequested`. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
+- A live workspace's session directory goes at its own cleanup date in a cleanup-only Job (trigger `cleanup`) that fetches nothing, no longer at the next scheduled cycle; a deleted workspace whose directories have no earlier date is looked after a day after its last cycle. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
 
 - `list_workspaces` names the caller's member Organizations in `organizations`, from the manager's Organizations map, with or without a workspace and whatever the `organization` filter: one call per installation tells a client where the person may read and create workspaces, instead of a call per readable Organization, and a member who may only `get` their Organization sees it before its first workspace. ([#83](https://github.com/giantswarm/workspace-manager/issues/83))
 - `list_workspaces` (and every workspace view) carries `storedBytes`, what the volume stores as measured at the last sync, and `grewFrom`, the provisioned share's size before the last sync grew it, from the new status fields `storedSize` and `grewFrom`; a list shows each workspace's stored size and the grown-share marker without a `get_workspace` per row. A workspace synced before records its stored size from its last manifest at the next reconcile. ([#80](https://github.com/giantswarm/workspace-manager/issues/80))

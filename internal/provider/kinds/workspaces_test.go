@@ -184,9 +184,7 @@ func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
 		created := ok[api.Workspace](t, f.call(t, f.member, "create_workspace", map[string]any{
 			"name": "platform", "organization": "acme", "sources": platformSources, "sizing": map[string]any{"minimum": "8Gi"}}))
 		assert.Equal(t, "acme", created.Organization)
-		assert.Equal(t, v1alpha1.ScheduleNightly, created.Sync.Schedule)
 		assert.Equal(t, "8Gi", created.Sizing.Minimum)
-		assert.False(t, created.NextSync.IsZero(), "a nightly workspace has a next sync")
 
 		assert.Contains(t, workspaceNames(ok[api.WorkspacesResult](t, f.call(t, f.member, "list_workspaces", nil))), "platform")
 		assert.NotContains(t, workspaceNames(ok[api.WorkspacesResult](t, f.call(t, f.other, "list_workspaces", nil))), "platform",
@@ -225,16 +223,15 @@ func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
 		require.Len(t, page.Repositories, 1)
 		assert.Equal(t, "acme/repo-030", page.Repositories[0].Repository)
 
+		// A client that still sends a sync schedule is served: the argument
+		// is ignored, as the API server drops the field.
 		updated := ok[api.Workspace](t, f.call(t, f.member, "update_workspace", map[string]any{
 			"name": "platform", "sources": platformSources[1:], "sync": map[string]any{"schedule": "custom", "weekdays": []string{"monday"}, "hour": 4}}))
 		require.Len(t, updated.Sources, 1)
-		assert.Equal(t, v1alpha1.ScheduleCustom, updated.Sync.Schedule)
-		assert.Equal(t, time.Monday, updated.NextSync.Weekday())
-		assert.Equal(t, 4, updated.NextSync.Hour())
 		assert.Equal(t, "8Gi", updated.Sizing.Minimum, "sizing given nowhere is kept")
 
 		// A sync request is an annotation the controller serves: the view
-		// shows it until then, and the schedule stands.
+		// shows it until then.
 		synced := ok[api.SyncResult](t, f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "platform"}))
 		assert.Equal(t, "platform", synced.Workspace)
 		assert.Equal(t, "alice@acme.test", synced.RequestedBy)
@@ -243,7 +240,6 @@ func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
 		got = ok[api.WorkspaceDetail](t, f.call(t, f.member, "get_workspace", map[string]any{"workspace": "platform"}))
 		require.NotNil(t, got.Workspace.SyncRequest)
 		assert.Equal(t, api.SyncRequest{RequestedAt: synced.RequestedAt, RequestedBy: "alice@acme.test"}, *got.Workspace.SyncRequest)
-		assert.Equal(t, updated.NextSync, got.Workspace.NextSync, "the schedule is not the request's business")
 		again := ok[api.SyncResult](t, f.call(t, f.member, "sync_workspace", map[string]any{"workspace": "platform"}))
 		assert.False(t, again.RequestedAt.Before(synced.RequestedAt), "a second request replaces the first")
 
@@ -432,7 +428,7 @@ func syncedWorkspace(t *testing.T) *unstructured.Unstructured {
 	ws := &v1alpha1.Workspace{
 		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: "Workspace"},
 		ObjectMeta: metav1.ObjectMeta{Name: "synced", Namespace: wsNamespace, UID: "synced-uid"},
-		Spec: v1alpha1.WorkspaceSpec{Organization: "acme", Sync: v1alpha1.Sync{Schedule: v1alpha1.ScheduleNightly},
+		Spec: v1alpha1.WorkspaceSpec{Organization: "acme",
 			Sources: []v1alpha1.Source{{Provider: "github", Owner: "acme", Repositories: []string{"repo-001", "repo-002"}}}},
 		Status: v1alpha1.WorkspaceStatus{
 			LastSync:     &v1alpha1.LastSync{Time: metav1.NewTime(time.Date(2026, 10, 11, 3, 0, 0, 0, time.UTC)), Result: v1alpha1.SyncNoChange},

@@ -99,7 +99,14 @@ past it is `refused`, saying so. The answer's `outcome`:
   the manager, valid for `--grant-ttl` (5 minutes), to be passed to
   agent-manager's `start_session`, whose Session kagent admits only against
   this manager's keys. `changed` names the repositories pushed to since the
-  sync, which the Session fetches before its first turn.
+  sync, which the Session fetches before its first turn. When the last sync
+  is older than the refresh threshold (`--sync-refresh-after`, the chart's
+  `sync.refreshAfter`, 1h), the check also requests a sync, as
+  `sync_workspace` does, and `syncRequested` says so; the Session does not
+  wait for it. None is requested while a sync runs or one is requested
+  already; a last cycle that only cleaned up session directories listed no
+  provider, so it counts as no refresh. The mirrors are refreshed at Session
+  start, never on a schedule.
 - `refused`: `unreadable` names the repositories the person cannot read; or
   `reason` says why the workspace cannot be started on yet: it has not
   synced, its volume is not bound, or it is being deleted; or that a
@@ -156,7 +163,6 @@ spec:
     exclude: [legacy]
     includeArchived: false    # the default
     includeForks: false       # the default
-  sync: {schedule: custom, weekdays: [monday, thursday], hour: 2}  # or nightly (default), weekly
   sizing: {headroom: 8Gi, minimum: 32Gi}   # optional, no cap
 ```
 
@@ -167,10 +173,11 @@ CSI driver and handle), the manifest's ConfigMap, the session directories
 observed generation.
 
 **Validation.** The CRD's schema and CEL rules refuse what needs no context:
-a source without a selector (no repository name, language or topic), an
-invalid weekday or an hour outside 0 to 23, weekdays or an hour on a
-schedule other than `custom`, a negative headroom or minimum, and a change of
-Organization. The manager refuses a Workspace naming a provider instance the
+a source without a selector (no repository name, language or topic), a
+negative headroom or minimum, and a change of Organization. A Workspace
+written with the removed `spec.sync` schedule is accepted with the field
+dropped (the API server prunes it), and so is a tool call still passing
+`sync`. The manager refuses a Workspace naming a provider instance the
 installation does not configure, naming the instance.
 
 **Organization membership.** Every Workspace lives in one namespace, where no
@@ -197,19 +204,19 @@ caller, `invalid workspace` with the API server's or the manager's reason
 |---|---|---|
 | `list_workspaces` | `organization` (optional, a member's) | `workspaces`: each workspace's view (below); `organizations`: every Organization the caller is a member of, sorted, with or without a workspace and whatever the filter, where the caller may create one |
 | `get_workspace` | `workspace` | `workspace` (the view); `mirrors`: the last sync's repositories (`provider`, `repository`, `defaultBranch`, `head`, `pushedAt`, measured `sizeBytes`, `droppedAt`); `storage` (`mirrorsBytes`, `sessionsBytes`, `neededSize`, `volumeSize`); `sessionDirectories` (`session`, `name`, `creator`, `lastTurn`, `unknown`, `sizeBytes`, `cleanupAfter`) |
-| `create_workspace` | `name`, `organization`, `sources`, `sync` (default nightly), `sizing` (`headroom`, `minimum` as quantities) | the view |
-| `update_workspace` | `name`, `sources` (replaced), `sync` and `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
+| `create_workspace` | `name`, `organization`, `sources`, `sizing` (`headroom`, `minimum` as quantities) | the view |
+| `update_workspace` | `name`, `sources` (replaced), `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
 | `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume; `alreadyDeleting` when the workspace was being deleted, which runs its deletion cycle now |
 | `sync_workspace` | `workspace` | `workspace`, `requestedAt`, `requestedBy`; `activeSync` when a sync Job runs at the request, after which the requested cycle starts; `deleting` on a workspace being deleted, whose deletion cycle the request runs |
 | `list_repositories` | `organization` (a member's), `provider`, `owner`, `search` (name, ignoring case), `languages` (any of), `topics` (any of), `archived` and `fork` (`true` only those, `false` none, unset both), `page`, `pageSize` (50, at most 200) | `total` matching, `ownerTotal`, `page`, `pageSize`, `repositories` (`name`, `language`, `topics`, `archived`, `fork`, `lastPush`, `sizeKiB`), and every `languages` and `topics` value of the owner for the picker's filters |
 | `preview_workspace` | `workspace` (an existing one), or a draft's `organization`, `sources` and `sizing`; `search` (`owner/name`), `page`, `pageSize` | `total` selected now, `excluded`, `skippedArchived` and `skippedForks` (what a selector matched and those rules left out), `providerSizeKiB`, `estimatedVolumeSize`, `matching` the search, and the page's `repositories` (`provider`, `repository`, `language`, `topics`, `lastPush`, `sizeKiB`, `why`: `name`, `language <l>`, `topic <t>`) |
 
-The view of a workspace: `name`, `organization`, `sources`, `sync`,
+The view of a workspace: `name`, `organization`, `sources`,
 `sizing`, `resourceVersion`, `createdAt`, `deleting`, `lastSync` (`time`,
-`result`, `trigger`, `job`, `message`), `nextSync`, `activeSync` (the sync
-Job running now: `job`, `startedAt`, `trigger`), `syncRequest` (a
-`sync_workspace` request the controller has not taken up yet: `requestedAt`,
-`requestedBy`), the number of `repositories` and `sessions`, `volume`
+`result`, `trigger`, `job`, `message`), `activeSync` (the sync
+Job running now: `job`, `startedAt`, `trigger`), `syncRequest` (a sync
+request, from `sync_workspace` or `authorize_workspace`, the controller has
+not taken up yet: `requestedAt`, `requestedBy`), the number of `repositories` and `sessions`, `volume`
 (`claimName`, and the CSI `driver` and `handle` read from the bound
 PersistentVolume, which a Session's volume reference names; else `pending`
 says why), `neededSize`, `volumeSize`, `storedBytes` (what the volume stores,
@@ -217,13 +224,9 @@ measured at the last sync: the mirrors and the Session directories that
 `get_workspace`'s `storage` splits; absent before the first sync), `grewFrom`
 (the provisioned share's size before the last sync grew it; empty when it did
 not) and the `conditions`. `list_workspaces` carries both from the status, so a
-list needs no `get_workspace` per row. `nextSync` is
-the time the controller's timer is set for, `status.nextSync`: the schedule's
-next time after the last cycle, in UTC (nightly at 03:00, weekly on Sunday at
-03:00, custom on its weekdays at its hour), or the retry of a failed cycle;
-before the first cycle, the schedule's next time from now.
+list needs no `get_workspace` per row.
 
-`sync_workspace` asks for a cycle now, ahead of the schedule: it records the
+`sync_workspace` asks for a cycle now: it records the
 request and the caller as annotations on the Workspace
 (`workspace-manager.giantswarm.io/sync-requested`, `-by`), which the
 controller serves and removes. A request made while a sync Job runs is served
@@ -260,10 +263,13 @@ the lease exits and competes again. A cycle starts, in this order of
 precedence, for a `sync_workspace` request (trigger `request`), a changed
 spec or a first sync (`change`), a volume claimed anew (`change`: every
 repository is cloned again), a retry of a failed cycle once `--sync-cycle`
-(the chart's `sync.cycle`, 10m) has passed (`retry`), or the schedule come
-due (`schedule`). Nothing else wakes a cycle: every Workspace is reconciled
-every `--sync-cycle` besides, which only re-makes a claim deleted out from
-under it.
+(the chart's `sync.cycle`, 10m) has passed (`retry`). There is no schedule:
+a Session starting on a workspace whose last sync is older than the refresh
+threshold requests one (`authorize_workspace`, above), and nothing else
+wakes a cycle but the session directories' cleanup (below). Every Workspace
+is reconciled every `--sync-cycle` besides, which only re-makes a claim
+deleted out from under it. A last sync recorded before the schedule was
+removed may still carry the trigger `schedule`.
 
 A cycle lists each source's owner once with the provider instance's own sync
 credential (one listing per owner within a minute, shared with the pickers),
@@ -294,7 +300,7 @@ which the status carries.
 
 The status records it all, and nothing else writes it: `lastSync` (`time`,
 `result` `Succeeded`, `NoChange` or `Failed`, `trigger`, `job`, `message`),
-`activeSync` while a Job runs, `nextSync`, `repositories`, `neededSize`,
+`activeSync` while a Job runs, `repositories`, `neededSize`,
 `volumeSize`, `storedSize`, `grewFrom`, and the conditions `VolumeClaimed` and `Synced` (`True` with
 reason `Synced` or `NoChange`; `Unknown` with `Syncing`; `False` with
 `ListingFailed`, `SyncFailed`, `SizeCeiling` or `VolumeMissing`). A cycle
@@ -328,9 +334,16 @@ record of each Session's last turn:
   Session kagent no longer lists gets a cleanup-only Job at once (trigger
   `sessionDeleted`, the result `NoChange`): one Job for all its deleted
   Sessions, which fetches no mirror and deletes those directories and a
-  dropped mirror they were the last to borrow from. The regular cycle still
+  dropped mirror they were the last to borrow from. Every sync cycle still
   cleans up everything else, and catches a directory this missed (kagent
   unreachable, the Job failed, the manager restarted).
+- **The cleanup date.** A live workspace's directory goes at its own
+  cleanup date (`status.sessions[].cleanupAfter`), never waiting for a
+  sync: the controller wakes at the earliest date and starts a cleanup-only
+  Job (trigger `cleanup`, the result `NoChange`), which lists kagent's
+  Sessions anew, fetches no mirror and deletes the directories past their
+  window. A directory that Job leaves behind (its Session took a turn,
+  which moves the date) is not looked after again before `--sync-cycle`.
 - **Fails safe.** Without kagent, while kagent's listing fails (an
   incomplete listing is a failure) or while the volume's CSI handle is not
   known, no directory is deleted; the Job only measures them. The condition
@@ -353,8 +366,8 @@ record of each Session's last turn:
   its directory aside. A directory owned by root, or one the sync or its
   owner can neither measure nor delete, stays with the reason
   (`status.sessions[].error`, `SessionsCleanedUp` with `DirectoriesLeft`)
-  and never fails the cycle; a deleted workspace's cleanup then waits for
-  its schedule.
+  and never fails the cycle; it waits for the next cycle, on a deleted
+  workspace a day after the last.
 - **Dropped mirrors.** After the cleanup, a mirror the sync marked dropped
   is deleted once no session directory borrows from it (its clones'
   `objects/info/alternates`); one still borrowed stays, the manifest naming
@@ -368,8 +381,9 @@ record of each Session's last turn:
   `workspace-manager.giantswarm.io/volume`. Once deleted, its sync stops and
   no Session starts on it; its cycles (trigger `deletion`) only clean up the
   session directories — a directory whose Session kagent's listing does
-  not name goes in the first one, a listed Session's after its window — at its schedule or at the earliest cleanup date,
-  whichever comes first, or at once for a `sync_workspace` request or a
+  not name goes in the first one, a listed Session's after its window — at
+  the earliest cleanup date or a day after the last cycle, whichever comes
+  first, or at once for a `sync_workspace` request or a
   second `delete_workspace` (after a running Job): a directory cleared
   outside a cycle is found gone without waiting, while one still there is
   kept as by any cycle. When a cycle since the deletion leaves no
@@ -467,7 +481,7 @@ volume mounted at `--volume`:
 - `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request; `routes.go` is the one place every route is registered.
 - `internal/identity`: the caller and the caller's Dex token on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
-- `internal/workspace`: the Organization check, the provider validation, the Workspace store every tool reads and writes through, the selection a workspace's sources resolve to from the providers' listings (with why each repository is in), the last sync's manifest, the volume's CSI handle and the sync schedule.
+- `internal/workspace`: the Organization check, the provider validation, the Workspace store every tool reads and writes through, the selection a workspace's sources resolve to from the providers' listings (with why each repository is in), the last sync's manifest, and the volume's CSI handle.
 - `internal/controller`: the manager's controller, leader-elected among the replicas, watching the Workspaces of the workspaces' namespace and their sync Jobs: it runs each Workspace's sync cycle (the triggers, the no-op check, the selection and the credentials, the Job from the chart's template, the outcome from the manifest), sizes, claims and grows the volume from the installation's StorageClass, hands the Job kagent's Sessions for the session directories' cleanup, runs a deleted Workspace's cleanup to its last directory before its volume goes, and writes the Workspace's status, which nothing else writes.
 - `internal/kagent`: kagent's Sessions for the cleanup (`SessionService/ListSessions` over every creator), from the stubs in `internal/kagent/gen` that `make generate-kagent` makes from the protos pinned in `hack/kagent-proto`; `internal/kagent/kagenttest` is a fake kagent for tests.
 - `internal/kube`: the manager's Kubernetes clients.

@@ -21,6 +21,7 @@ tests:
             - --in-cluster=true
             - --namespace=kagent
             - --sync-cycle=10m
+            - --sync-refresh-after=1h
             - --sessions-cleanup-after=720h
             - --sessions-poll=30s
             - --sizing-factor=1.5
