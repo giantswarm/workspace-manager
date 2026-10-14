@@ -301,6 +301,11 @@ func TestWorkspaceTools(t *testing.T) {
 		require.Len(t, list.Workspaces, 1)
 		assert.Equal(t, "fs-1::fsap-1", list.Workspaces[0].Volume.Handle, "a Session's volume reference resolves to its workspace")
 		assert.Equal(t, w.LastSync.Time, list.Workspaces[0].LastSync.Time)
+		require.NotNil(t, w.StoredBytes)
+		assert.Equal(t, d.Storage.MirrorsBytes+d.Storage.SessionsBytes, *w.StoredBytes, "the stored bytes are the mirrors and the Session directories get_workspace splits")
+		assert.Equal(t, "8Gi", w.GrewFrom)
+		assert.Equal(t, w.StoredBytes, list.Workspaces[0].StoredBytes, "list_workspaces carries get_workspace's stored bytes")
+		assert.Equal(t, w.GrewFrom, list.Workspaces[0].GrewFrom, "and its grew-the-share marker")
 
 		del := ok[api.DeleteResult](t, f.call(t, f.member, "delete_workspace", map[string]any{"workspace": "synced"}))
 		assert.Equal(t, []string{"fix-flaky-test"}, del.Sessions)
@@ -400,7 +405,8 @@ func names(rs []api.Repository) []string {
 // CSI volume and a Session directory.
 func syncedWorkspace(t *testing.T) *unstructured.Unstructured {
 	t.Helper()
-	need, size, dir := resource.MustParse("6Gi"), resource.MustParse("10Gi"), resource.NewQuantity(180<<20, resource.BinarySI)
+	need, size, grewFrom, dir := resource.MustParse("6Gi"), resource.MustParse("10Gi"), resource.MustParse("8Gi"), resource.NewQuantity(180<<20, resource.BinarySI)
+	stored := resource.NewQuantity(184<<20, resource.BinarySI)
 	cleanup := metav1.NewTime(time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC))
 	ws := &v1alpha1.Workspace{
 		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: "Workspace"},
@@ -411,6 +417,7 @@ func syncedWorkspace(t *testing.T) *unstructured.Unstructured {
 			LastSync:     &v1alpha1.LastSync{Time: metav1.NewTime(time.Date(2026, 10, 11, 3, 0, 0, 0, time.UTC)), Result: v1alpha1.SyncNoChange},
 			Repositories: []string{"acme/repo-001", "acme/repo-002"},
 			NeededSize:   &need, VolumeSize: &size,
+			StoredSize: stored, GrewFrom: &grewFrom,
 			Volume:   &v1alpha1.VolumeRef{ClaimName: "workspace-synced"},
 			Manifest: "workspace-synced-manifest",
 			Sessions: []v1alpha1.SessionDirectory{{Session: "fix-flaky-test", Size: dir, CleanupAfter: &cleanup}},

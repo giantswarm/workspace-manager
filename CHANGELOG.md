@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `list_workspaces` (and every workspace view) carries `storedBytes`, what the volume stores as measured at the last sync, and `grewFrom`, the provisioned share's size before the last sync grew it, from the new status fields `storedSize` and `grewFrom`; a list shows each workspace's stored size and the grown-share marker without a `get_workspace` per row. A workspace synced before records its stored size from its last manifest at the next reconcile. ([#80](https://github.com/giantswarm/workspace-manager/issues/80))
+
 ### Fixed
 
 - `authorize_workspace` on a GitLab workspace answers in what the workspace selects, not in what the group holds: up to 100 selected projects of an owner are each asked for on their own as the person (`GET /projects/<group>%2F<path>`, eight at a time; 404 or 403, an empty project or one found under another path is not readable), so one project of a group with thousands costs one request and its head instead of paging through every project the person sees (20 sequential pages for 2,000, past muster's 30 s tool timeout from afar). More selected projects take the listing, whose pages after the first are now fetched eight at a time by the `Link` header's last page, for the sync's listing too. ([#65](https://github.com/giantswarm/workspace-manager/issues/65))

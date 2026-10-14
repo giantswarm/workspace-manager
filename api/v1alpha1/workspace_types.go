@@ -279,6 +279,16 @@ type WorkspaceStatus struct {
 	// +optional
 	VolumeSize *resource.Quantity `json:"volumeSize,omitempty"`
 
+	// StoredSize is what the volume stores, measured at the last sync: the
+	// mirrors the manifest records and the session directories.
+	// +optional
+	StoredSize *resource.Quantity `json:"storedSize,omitempty"`
+
+	// GrewFrom is the volume's provisioned size before the last sync cycle
+	// grew it; empty when that cycle did not grow it.
+	// +optional
+	GrewFrom *resource.Quantity `json:"grewFrom,omitempty"`
+
 	// Volume is the workspace's read-write-many volume.
 	// +optional
 	Volume *VolumeRef `json:"volume,omitempty"`

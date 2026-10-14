@@ -100,7 +100,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	sel, err := c.listings.Resolve(ctx, ws.Spec.Sources)
 	if err != nil {
 		log.Warn("sync cycle failed: listing", "error", err)
-		return c.resync, c.fail(ctx, ws, trigger, v1alpha1.ReasonListingFailed, err.Error())
+		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonListingFailed, err.Error())
 	}
 	items := make([]provider.Item, len(sel.Items))
 	for i, it := range sel.Items {
@@ -118,7 +118,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	provisioned, err := c.volumes.Provisioned(ctx)
 	if errors.Is(err, ErrNoStorageClass) {
 		log.Warn("sync cycle failed: no volume", "reason", v1alpha1.ReasonStorageClassMissing)
-		return c.resync, c.fail(ctx, ws, trigger, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonStorageClassMissing, err.Error()))
+		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonStorageClassMissing, err.Error()))
 	}
 	if err != nil {
 		return 0, err
@@ -128,7 +128,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	if provisioned {
 		if err := c.sizing.Exceeds(size); err != nil {
 			log.Warn("sync cycle failed: size ceiling", "need", need, "size", size.String())
-			return c.resync, c.fail(ctx, ws, trigger, v1alpha1.ReasonSizeCeiling, err.Error())
+			return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonSizeCeiling, err.Error())
 		}
 	}
 	request := NominalSize
@@ -137,17 +137,21 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	}
 	if claim, err = c.volumes.Claim(ctx, ws, request); err != nil {
 		log.Warn("sync cycle failed: volume claim", "error", err)
-		return c.resync, c.fail(ctx, ws, trigger, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonVolumeClaimFailed, err.Error()))
+		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonVolumeClaimFailed, err.Error()))
 	}
 	claimed := volumeClaimed(ws, metav1.ConditionTrue, v1alpha1.ReasonVolumeClaimed, fmt.Sprintf("claim %s from StorageClass %s", claim.Name, c.volumes.StorageClass))
-	var volumeSize *resource.Quantity
+	var volumeSize, grewFrom *resource.Quantity
 	if provisioned {
 		// The share grows before the added repositories are mirrored.
+		before := Requested(claim)
 		requested, err := c.volumes.Grow(ctx, claim, size)
 		if err != nil {
 			return 0, err
 		}
 		volumeSize = &requested
+		if requested.Cmp(before) > 0 {
+			grewFrom = &before
+		}
 	}
 	needed := *resource.NewQuantity(need, resource.BinarySI)
 
@@ -164,6 +168,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 			w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncNoChange, Trigger: trigger}
 			w.Status.NextSync = nextSync(w.Spec.Sync, now)
 			w.Status.NeededSize, w.Status.VolumeSize = &needed, volumeSize
+			w.Status.StoredSize, w.Status.GrewFrom = storedSize(manifest, ws.Status.Sessions), grewFrom
 			w.Status.Manifest = ManifestName(ws)
 			setVolume(w, claim)
 			meta.SetStatusCondition(&w.Status.Conditions, claimed)
@@ -176,7 +181,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	creds, err := c.credentials(ctx, sel)
 	if err != nil {
 		log.Warn("sync cycle failed: credentials", "error", err)
-		return c.resync, c.fail(ctx, ws, trigger, v1alpha1.ReasonListingFailed, err.Error(), claimed)
+		return c.resync, c.fail(ctx, ws, trigger, grewFrom, v1alpha1.ReasonListingFailed, err.Error(), claimed)
 	}
 	id, err := cycleID()
 	if err != nil {
@@ -196,6 +201,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: trigger, CleanupOnly: cleanupOnly}
 		w.Status.NextSync = nil
 		w.Status.NeededSize, w.Status.VolumeSize = &needed, volumeSize
+		w.Status.GrewFrom = grewFrom
 		w.Status.Manifest = ManifestName(ws)
 		setVolume(w, claim)
 		meta.SetStatusCondition(&w.Status.Conditions, claimed)
@@ -259,7 +265,7 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 		}
 	}
 
-	var needed, volumeSize *resource.Quantity
+	var needed, volumeSize, grewFrom *resource.Quantity
 	var repositories []string
 	var sessions []v1alpha1.SessionDirectory
 	succeeded := last.Result != v1alpha1.SyncFailed
@@ -269,7 +275,7 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 		need := c.sizing.Need(manifest, nil, sessions)
 		needed = resource.NewQuantity(need, resource.BinarySI)
 		var ceiling string
-		if volumeSize, ceiling, err = c.growAfter(ctx, ws, need); err != nil {
+		if volumeSize, grewFrom, ceiling, err = c.growAfter(ctx, ws, need); err != nil {
 			return false, err
 		}
 		if ceiling != "" {
@@ -293,9 +299,14 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 			if cond := directoriesLeft(ws, sessions); cond != nil {
 				meta.SetStatusCondition(&w.Status.Conditions, *cond)
 			}
+			w.Status.StoredSize = needed
 			w.Status.NeededSize = needed
 			if volumeSize != nil {
 				w.Status.VolumeSize = volumeSize
+			}
+			// A share grown before the mirroring keeps the size it grew from.
+			if grewFrom != nil && w.Status.GrewFrom == nil {
+				w.Status.GrewFrom = grewFrom
 			}
 			switch {
 			case active.Trigger == v1alpha1.TriggerDeletion:
@@ -321,18 +332,19 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 // growAfter expands a provisioned share after a sync when its free space is
 // below the headroom: to the formula's size, or to the ceiling when the
 // formula passes it, which the message says. It returns the request in
-// effect, nil on an elastic class.
-func (c *Controller) growAfter(ctx context.Context, ws *v1alpha1.Workspace, need int64) (*resource.Quantity, string, error) {
+// effect, nil on an elastic class, and the size it grew from, nil when it did
+// not grow.
+func (c *Controller) growAfter(ctx context.Context, ws *v1alpha1.Workspace, need int64) (*resource.Quantity, *resource.Quantity, string, error) {
 	provisioned, err := c.volumes.Provisioned(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if !provisioned {
-		return nil, "", nil
+		return nil, nil, "", nil
 	}
 	claim, err := c.volumes.Get(ctx, ws)
 	if err != nil || claim == nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	size := c.sizing.Size(need, ws.Spec.Sizing)
 	var message string
@@ -340,21 +352,50 @@ func (c *Controller) growAfter(ctx context.Context, ws *v1alpha1.Workspace, need
 		message = err.Error()
 		size = *c.sizing.MaxSize
 	}
+	before := Requested(claim)
 	requested, err := c.volumes.Grow(ctx, claim, size)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	return &requested, message, nil
+	if requested.Cmp(before) > 0 {
+		return &requested, &before, message, nil
+	}
+	return &requested, nil, message, nil
 }
 
-// fail records a cycle that ended before its Job: the result, the condition
-// and the next try at the resync. Extra conditions are set with it.
-func (c *Controller) fail(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, reason, message string, conds ...metav1.Condition) error {
+// storedSize is what the volume stores: the mirrors the manifest records,
+// dropped ones included, and the session directories.
+func storedSize(manifest *mirror.Manifest, sessions []v1alpha1.SessionDirectory) *resource.Quantity {
+	return resource.NewQuantity(DefaultSizing.Need(manifest, nil, sessions), resource.BinarySI)
+}
+
+// recordStored records the stored size of a Workspace whose status has none
+// yet, one synced before the status carried it, from its last manifest.
+func (c *Controller) recordStored(ctx context.Context, ws *v1alpha1.Workspace) error {
+	manifest, err := workspace.ReadManifest(ctx, c.core, c.namespace, ws)
+	if err != nil {
+		return err
+	}
+	stored := storedSize(manifest, ws.Status.Sessions)
+	return c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
+		if w.Status.StoredSize != nil {
+			return false
+		}
+		w.Status.StoredSize = stored
+		return true
+	})
+}
+
+// fail records a cycle that ended before its Job: the result, the condition,
+// the share's size before the cycle grew it (nil for none) and the next try
+// at the resync. Extra conditions are set with it.
+func (c *Controller) fail(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, grewFrom *resource.Quantity, reason, message string, conds ...metav1.Condition) error {
 	now := c.now()
 	return c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ObservedGeneration = ws.Generation
 		w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncFailed, Trigger: trigger, Message: message}
 		w.Status.NextSync = &metav1.Time{Time: now.Add(c.resync)}
+		w.Status.GrewFrom = grewFrom
 		for _, cond := range conds {
 			meta.SetStatusCondition(&w.Status.Conditions, cond)
 		}
