@@ -498,7 +498,7 @@ func TestNoChangeCostsOneListing(t *testing.T) {
 	f := newFixture(t, testClass, workspaceNamed("platform"))
 	ws := f.firstCycle("platform")
 	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
 	require.Equal(t, 1, f.listings.count())
 
 	// A Session starts past the refresh threshold.
@@ -506,7 +506,7 @@ func TestNoChangeCostsOneListing(t *testing.T) {
 	f.requestSync("platform")
 	requeue := f.reconcile("platform")
 
-	got = f.workspace("platform")
+	got := f.workspace("platform")
 	assert.Equal(t, 2, f.listings.count(), "the cycle lists once")
 	assert.Len(t, f.jobs(), 1, "no second Job")
 	assert.Nil(t, got.Status.ActiveSync)
@@ -529,7 +529,7 @@ func TestAPushStartsAJobForTheChangedRepository(t *testing.T) {
 	f := newFixture(t, testClass, workspaceNamed("platform"))
 	ws := f.firstCycle("platform")
 	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
 
 	pushed := f.clock().Add(time.Hour)
 	f.listings.put(item("web", pushed, 1024))
@@ -537,7 +537,7 @@ func TestAPushStartsAJobForTheChangedRepository(t *testing.T) {
 	f.requestSync("platform")
 	assert.Zero(t, f.reconcile("platform"))
 
-	got = f.workspace("platform")
+	got := f.workspace("platform")
 	require.NotNil(t, got.Status.ActiveSync, "a Job for the push")
 	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.ActiveSync.Trigger)
 	assert.Len(t, f.jobs(), 2)
@@ -559,7 +559,7 @@ func TestARepositoryJoinsAtTheNextCycle(t *testing.T) {
 	f.listings.put(api)
 	ws = f.firstCycle("platform")
 	require.Len(t, f.selection(ws).Repositories, 1, "api alone carries the topic")
-	got := f.completeCycle(ws, testNow, entry(api, 2<<20))
+	f.completeCycle(ws, testNow, entry(api, 2<<20))
 
 	web := item("web", testNow.Add(-24*time.Hour), 4096)
 	web.Topics = []string{"mcp"}
@@ -568,7 +568,7 @@ func TestARepositoryJoinsAtTheNextCycle(t *testing.T) {
 	f.requestSync("platform")
 	f.reconcile("platform")
 
-	got = f.workspace("platform")
+	got := f.workspace("platform")
 	require.NotNil(t, got.Status.ActiveSync)
 	sel := f.selection(got)
 	require.Len(t, sel.Repositories, 2)

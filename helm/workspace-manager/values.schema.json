@@ -735,10 +735,6 @@
                     "type": "string",
                     "description": "How often the controller reconciles every Workspace without an event, and how long after a failed sync cycle it tries again, a Go duration (`10m`, `1h`): a claim deleted out from under a Workspace is made again by then. Nothing syncs on a schedule: a Workspace syncs after every change, on `sync_workspace`, and when a Session starts on it past `refreshAfter`. Passed to `serve` as its `sync-cycle` flag."
                 },
-                "refreshAfter": {
-                    "type": "string",
-                    "description": "The refresh threshold, a Go duration: `authorize_workspace` requests a sync of a Workspace whose last sync is older, without the Session waiting for it. Passed to `serve` as its `sync-refresh-after` flag."
-                },
                 "job": {
                     "type": "object",
                     "additionalProperties": false,
@@ -803,6 +799,10 @@
                             "description": "How long a finished Job and its pod stay for inspection, in seconds: a day. The controller reads the result from the manifest ConfigMap, so a Job gone earlier still counts."
                         }
                     }
+                },
+                "refreshAfter": {
+                    "type": "string",
+                    "description": "The refresh threshold, a Go duration: `authorize_workspace` requests a sync of a Workspace whose last sync is older, without the Session waiting for it. Passed to `serve` as its `sync-refresh-after` flag."
                 }
             }
         },
