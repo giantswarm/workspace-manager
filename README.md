@@ -103,7 +103,9 @@ past it is `refused`, saying so. The answer's `outcome`:
   is older than the refresh threshold (`--sync-refresh-after`, the chart's
   `sync.refreshAfter`, 1h), the check also requests a sync, as
   `sync_workspace` does, and `syncRequested` says so; the Session does not
-  wait for it. None is requested while a sync runs or one is requested
+  wait for it. The requested cycle lists every owner anew, never from the
+  listing cache, so a threshold below the cache's minute still reads the
+  push. None is requested while a sync runs or one is requested
   already; a last cycle that only cleaned up session directories listed no
   provider, so it counts as no refresh. The mirrors are refreshed at Session
   start, never on a schedule.
@@ -272,15 +274,19 @@ deleted out from under it. A last sync recorded before the schedule was
 removed may still carry the trigger `schedule`.
 
 A cycle lists each source's owner once with the provider instance's own sync
-credential (one listing per owner within a minute, shared with the pickers),
+credential (one listing per owner within a minute, shared with the pickers;
+a requested cycle, from `sync_workspace` or a Session's start, lists anew),
 compares the selection with the last sync's manifest, and sizes and claims
 or grows the volume (below). **The no-op check:** a selection equal to the
 manifest's live entries, none pushed to since and no default branch moved,
 is recorded as `NoChange` and starts no Job: the listing is the cycle's whole
 cost, and no mirror's origin is contacted. When the volume holds session
 directories or a dropped mirror, the cycle still starts the Job, which
-fetches nothing (`activeSync.cleanupOnly`, the result `NoChange`) and only
-cleans up (below). Otherwise the controller writes
+fetches nothing (`activeSync.cleanupOnly`) and only cleans up (below): its
+result is `NoChange` when the Job removed nothing, else `Succeeded` with what
+it removed in `lastSync.message` and the `Synced` condition (`removed 3
+session directories, dropped 1 mirror`), which the Job writes beside its
+manifest. Otherwise the controller writes
 the selection (the ConfigMap `workspace-<name>-selection`: per repository
 its `pushedAt` as the provider lists it, which the sync compares with the
 manifest's to fetch only what moved), the credentials (the Secret
@@ -332,7 +338,8 @@ record of each Session's last turn:
   chart's `sessions.poll`, 30s) the controller lists kagent's Sessions once
   for every workspace; a live workspace whose status lists a directory of a
   Session kagent no longer lists gets a cleanup-only Job at once (trigger
-  `sessionDeleted`, the result `NoChange`): one Job for all its deleted
+  `sessionDeleted`, the result `Succeeded` with what it removed, `NoChange`
+  when nothing): one Job for all its deleted
   Sessions, which fetches no mirror and deletes those directories and a
   dropped mirror they were the last to borrow from. Every sync cycle still
   cleans up everything else, and catches a directory this missed (kagent
@@ -340,7 +347,8 @@ record of each Session's last turn:
 - **The cleanup date.** A live workspace's directory goes at its own
   cleanup date (`status.sessions[].cleanupAfter`), never waiting for a
   sync: the controller wakes at the earliest date and starts a cleanup-only
-  Job (trigger `cleanup`, the result `NoChange`), which lists kagent's
+  Job (trigger `cleanup`, the result `Succeeded` with what it removed,
+  `NoChange` when nothing), which lists kagent's
   Sessions anew, fetches no mirror and deletes the directories past their
   window. A directory that Job leaves behind (its Session took a turn,
   which moves the date) is not looked after again before `--sync-cycle`.

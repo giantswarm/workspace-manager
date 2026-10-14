@@ -802,7 +802,7 @@
                 },
                 "refreshAfter": {
                     "type": "string",
-                    "description": "The refresh threshold, a Go duration: `authorize_workspace` requests a sync of a Workspace whose last sync is older, without the Session waiting for it. Passed to `serve` as its `sync-refresh-after` flag."
+                    "description": "The refresh threshold, a Go duration: `authorize_workspace` requests a sync of a Workspace whose last sync is older, without the Session waiting for it. The requested sync lists the provider anew, never from the minute-long listing cache, so the value has no floor. Passed to `serve` as its `sync-refresh-after` flag."
                 }
             }
         },

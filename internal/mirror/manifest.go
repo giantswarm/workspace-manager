@@ -19,6 +19,22 @@ const ManifestFile = "manifest.json"
 // error under, beside the previous manifest; a successful sync removes it.
 const ErrorKey = "error"
 
+// RemovedKey is the key of the Job's result ConfigMap a successful sync writes
+// what it removed from the volume under, beside its manifest.
+const RemovedKey = "removed.json"
+
+// Removed is what one sync removed from the volume: the session directories
+// it cleaned up, by Session, and the dropped mirrors it deleted, by
+// repository key. The manifest records what stays; this is the cycle's own
+// record of what went.
+type Removed struct {
+	SessionDirectories []string `json:"sessionDirectories,omitempty"`
+	Mirrors            []string `json:"mirrors,omitempty"`
+}
+
+// None reports whether nothing was removed.
+func (r Removed) None() bool { return len(r.SessionDirectories) == 0 && len(r.Mirrors) == 0 }
+
 // Manifest records what the volume holds after a sync: every mirror with its
 // head commit, last-push time and measured size, and every session directory
 // with its Session, size and cleanup date. The next sync compares the

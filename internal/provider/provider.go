@@ -29,7 +29,7 @@ var ErrCredentialRefused = errors.New("the provider refused the credential")
 type Kind interface {
 	// List resolves an owner (an organization, a user account, a group) to
 	// every item it holds that cred can see, from a listing at most
-	// ListingFreshness old. Selection by name, language and topics is
+	// ListingFreshness old, or made by this call under FreshListing. Selection by name, language and topics is
 	// Select's, over what List reports.
 	List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]Item, error)
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,6 +13,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -91,7 +93,14 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	}
 	log.Info("sync cycle starting")
 
-	sel, err := c.listings.Resolve(ctx, ws.Spec.Sources)
+	// A requested cycle (sync_workspace, a Session's start past the refresh
+	// threshold) lists every owner anew: the listing cache may predate the
+	// push it was requested for.
+	listCtx := ctx
+	if trigger == v1alpha1.TriggerRequest {
+		listCtx = provider.FreshListing(ctx)
+	}
+	sel, err := c.listings.Resolve(listCtx, ws.Spec.Sources)
 	if err != nil {
 		log.Warn("sync cycle failed: listing", "error", err)
 		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonListingFailed, err.Error())
@@ -232,6 +241,8 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 	}
 	last := v1alpha1.LastSync{Time: metav1.NewTime(ended), Trigger: active.Trigger, Job: active.Job}
 	var manifest *mirror.Manifest
+	// removed is what a cleanup-only cycle's Job removed, empty for none.
+	var removed string
 	switch {
 	case cond != nil && cond.Type == batchv1.JobFailed:
 		last.Result, last.Message = v1alpha1.SyncFailed, c.syncError(ctx, ws, cond)
@@ -243,12 +254,21 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 		case manifest != nil && (job != nil || manifest.SyncedAt.After(active.StartedAt.Time)):
 			// A Job gone before its end was seen (its TTL, a restart) still
 			// left its manifest, which is the cycle's result.
+			// A cleanup-only cycle changed nothing unless its Job removed
+			// a session directory or a mirror.
 			last.Result = v1alpha1.SyncSucceeded
 			if active.CleanupOnly {
-				last.Result = v1alpha1.SyncNoChange
+				if removed, err = c.removed(ctx, ws); err != nil {
+					return false, err
+				}
+				if removed == "" {
+					last.Result = v1alpha1.SyncNoChange
+				} else {
+					last.Message = removed
+				}
 			}
 			if job == nil {
-				last.Message = "sync job " + active.Job + " is gone; its manifest stands"
+				last.Message = joinMessages(last.Message, "sync job "+active.Job+" is gone; its manifest stands")
 			}
 		case job == nil:
 			last.Result, last.Message = v1alpha1.SyncFailed, "sync job "+active.Job+" is gone without a manifest"
@@ -271,7 +291,7 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 			return false, err
 		}
 		if ceiling != "" {
-			last.Message = ceiling
+			last.Message = joinMessages(last.Message, ceiling)
 		}
 		log.Info("sync cycle done", "repositories", len(repositories), "sessionDirectories", len(sessions), "cleanupOnly", active.CleanupOnly,
 			"need", needed.String(), "volumeSize", quantityString(volumeSize), "ceiling", ceiling)
@@ -296,19 +316,23 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 			if grewFrom != nil && w.Status.GrewFrom == nil {
 				w.Status.GrewFrom = grewFrom
 			}
+			reason := v1alpha1.ReasonNoChange
+			if removed != "" {
+				reason = v1alpha1.ReasonSynced
+			}
 			switch {
 			case active.Trigger == v1alpha1.TriggerDeletion:
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionFalse, v1alpha1.ReasonDeleting,
 					fmt.Sprintf("the workspace is deleted: its sync stopped, and %d session directories are left on its volume", len(sessions))))
 			case active.Trigger == v1alpha1.TriggerSessionDeleted:
-				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
-					"sync job "+active.Job+" deleted the directories of Sessions deleted in kagent; no mirror was fetched"))
+				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, reason,
+					joinMessages("sync job "+active.Job+" deleted the directories of Sessions deleted in kagent; no mirror was fetched", removed)))
 			case active.Trigger == v1alpha1.TriggerCleanup:
-				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
-					"sync job "+active.Job+" cleaned up the session directories past their cleanup date; no mirror was fetched"))
+				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, reason,
+					joinMessages("sync job "+active.Job+" cleaned up the session directories past their cleanup date; no mirror was fetched", removed)))
 			case active.CleanupOnly:
-				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonNoChange,
-					"the selection equals the last manifest and nothing was pushed since; sync job "+active.Job+" looked after the session directories"))
+				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, reason,
+					joinMessages("the selection equals the last manifest and nothing was pushed since; sync job "+active.Job+" looked after the session directories", removed)))
 			default:
 				meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionTrue, v1alpha1.ReasonSynced, "sync job "+active.Job+" succeeded"))
 			}
@@ -317,6 +341,53 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 		}
 		return true
 	})
+}
+
+// removed says what the sync Job of the cycle removed from the volume, as it
+// wrote it beside the manifest ("removed 3 session directories, dropped 1
+// mirror"); empty when it removed nothing.
+func (c *Controller) removed(ctx context.Context, ws *v1alpha1.Workspace) (string, error) {
+	cm, err := c.core.CoreV1().ConfigMaps(c.namespace).Get(ctx, ManifestName(ws), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read what the sync of workspace %s removed: %w", ws.Name, err)
+	}
+	raw := cm.Data[mirror.RemovedKey]
+	if raw == "" {
+		return "", nil
+	}
+	var r mirror.Removed
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		return "", fmt.Errorf("parse what the sync of workspace %s removed: %w", ws.Name, err)
+	}
+	var parts []string
+	if n := len(r.SessionDirectories); n > 0 {
+		parts = append(parts, "removed "+count(n, "session directory", "session directories"))
+	}
+	if n := len(r.Mirrors); n > 0 {
+		parts = append(parts, "dropped "+count(n, "mirror", "mirrors"))
+	}
+	return strings.Join(parts, ", "), nil
+}
+
+func count(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// joinMessages joins the non-empty messages with "; ".
+func joinMessages(messages ...string) string {
+	var out []string
+	for _, m := range messages {
+		if m != "" {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 // growAfter expands a provisioned share after a sync when its free space is

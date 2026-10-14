@@ -87,7 +87,9 @@ sync:
   cycle: 10m
   # -- The refresh threshold, a Go duration: `authorize_workspace` requests a
   # sync of a Workspace whose last sync is older, without the Session waiting
-  # for it. Passed to `serve` as its `sync-refresh-after` flag.
+  # for it. The requested sync lists the provider anew, never from the
+  # minute-long listing cache, so the value has no floor. Passed to `serve` as
+  # its `sync-refresh-after` flag.
   refreshAfter: 1h
   # The sync Job the controller starts per cycle that has something to fetch,
   # in `workspaces.namespace`, from the template the chart renders

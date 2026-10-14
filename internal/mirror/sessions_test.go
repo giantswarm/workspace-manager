@@ -184,6 +184,7 @@ func TestADroppedMirrorGoesWithItsLastBorrower(t *testing.T) {
 	res = h.run(t1.Add(time.Minute), &Selection{Repositories: []Repository{h.repo("acme", "alpha", t0)}, Cleanup: cleanup(nil)})
 	require.Equal(t, []string{"s1"}, res.CleanedUp)
 	require.Equal(t, []string{"acme/beta"}, res.Deleted)
+	require.Equal(t, Removed{SessionDirectories: []string{"s1"}, Mirrors: []string{"acme/beta"}}, res.Removal())
 	require.NoDirExists(t, h.mirror("acme", "beta"))
 	require.Nil(t, h.manifest().Entry("acme", "beta"))
 	require.NotNil(t, h.manifest().Entry("acme", "alpha"))

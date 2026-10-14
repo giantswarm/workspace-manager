@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -73,15 +74,17 @@ func (stubKind) Hosts() provider.Hosts {
 func (stubKind) SecretRefs() []provider.SecretRef { return nil }
 
 // listings is a Listings over fixed items per provider/owner, counting its
-// calls: the no-op check must cost one listing and nothing else.
+// calls: the no-op check must cost one listing and nothing else. With a
+// cache, each owner is listed through it, as a provider kind lists.
 type listings struct {
 	mu    sync.Mutex
 	items map[string][]provider.Item
 	calls int
 	err   error
+	cache *provider.ListingCache
 }
 
-func (l *listings) Resolve(_ context.Context, sources []v1alpha1.Source) (*workspace.Selection, error) {
+func (l *listings) Resolve(ctx context.Context, sources []v1alpha1.Source) (*workspace.Selection, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
@@ -90,7 +93,15 @@ func (l *listings) Resolve(_ context.Context, sources []v1alpha1.Source) (*works
 	}
 	sel := &workspace.Selection{}
 	for _, s := range sources {
-		for _, it := range provider.Select(l.items[s.Provider+"/"+s.Owner], workspace.SourceOf(s)) {
+		key := s.Provider + "/" + s.Owner
+		items := l.items[key]
+		if l.cache != nil {
+			var err error
+			if items, err = l.cache.Get(ctx, key, func() ([]provider.Item, error) { return slices.Clone(l.items[key]), nil }); err != nil {
+				return nil, err
+			}
+		}
+		for _, it := range provider.Select(items, workspace.SourceOf(s)) {
 			sel.Items = append(sel.Items, workspace.Selected{Provider: s.Provider, Item: it, Why: []string{"name"}})
 		}
 	}
@@ -195,6 +206,12 @@ func (f *fixture) clock() time.Time {
 	defer f.mu.Unlock()
 	return f.now
 }
+
+// providerClock is the fixture's clock as a provider kind reads it.
+type providerClock struct{ f *fixture }
+
+func (c providerClock) Now() time.Time                             { return c.f.clock() }
+func (c providerClock) Sleep(context.Context, time.Duration) error { return nil }
 
 func (f *fixture) advance(d time.Duration) {
 	f.mu.Lock()
@@ -614,6 +631,46 @@ func TestSyncRequestStartsACycleNow(t *testing.T) {
 	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.LastSync.Trigger)
 	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)
 	assert.Equal(t, 4, f.listings.count())
+}
+
+// TestARequestedCycleReadsAFreshListing: a requested cycle (sync_workspace,
+// a Session's start past a refresh threshold below the listing freshness)
+// lists the provider anew, so a push since the last listing is fetched
+// however recently the owner was listed; a cycle nobody requested still
+// shares the cached listing.
+func TestARequestedCycleReadsAFreshListing(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.listings.cache = provider.NewListingCache(providerClock{f})
+	ws := f.firstCycle("platform")
+	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
+	f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+
+	// A Session starts: nothing changed, the owner is listed now.
+	f.advance(3 * time.Second)
+	f.requestSync("platform")
+	f.reconcile("platform")
+	require.Equal(t, v1alpha1.SyncNoChange, f.workspace("platform").Status.LastSync.Result)
+
+	// api is pushed; the next Session starts 3s later, well within the
+	// listing freshness: its cycle fetches api.
+	pushed := f.clock()
+	f.listings.put(item("api", pushed, 1024))
+	f.advance(3 * time.Second)
+	require.Less(t, 6*time.Second, provider.ListingFreshness)
+	f.requestSync("platform")
+	f.reconcile("platform")
+	got := f.workspace("platform")
+	require.NotNil(t, got.Status.ActiveSync, "the push is seen: the Job runs")
+	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.ActiveSync.Trigger)
+	assert.False(t, got.Status.ActiveSync.CleanupOnly, "the Job fetches")
+	assert.Equal(t, []string{"api", "web"}, func() []string {
+		var names []string
+		for _, r := range f.selection(got).Repositories {
+			names = append(names, r.Name)
+		}
+		return names
+	}())
+	assert.True(t, f.selection(got).Repositories[0].PushedAt.Equal(pushed), "api at its new push")
 }
 
 // TestASpecChangeStartsACycle: a new generation starts a cycle at once.
