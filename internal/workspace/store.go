@@ -142,6 +142,12 @@ func (s *Store) CheckOrganization(ctx context.Context, org string) error {
 	return s.orgs.Check(ctx, org)
 }
 
+// Organizations returns the Organizations the caller is a member of, sorted,
+// with or without a Workspace: where a member may create one.
+func (s *Store) Organizations(ctx context.Context) []string {
+	return s.orgs.Of(ctx)
+}
+
 // RequestSync asks the controller for a sync cycle of a Workspace of an
 // Organization the caller is a member of, now: it records the request and
 // the caller as annotations the controller acts on and removes. A request

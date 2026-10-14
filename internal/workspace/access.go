@@ -56,16 +56,37 @@ func ParseOrganizations(entries []string) (Organizations, error) {
 }
 
 // Check returns nil when the caller in ctx is a member of org, ErrForbidden
-// otherwise. It is the one place membership is decided.
+// otherwise.
 func (o Organizations) Check(ctx context.Context, org string) error {
 	id, ok := identity.FromContext(ctx)
 	if !ok {
 		return fmt.Errorf("%w: no authenticated caller", ErrForbidden)
 	}
-	for _, g := range o[org] {
-		if slices.Contains(id.Groups, g) {
-			return nil
+	if !o.member(id, org) {
+		return fmt.Errorf("%w: %s is not a member of Organization %q", ErrForbidden, id, org)
+	}
+	return nil
+}
+
+// Of returns the Organizations the caller in ctx is a member of, sorted,
+// whether or not they have a workspace; none for no caller.
+func (o Organizations) Of(ctx context.Context) []string {
+	out := []string{}
+	id, ok := identity.FromContext(ctx)
+	if !ok {
+		return out
+	}
+	for org := range o {
+		if o.member(id, org) {
+			out = append(out, org)
 		}
 	}
-	return fmt.Errorf("%w: %s is not a member of Organization %q", ErrForbidden, id, org)
+	slices.Sort(out)
+	return out
+}
+
+// member is the one place membership is decided: the caller carries one of
+// org's member groups.
+func (o Organizations) member(id *identity.Identity, org string) bool {
+	return slices.ContainsFunc(o[org], func(g string) bool { return slices.Contains(id.Groups, g) })
 }

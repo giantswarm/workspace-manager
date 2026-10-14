@@ -146,6 +146,10 @@ type Condition struct {
 // WorkspacesResult is list_workspaces' result.
 type WorkspacesResult struct {
 	Workspaces []Workspace `json:"workspaces"`
+	// Organizations are every Organization the caller is a member of, with
+	// or without a workspace and whatever the organization filter: where
+	// the caller may create one.
+	Organizations []string `json:"organizations"`
 }
 
 // WorkspaceDetail is get_workspace's result.
@@ -225,7 +229,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	nameArg := mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name"))
 
 	s.AddTool(mcp.NewTool("list_workspaces",
-		mcp.WithDescription("List the workspaces of your Organizations: sources, last and next sync, repository count, the volume's CSI handle, what the volume stores (storedBytes), the size a provisioned share grew from at the last sync (grewFrom), and the Sessions with a directory on it."),
+		mcp.WithDescription("List the workspaces of your Organizations: sources, last and next sync, repository count, the volume's CSI handle, what the volume stores (storedBytes), the size a provisioned share grew from at the last sync (grewFrom), and the Sessions with a directory on it. organizations names every Organization you are a member of, with or without a workspace: where you may create one."),
 		mcp.WithString("organization", mcp.Description("Only this Organization's workspaces; you must be a member")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
@@ -241,7 +245,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		if err != nil {
 			return toolError("list workspaces", err), nil
 		}
-		out := WorkspacesResult{Workspaces: []Workspace{}}
+		out := WorkspacesResult{Workspaces: []Workspace{}, Organizations: t.store.Organizations(ctx)}
 		for i := range list {
 			if org != "" && list[i].Spec.Organization != org {
 				continue
@@ -252,7 +256,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 			}
 			out.Workspaces = append(out.Workspaces, w)
 		}
-		return mcp.NewToolResultStructured(out, fmt.Sprintf("%d workspaces", len(out.Workspaces))), nil
+		return mcp.NewToolResultStructured(out, fmt.Sprintf("%d workspaces; member of %d Organizations: %s",
+			len(out.Workspaces), len(out.Organizations), strings.Join(out.Organizations, ", "))), nil
 	})
 
 	s.AddTool(mcp.NewTool("get_workspace",
