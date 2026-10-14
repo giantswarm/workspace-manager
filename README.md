@@ -195,7 +195,7 @@ caller, `invalid workspace` with the API server's or the manager's reason
 
 | Tool | Input | Result |
 |---|---|---|
-| `list_workspaces` | `organization` (optional, a member's) | `workspaces`: each workspace's view (below) |
+| `list_workspaces` | `organization` (optional, a member's) | `workspaces`: each workspace's view (below); `organizations`: every Organization the caller is a member of, sorted, with or without a workspace and whatever the filter, where the caller may create one |
 | `get_workspace` | `workspace` | `workspace` (the view); `mirrors`: the last sync's repositories (`provider`, `repository`, `defaultBranch`, `head`, `pushedAt`, measured `sizeBytes`, `droppedAt`); `storage` (`mirrorsBytes`, `sessionsBytes`, `neededSize`, `volumeSize`); `sessionDirectories` (`session`, `name`, `creator`, `lastTurn`, `unknown`, `sizeBytes`, `cleanupAfter`) |
 | `create_workspace` | `name`, `organization`, `sources`, `sync` (default nightly), `sizing` (`headroom`, `minimum` as quantities) | the view |
 | `update_workspace` | `name`, `sources` (replaced), `sync` and `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |

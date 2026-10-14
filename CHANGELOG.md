@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `list_workspaces` names the caller's member Organizations in `organizations`, from the manager's Organizations map, with or without a workspace and whatever the `organization` filter: one call per installation tells a client where the person may read and create workspaces, instead of a call per readable Organization, and a member who may only `get` their Organization sees it before its first workspace. ([#83](https://github.com/giantswarm/workspace-manager/issues/83))
 - `list_workspaces` (and every workspace view) carries `storedBytes`, what the volume stores as measured at the last sync, and `grewFrom`, the provisioned share's size before the last sync grew it, from the new status fields `storedSize` and `grewFrom`; a list shows each workspace's stored size and the grown-share marker without a `get_workspace` per row. A workspace synced before records its stored size from its last manifest at the next reconcile. ([#80](https://github.com/giantswarm/workspace-manager/issues/80))
 
 ### Fixed

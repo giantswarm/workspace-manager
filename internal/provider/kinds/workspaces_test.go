@@ -159,6 +159,27 @@ var platformSources = []any{
 // workspaceToolsFlow is what a member and a non-member do through the tools,
 // against the given API server.
 func workspaceToolsFlow(t *testing.T, f *toolsFixture) {
+	t.Run("list_workspaces names the caller's Organizations, with or without a workspace", func(t *testing.T) {
+		staff := identity.ContextWith(context.Background(), &identity.Identity{Subject: "sam", Email: "sam@staff.test", Groups: []string{"acme-devs", "umbrella-devs"}})
+		for _, c := range []struct {
+			ctx  context.Context
+			args map[string]any
+			want []string
+		}{
+			{f.member, nil, []string{"acme"}},
+			{f.other, nil, []string{"umbrella"}},
+			{staff, nil, []string{"acme", "umbrella"}},
+			{staff, map[string]any{"organization": "umbrella"}, []string{"acme", "umbrella"}},
+			{context.Background(), nil, []string{}},
+		} {
+			list := ok[api.WorkspacesResult](t, f.call(t, c.ctx, "list_workspaces", c.args))
+			assert.Equal(t, c.want, list.Organizations)
+		}
+		umbrella := ok[api.WorkspacesResult](t, f.call(t, f.other, "list_workspaces", nil))
+		assert.Empty(t, umbrella.Workspaces, "umbrella has no workspace")
+		assert.Equal(t, []string{"umbrella"}, umbrella.Organizations, "and its member still sees it, to create the first")
+	})
+
 	t.Run("a member creates, lists, gets, previews, updates and deletes", func(t *testing.T) {
 		created := ok[api.Workspace](t, f.call(t, f.member, "create_workspace", map[string]any{
 			"name": "platform", "organization": "acme", "sources": platformSources, "sizing": map[string]any{"minimum": "8Gi"}}))

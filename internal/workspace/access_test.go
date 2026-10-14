@@ -37,3 +37,12 @@ func TestCheck(t *testing.T) {
 	require.ErrorIs(t, orgs.Check(caller("acme-devs"), "unknown"), ErrForbidden)
 	require.ErrorIs(t, orgs.Check(context.Background(), "acme"), ErrForbidden, "no caller")
 }
+
+func TestOf(t *testing.T) {
+	orgs := Organizations{"umbrella": {"umbrella-devs", "staff"}, "acme": {"acme-devs", "staff"}, "nobody": nil}
+
+	require.Equal(t, []string{"acme"}, orgs.Of(caller("other", "acme-devs")))
+	require.Equal(t, []string{"acme", "umbrella"}, orgs.Of(caller("staff")), "sorted")
+	require.Equal(t, []string{}, orgs.Of(caller("other")))
+	require.Equal(t, []string{}, orgs.Of(context.Background()), "no caller")
+}
