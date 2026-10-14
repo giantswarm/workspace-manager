@@ -272,25 +272,29 @@ func TestReadableNamesSubgroupProjects(t *testing.T) {
 // A large group is checked in what the workspace selects: GitLab answering
 // each request after a round trip, the listing of the 1,800 projects the
 // person reads alone takes 18 of them one after the other, and every readable project's head one more,
-// eight at a time.
+// eight at a time. The round trips are counted on the stub, so a busy
+// machine does not fail the test.
 func TestReadableChecksALargeGroupInWhatIsNamed(t *testing.T) {
 	const latency = 200 * time.Millisecond
+	// slack is the rounds a request sent as another's answer lands may add on
+	// a busy machine; far below what a design costing more round trips adds.
+	const slack = 3
 	for _, tc := range []struct {
 		name       string
 		named      int
 		noLastLink bool
 		listed     int
 		projects   int
-		within     time.Duration
+		rounds     int
 	}{
 		// A project and its head: 2 round trips, where the listing took 19.
-		{name: "one project", named: 1, projects: 1, within: 6 * latency},
+		{name: "one project", named: 1, projects: 1, rounds: 2},
 		// 13 rounds of projects, 12 of heads.
-		{name: "a page of projects, each on its own", named: 100, projects: 100, within: 35 * latency},
+		{name: "a page of projects, each on its own", named: 100, projects: 100, rounds: 25},
 		// The first page, 3 rounds of the other 17, 17 of heads.
-		{name: "more than a page take the listing, its pages at once", named: 150, listed: 18, within: 30 * latency},
+		{name: "more than a page take the listing, its pages at once", named: 150, listed: 18, rounds: 21},
 		// 18 pages one after the other, 17 rounds of heads.
-		{name: "without a last link the pages follow one another", named: 150, noLastLink: true, listed: 18, within: 50 * latency},
+		{name: "without a last link the pages follow one another", named: 150, noLastLink: true, listed: 18, rounds: 35},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -315,16 +319,18 @@ func TestReadableChecksALargeGroupInWhatIsNamed(t *testing.T) {
 			person := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: s.Person(reads...)})
 
 			s.Latency = latency
+			before := s.Rounds()
 			start := time.Now()
 			items, err := k.Readable(context.Background(), person, "acme", named)
 			took := time.Since(start)
-			t.Logf("%d of 2,000 projects named: %d readable in %s, %d listing pages, %d project reads",
-				tc.named, len(items), took.Round(time.Millisecond), s.Listed(), s.ProjectReads())
+			rounds := s.Rounds() - before
+			t.Logf("%d of 2,000 projects named: %d readable in %s, %d round trips, %d listing pages, %d project reads",
+				tc.named, len(items), took.Round(time.Millisecond), rounds, s.Listed(), s.ProjectReads())
 			require.NoError(t, err)
 			assert.ElementsMatch(t, want, names(items), "every tenth project the person cannot read is left out")
 			assert.Equal(t, tc.listed, s.Listed(), "listing pages")
 			assert.Equal(t, tc.projects, s.ProjectReads(), "projects asked for on their own")
-			assert.Less(t, took, tc.within)
+			assert.LessOrEqual(t, rounds, tc.rounds+slack, "round trips one after the other")
 		})
 	}
 }

@@ -70,7 +70,12 @@ type Server struct {
 	projReads int
 	headFails int
 	requests  int
-	limits    []Limit
+	// answered is the highest round of the requests answered so far, rounds
+	// the highest round served: a request's round is one past every request
+	// answered before it came.
+	answered int
+	rounds   int
+	limits   []Limit
 }
 
 type project struct {
@@ -216,6 +221,15 @@ func (s *Server) Requests() int {
 	return s.requests
 }
 
+// Rounds is the length of the longest chain of requests each sent after the
+// one before was answered: the round trips a GitLab far away costs, however
+// busy the machine running the test.
+func (s *Server) Rounds() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rounds
+}
+
 // Values configure a gitlab instance against the stub.
 func (s *Server) Values() json.RawMessage {
 	raw, _ := json.Marshal(map[string]any{
@@ -240,6 +254,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.requests++
+	round := s.answered + 1
+	s.rounds = max(s.rounds, round)
+	defer func() {
+		s.mu.Lock()
+		s.answered = max(s.answered, round)
+		s.mu.Unlock()
+	}()
 	var limit *Limit
 	if len(s.limits) > 0 {
 		limit, s.limits = &s.limits[0], s.limits[1:]
