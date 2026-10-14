@@ -1,0 +1,6 @@
+spec:
+  template:
+    spec:
+      serviceAccountName: workspace-manager-sync
+      restartPolicy: Never
+      containers: [{name: sync, image: "gsoci.azurecr.io/giantswarm/workspace-manager:1.2.3"}]

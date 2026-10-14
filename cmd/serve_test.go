@@ -86,7 +86,6 @@ func TestServeControllerFlags(t *testing.T) {
 		"sizing-headroom-share":    "0.5",
 		"sizing-max-size":          "",
 		"sync-job-template":        "",
-		"sync-service-account":     "",
 		"sync-image":               "",
 		"leader-election":          "true",
 		"leader-election-identity": "",
@@ -111,7 +110,7 @@ func TestServeControllerFlags(t *testing.T) {
 func validServeOptions() *serveOptions {
 	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour, sessionPoll: time.Minute,
 		sizingFactor: 2, sizingHeadroom: "10Gi", sizingHeadroomShare: 0.25, sizingMaxSize: "500Gi",
-		syncServiceAccount: "workspace-manager-sync", leaderElection: true, leaderIdentity: "workspace-manager-0",
+		syncJobTemplate: "testdata/sync-job.yaml", leaderElection: true, leaderIdentity: "workspace-manager-0",
 		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager"}
 }
 
@@ -127,8 +126,9 @@ func TestServeControllerConfig(t *testing.T) {
 	assert.InDelta(t, 0.25, cfg.Sizing.HeadroomShare, 0)
 	require.NotNil(t, cfg.Sizing.MaxSize)
 	assert.Equal(t, "500Gi", cfg.Sizing.MaxSize.String())
-	assert.Equal(t, "workspace-manager-sync", cfg.SyncServiceAccount)
-	assert.Nil(t, cfg.SyncJobTemplate, "no template: the default Job")
+	require.NotNil(t, cfg.SyncJobTemplate)
+	assert.Equal(t, "workspace-manager-sync", cfg.SyncJobTemplate.Spec.Template.Spec.ServiceAccountName)
+	assert.Empty(t, cfg.SyncImage, "no sync image: the template's")
 	require.NotNil(t, cfg.LeaderElection)
 	assert.Equal(t, "workspace-manager-0", cfg.LeaderElection.Identity)
 
@@ -156,6 +156,12 @@ func TestServeControllerConfig(t *testing.T) {
 	assert.Nil(t, cfg.SyncRoots, "no CA file: the sync fetches with the image's roots")
 
 	o = validServeOptions()
+	o.syncJobTemplate, o.syncImage = "testdata/sync-job-no-image.yaml", "workspace-manager:dev"
+	cfg, err = o.controllerConfig()
+	require.NoError(t, err, "a template without an image runs --sync-image")
+	assert.Equal(t, "workspace-manager:dev", cfg.SyncImage)
+
+	o = validServeOptions()
 	o.syncCAFile = filepath.Join(t.TempDir(), "ca.crt")
 	require.NoError(t, os.WriteFile(o.syncCAFile, []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"), 0o600))
 	cfg, err = o.controllerConfig()
@@ -169,19 +175,22 @@ func TestServeControllerConfigFailsTheStart(t *testing.T) {
 		mutate func(*serveOptions)
 		want   string
 	}{
-		"zero cycle":        {func(o *serveOptions) { o.syncCycle = 0 }, "--sync-cycle"},
-		"negative cleanup":  {func(o *serveOptions) { o.sessionCleanupAfter = -time.Hour }, "--sessions-cleanup-after"},
-		"zero poll":         {func(o *serveOptions) { o.sessionPoll = 0 }, "--sessions-poll"},
-		"bad headroom":      {func(o *serveOptions) { o.sizingHeadroom = "lots" }, "--sizing-headroom"},
-		"bad max size":      {func(o *serveOptions) { o.sizingMaxSize = "huge" }, "--sizing-max-size"},
-		"factor below one":  {func(o *serveOptions) { o.sizingFactor = 0.5 }, "sizing factor"},
-		"negative headroom": {func(o *serveOptions) { o.sizingHeadroom = "-1Gi" }, "headroom must not be negative"},
-		"negative share":    {func(o *serveOptions) { o.sizingHeadroomShare = -1 }, "headroom share"},
-		"zero max size":     {func(o *serveOptions) { o.sizingMaxSize = "0" }, "maximum size must be positive"},
-		"bad pull policy":   {func(o *serveOptions) { o.syncImagePullPolicy = "Sometimes" }, "--sync-image-pull-policy"},
-		"absent template":   {func(o *serveOptions) { o.syncJobTemplate = "/nonexistent/job.yaml" }, "sync job template"},
-		"absent CA file":    {func(o *serveOptions) { o.syncCAFile = "/nonexistent/ca.crt" }, "--sync-ca-file"},
-		"empty CA file":     {func(o *serveOptions) { o.syncCAFile = os.DevNull }, "is empty"},
+		"zero cycle":         {func(o *serveOptions) { o.syncCycle = 0 }, "--sync-cycle"},
+		"negative cleanup":   {func(o *serveOptions) { o.sessionCleanupAfter = -time.Hour }, "--sessions-cleanup-after"},
+		"zero poll":          {func(o *serveOptions) { o.sessionPoll = 0 }, "--sessions-poll"},
+		"bad headroom":       {func(o *serveOptions) { o.sizingHeadroom = "lots" }, "--sizing-headroom"},
+		"bad max size":       {func(o *serveOptions) { o.sizingMaxSize = "huge" }, "--sizing-max-size"},
+		"factor below one":   {func(o *serveOptions) { o.sizingFactor = 0.5 }, "sizing factor"},
+		"negative headroom":  {func(o *serveOptions) { o.sizingHeadroom = "-1Gi" }, "headroom must not be negative"},
+		"negative share":     {func(o *serveOptions) { o.sizingHeadroomShare = -1 }, "headroom share"},
+		"zero max size":      {func(o *serveOptions) { o.sizingMaxSize = "0" }, "maximum size must be positive"},
+		"bad pull policy":    {func(o *serveOptions) { o.syncImagePullPolicy = "Sometimes" }, "--sync-image-pull-policy"},
+		"absent template":    {func(o *serveOptions) { o.syncJobTemplate = "/nonexistent/job.yaml" }, "sync job template"},
+		"no template":        {func(o *serveOptions) { o.syncJobTemplate = "" }, "--sync-job-template is required"},
+		"no template, image": {func(o *serveOptions) { o.syncJobTemplate, o.syncImage = "", "wm:1" }, "--sync-job-template is required"},
+		"no image":           {func(o *serveOptions) { o.syncJobTemplate = "testdata/sync-job-no-image.yaml" }, "set --sync-image or the template's image"},
+		"absent CA file":     {func(o *serveOptions) { o.syncCAFile = "/nonexistent/ca.crt" }, "--sync-ca-file"},
+		"empty CA file":      {func(o *serveOptions) { o.syncCAFile = os.DevNull }, "is empty"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o := validServeOptions()

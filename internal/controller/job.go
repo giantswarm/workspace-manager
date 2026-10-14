@@ -74,10 +74,11 @@ type Credential struct {
 // the credentials.
 type Jobs struct {
 	Client kubernetes.Interface
-	// Template is the Job every cycle's Job is made from; nil is
-	// DefaultJobTemplate.
+	// Template is the Job every cycle's Job is made from; nil makes none
+	// (Validate).
 	Template *batchv1.Job
-	// Image runs the Job, the manager's own; empty keeps the template's.
+	// Image runs the Job, the manager's own; empty keeps the template's, and
+	// neither makes no Job (Validate).
 	Image string
 	// ImagePullPolicy goes with Image.
 	ImagePullPolicy corev1.PullPolicy
@@ -134,6 +135,23 @@ func ValidateJobTemplate(job *batchv1.Job) error {
 	return nil
 }
 
+// Validate refuses Jobs that cannot make a runnable Job: no template, no
+// sync container, or no image for it, neither Image nor the template's. The
+// API server refuses such a Job in every cycle; serve refuses at start.
+func (j Jobs) Validate() error {
+	if j.Template == nil {
+		return errors.New("no sync job template")
+	}
+	i, err := syncContainer(&j.Template.Spec.Template.Spec)
+	if err != nil {
+		return err
+	}
+	if j.Image == "" && j.Template.Spec.Template.Spec.Containers[i].Image == "" {
+		return fmt.Errorf("the %q container has no image: neither the sync image nor the template names one", SyncContainer)
+	}
+	return nil
+}
+
 func syncContainer(pod *corev1.PodSpec) (int, error) {
 	for i := range pod.Containers {
 		if pod.Containers[i].Name == SyncContainer {
@@ -151,6 +169,10 @@ func syncContainer(pod *corev1.PodSpec) (int, error) {
 // credentials Secret (one per Workspace, replaced per cycle and emptied after
 // it) and the Job itself, owned by the Workspace.
 func (j Jobs) Start(ctx context.Context, ws *v1alpha1.Workspace, id string, sel *mirror.Selection, creds []Credential) (*batchv1.Job, error) {
+	// A Job that cannot run writes no input and no credentials.
+	if err := j.Validate(); err != nil {
+		return nil, err
+	}
 	owner := *metav1.NewControllerRef(ws, v1alpha1.GroupVersion.WithKind("Workspace"))
 	labels := map[string]string{LabelWorkspace: ws.Name}
 	cms := j.Client.CoreV1().ConfigMaps(ws.Namespace)
@@ -275,10 +297,10 @@ func (j Jobs) owners(ctx context.Context, ws *v1alpha1.Workspace) ([]mirror.Owne
 
 // build is the cycle's Job from the template.
 func (j Jobs) build(ws *v1alpha1.Workspace, id string, owner metav1.OwnerReference, credentialItems []corev1.KeyToPath, owners []mirror.Owner) (*batchv1.Job, error) {
-	tpl := j.Template
-	if tpl == nil {
-		return nil, errors.New("no sync job template")
+	if err := j.Validate(); err != nil {
+		return nil, err
 	}
+	tpl := j.Template
 	job := tpl.DeepCopy()
 	job.TypeMeta = metav1.TypeMeta{}
 	job.ObjectMeta = metav1.ObjectMeta{
