@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `serve` refuses to start without a sync Job template (`--sync-job-template`, which the chart renders) or without an image for its `sync` container (`--sync-image` or the template's), naming the flag; it no longer starts a controller whose every sync Job the API server refuses, and no sync Job, input or credentials Secret is made without an image. `--sync-service-account`, the account of the template-less Job, is gone. ([#38](https://github.com/giantswarm/workspace-manager/issues/38))
+
 ### Removed
 
 - The workspace sync schedule: `spec.sync` (`schedule`, `weekdays`, `hour`) leaves the CRD, `create_workspace` and `update_workspace` and the workspace view, `nextSync` leaves the status and the view, and no cycle starts with the trigger `schedule`. The mirrors are refreshed at Session start instead (below). A stored Workspace that carries `spec.sync` loads and reconciles with the field dropped, and a tool call still passing `sync` is served with it ignored. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))

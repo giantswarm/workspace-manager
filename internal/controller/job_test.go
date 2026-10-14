@@ -139,13 +139,37 @@ func TestJobsBuildFromTemplate(t *testing.T) {
 	assert.ErrorContains(t, err, "no sync job template")
 }
 
+// TestJobsStartRefusesAJobWithoutAnImage: a template without an image and no
+// sync image create no Job, and write no input or credentials for one; the
+// API server would refuse it in every cycle.
+func TestJobsStartRefusesAJobWithoutAnImage(t *testing.T) {
+	ws := workspaceNamed("platform")
+	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync")}
+	_, err := j.Start(context.Background(), ws, "ab12", &mirror.Selection{}, []Credential{{Provider: "github", Owner: "acme", Username: "u", Token: "t"}})
+	require.ErrorContains(t, err, `the "sync" container has no image`)
+	jobs, err := j.Client.BatchV1().Jobs(testNamespace).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, jobs.Items)
+	cms, err := j.Client.CoreV1().ConfigMaps(testNamespace).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, cms.Items)
+	secrets, err := j.Client.CoreV1().Secrets(testNamespace).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, secrets.Items)
+
+	j.Image = "workspace-manager:dev"
+	job, err := j.Start(context.Background(), ws, "ab12", &mirror.Selection{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "workspace-manager:dev", job.Spec.Template.Spec.Containers[0].Image)
+}
+
 // TestJobsStartCarriesRoots: the roots travel in the selection ConfigMap of
 // the Workspace's namespace, where the Job reads them; without roots the
 // ConfigMap carries the selection alone.
 func TestJobsStartCarriesRoots(t *testing.T) {
 	ws := workspaceNamed("platform")
 	roots := []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
-	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync"), Roots: roots}
+	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync"), Image: "workspace-manager:dev", Roots: roots}
 	job, err := j.Start(context.Background(), ws, "ab12", &mirror.Selection{}, nil)
 	require.NoError(t, err)
 	assert.Contains(t, job.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: "SSL_CERT_FILE", Value: "/etc/workspace-sync/ca.crt"})
@@ -167,7 +191,7 @@ func TestJobsStartCarriesRoots(t *testing.T) {
 // reads an owner's credential from, so two owners of one provider coexist.
 func TestJobsStartProjectsEachOwnersCredential(t *testing.T) {
 	ws := workspaceNamed("platform")
-	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync")}
+	j := Jobs{Client: fake.NewClientset(), Template: DefaultJobTemplate("workspace-manager-sync"), Image: "workspace-manager:dev"}
 	creds := []Credential{
 		{Provider: "github", Owner: "acme", Username: "x-access-token", Token: "t1"},
 		{Provider: "github", Owner: "globex", Username: "x-access-token", Token: "t2"},

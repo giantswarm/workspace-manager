@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -77,7 +78,6 @@ type serveOptions struct {
 	sizingMaxSize       string
 
 	syncJobTemplate     string
-	syncServiceAccount  string
 	syncImage           string
 	syncImagePullPolicy string
 	syncCAFile          string
@@ -139,9 +139,8 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.sizingHeadroom, "sizing-headroom", envOr("WORKSPACE_MANAGER_SIZING_HEADROOM", controller.DefaultSizing.HeadroomFloor.String()), "The least headroom a workspace volume keeps over its need, a Kubernetes quantity; the headroom is the larger of this, the headroom share of the need and the Workspace's own spec.sizing.headroom (WORKSPACE_MANAGER_SIZING_HEADROOM)")
 	f.Float64Var(&o.sizingHeadroomShare, "sizing-headroom-share", envFloat("WORKSPACE_MANAGER_SIZING_HEADROOM_SHARE", controller.DefaultSizing.HeadroomShare), "The headroom as a share of a workspace volume's need, 0.5 for half of it; the larger of it and --sizing-headroom applies (WORKSPACE_MANAGER_SIZING_HEADROOM_SHARE)")
 	f.StringVar(&o.sizingMaxSize, "sizing-max-size", envOr("WORKSPACE_MANAGER_SIZING_MAX_SIZE", ""), "Ceiling of a workspace volume's size, a Kubernetes quantity: a sync cycle that would pass it fails, naming the size it needs, and keeps the mirrors it has; empty sets none (WORKSPACE_MANAGER_SIZING_MAX_SIZE)")
-	f.StringVar(&o.syncJobTemplate, "sync-job-template", envOr("WORKSPACE_MANAGER_SYNC_JOB_TEMPLATE", ""), "A Job manifest (YAML) every sync Job is made from, the chart's rendering of its image, account, security contexts, resources, deadline and TTL; it needs a container named `sync` running `workspace-manager sync`, and the cycle adds the volume, the selection and the credentials. Empty runs the sync container alone as --sync-service-account (WORKSPACE_MANAGER_SYNC_JOB_TEMPLATE)")
-	f.StringVar(&o.syncServiceAccount, "sync-service-account", envOr("WORKSPACE_MANAGER_SYNC_SERVICE_ACCOUNT", ""), "The ServiceAccount a sync Job runs as without a template, in the workspaces' namespace (WORKSPACE_MANAGER_SYNC_SERVICE_ACCOUNT)")
-	f.StringVar(&o.syncImage, "sync-image", envOr("WORKSPACE_MANAGER_SYNC_IMAGE", ""), "The image the sync Job runs, this binary's own; empty keeps the template's (WORKSPACE_MANAGER_SYNC_IMAGE)")
+	f.StringVar(&o.syncJobTemplate, "sync-job-template", envOr("WORKSPACE_MANAGER_SYNC_JOB_TEMPLATE", ""), "A Job manifest (YAML) every sync Job is made from, the chart's rendering of its image, account, security contexts, resources, deadline and TTL; it needs a container named `sync` running `workspace-manager sync`, and the cycle adds the volume, the selection and the credentials. Required: serve refuses to start without it (WORKSPACE_MANAGER_SYNC_JOB_TEMPLATE)")
+	f.StringVar(&o.syncImage, "sync-image", envOr("WORKSPACE_MANAGER_SYNC_IMAGE", ""), "The image the sync Job runs, this binary's own; empty keeps the template's, and serve refuses to start when neither names one (WORKSPACE_MANAGER_SYNC_IMAGE)")
 	f.StringVar(&o.syncImagePullPolicy, "sync-image-pull-policy", envOr("WORKSPACE_MANAGER_SYNC_IMAGE_PULL_POLICY", ""), "The sync image's pull policy, with --sync-image (WORKSPACE_MANAGER_SYNC_IMAGE_PULL_POLICY)")
 	f.StringVar(&o.syncCAFile, "sync-ca-file", envOr("WORKSPACE_MANAGER_SYNC_CA_FILE", os.Getenv("SSL_CERT_FILE")), "PEM CA bundle the sync Job verifies the providers' git hosts with (a GitHub Enterprise Server behind a private CA), read at start and handed to every sync Job in its input: this process's own SSL_CERT_FILE unless set; empty hands none and the image's roots apply (WORKSPACE_MANAGER_SYNC_CA_FILE)")
 	f.BoolVar(&o.leaderElection, "leader-election", envBool("WORKSPACE_MANAGER_LEADER_ELECTION", true), "Elect one replica to run the controller, through the Lease `"+controller.DefaultLease+"` in the workspaces' namespace; off runs it in every replica, for a single local process only (WORKSPACE_MANAGER_LEADER_ELECTION)")
@@ -354,13 +353,13 @@ func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAut
 }
 
 // controllerConfig is the controller's configuration from the flags, the
-// clients aside: a cycle, cleanup window or sizing that is out of range fails
-// the start.
+// clients aside: a cycle, cleanup window or sizing that is out of range, or a
+// sync Job without its template or an image, fails the start.
 func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	cfg := controller.Config{
 		Namespace: o.namespace, StorageClass: o.storageClass, Resync: o.syncCycle, SessionCleanupAfter: o.sessionCleanupAfter,
-		SessionPoll:        o.sessionPoll,
-		SyncServiceAccount: o.syncServiceAccount, SyncImage: o.syncImage, SyncImagePullPolicy: corev1.PullPolicy(o.syncImagePullPolicy),
+		SessionPoll: o.sessionPoll,
+		SyncImage:   o.syncImage, SyncImagePullPolicy: corev1.PullPolicy(o.syncImagePullPolicy),
 	}
 	if o.syncCycle <= 0 {
 		return cfg, fmt.Errorf("--sync-cycle must be positive, got %s", o.syncCycle)
@@ -391,11 +390,16 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	default:
 		return cfg, fmt.Errorf("--sync-image-pull-policy must be Always, IfNotPresent or Never, got %q", o.syncImagePullPolicy)
 	}
-	if o.syncJobTemplate != "" {
-		// A template that cannot make a Job fails the start, not every cycle.
-		if cfg.SyncJobTemplate, err = controller.LoadJobTemplate(o.syncJobTemplate); err != nil {
-			return cfg, err
-		}
+	// A sync Job without a template or an image fails the start, not every
+	// cycle: the API server refuses a Job with an empty image.
+	if o.syncJobTemplate == "" {
+		return cfg, errors.New("--sync-job-template is required: the sync Job is made from the chart's template, with --sync-image or the template's image")
+	}
+	if cfg.SyncJobTemplate, err = controller.LoadJobTemplate(o.syncJobTemplate); err != nil {
+		return cfg, err
+	}
+	if err := (controller.Jobs{Template: cfg.SyncJobTemplate, Image: cfg.SyncImage}).Validate(); err != nil {
+		return cfg, fmt.Errorf("sync job template %s: %w; set --sync-image or the template's image", o.syncJobTemplate, err)
 	}
 	if o.syncCAFile != "" {
 		// Unreadable roots fail the start, not every fetch.
