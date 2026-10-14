@@ -87,7 +87,10 @@ own sign-in to each provider of the workspace, checks per owner which of its
 repositories the person reads, with the person's user-to-server token on
 GitHub: up to 100 repositories of an owner each asked for on its own
 (`GET /repos/<owner>/<name>`, eight at a time), more in one listing of the
-owner's repositories, its pages fetched eight at a time. The whole check is
+owner's repositories, its pages fetched eight at a time; on GitLab, with the
+person's OAuth token, likewise: up to 100 projects of a group or user each
+asked for on its own (`GET /projects/<path>`), more in one listing of the
+owner's projects as the person sees them. The whole check is
 bounded by `--access-check-timeout` (20 seconds, within muster's default tool
 timeout of 30, which the chart's `muster.mcpServer.timeout` raises); a check
 past it is `refused`, saying so. The answer's `outcome`:

@@ -30,6 +30,8 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/provider/fake"
 	"github.com/giantswarm/workspace-manager/internal/provider/github"
 	"github.com/giantswarm/workspace-manager/internal/provider/github/githubtest"
+	"github.com/giantswarm/workspace-manager/internal/provider/gitlab"
+	"github.com/giantswarm/workspace-manager/internal/provider/gitlab/gitlabtest"
 	"github.com/giantswarm/workspace-manager/internal/signin"
 )
 
@@ -372,4 +374,45 @@ func TestALargeOrganizationIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
 			assert.Equal(t, tc.outcome == authorize.Granted, res.Grant != "", "a grant only when granted")
 		})
 	}
+}
+
+// A workspace selecting a project of a GitLab group holding thousands is
+// checked in what it selects: GitLab answering each request in 1.5 s, the
+// person's listing of 2,000 projects and the project's head would take 21
+// round trips, 31.5 s one after the other, past muster's tool timeout.
+func TestALargeGitLabGroupIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
+	const latency = 1500 * time.Millisecond
+	gl := gitlabtest.NewServer(t)
+	gl.PageSize = 100
+	var reads []string
+	for i := range 2000 {
+		name := fmt.Sprintf("team~r%04d", i)
+		gl.Put(provider.Item{Owner: "acme", Name: name, LastChange: authSynced.Add(-time.Hour)})
+		reads = append(reads, "acme/"+name)
+	}
+	glKind, err := gitlab.Factory(gitlab.Options{Clock: gl.Clock})(gl.Values())
+	require.NoError(t, err)
+	cs, keys := authCluster(t, []mirror.Entry{{Provider: "gitlab", Owner: "acme", Name: "team~r0042", PushedAt: authSynced.Add(-time.Hour)}})
+	a, err := authorize.New(authorize.Config{
+		Workspaces: authWorkspaces{"big": authWorkspace("big", authReady)},
+		Core:       cs,
+		Namespace:  authNamespace,
+		Instances:  []provider.Instance{{Name: "gitlab", KindName: gitlab.KindName, Kind: glKind}},
+		Tokens:     authTokens{"alice": {"gitlab": gl.Person(reads...)}},
+		ConnectURL: func(instance string) string { return "https://wm.example.com/connect/" + instance },
+		Signer:     &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
+		Broker:     "workspace-manager",
+	})
+	require.NoError(t, err)
+
+	gl.Latency = latency
+	start := time.Now()
+	res, err := a.Authorize(context.Background(), person("alice"), "big")
+	took := time.Since(start)
+	t.Logf("1 of 2,000 projects selected: %s in %s, %d listing pages", res.Outcome, took.Round(time.Millisecond), gl.Listed())
+	require.NoError(t, err)
+	assert.Equal(t, authorize.Granted, res.Outcome, res.Reason)
+	assert.NotEmpty(t, res.Grant)
+	assert.Zero(t, gl.Listed(), "no listing for one project")
+	assert.Less(t, took, 3*latency, "the project and its head")
 }
