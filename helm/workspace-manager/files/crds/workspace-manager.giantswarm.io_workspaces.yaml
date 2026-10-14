@@ -343,6 +343,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              grewFrom:
+                anyOf:
+                - type: integer
+                - type: string
+                description: |-
+                  GrewFrom is the volume's provisioned size before the last sync cycle
+                  grew it; empty when that cycle did not grow it.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
               lastSync:
                 description: LastSync is the last sync cycle's time and result.
                 properties:
@@ -463,6 +472,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - session
                 x-kubernetes-list-type: map
+              storedSize:
+                anyOf:
+                - type: integer
+                - type: string
+                description: |-
+                  StoredSize is what the volume stores, measured at the last sync: the
+                  mirrors the manifest records and the session directories.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
               volume:
                 description: Volume is the workspace's read-write-many volume.
                 properties:

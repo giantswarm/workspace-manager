@@ -443,6 +443,28 @@ func TestCycleEndsWithTheJob(t *testing.T) {
 	assert.Equal(t, 1, f.listings.count(), "no listing while nothing is due")
 }
 
+// TestAStoredSizeIsRecordedForAWorkspaceSyncedWithoutOne: a Workspace whose
+// last sync recorded no stored size has it measured from its manifest and
+// session directories at the next reconcile, with no cycle due.
+func TestAStoredSizeIsRecordedForAWorkspaceSyncedWithoutOne(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	ws := f.firstCycle("platform")
+	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
+	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+	assert.Equal(t, "5Mi", got.Status.StoredSize.String())
+
+	got.Status.StoredSize = nil
+	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).UpdateStatus(context.Background(), toUnstructured(t, got), metav1.UpdateOptions{})
+	require.NoError(t, err)
+	listings := f.listings.count()
+
+	f.reconcile("platform")
+	got = f.workspace("platform")
+	require.NotNil(t, got.Status.StoredSize)
+	assert.Equal(t, "5Mi", got.Status.StoredSize.String(), "the manifest's mirrors")
+	assert.Equal(t, listings, f.listings.count(), "no cycle ran")
+}
+
 // TestNoChangeCostsOneListing: a scheduled cycle whose selection equals the
 // manifest, with no newer push, ends with NoChange after one listing: no
 // Job, no fetch, the next schedule set.
@@ -768,12 +790,16 @@ func TestAProvisionedClassIsSizedAndGrown(t *testing.T) {
 	assert.Equal(t, "9Gi", requestedString(&claims[0]), "ceil(4.5 Gi + 4 Gi)")
 	assert.Equal(t, "9Gi", ws.Status.VolumeSize.String())
 	assert.Equal(t, "4608Mi", ws.Status.NeededSize.String())
+	assert.Nil(t, ws.Status.GrewFrom, "a claim made at its size did not grow")
+	assert.Nil(t, ws.Status.StoredSize, "nothing measured before the first sync")
 
 	// Measured: 1 GiB and 2 GiB, the need below the estimate: the share stays.
 	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
 	got := f.completeCycle(ws, testNow, entry(api, 1<<30), entry(web, 2<<30))
 	assert.Equal(t, "9Gi", got.Status.VolumeSize.String(), "never shrunk")
 	assert.Equal(t, "3Gi", got.Status.NeededSize.String())
+	assert.Equal(t, "3Gi", got.Status.StoredSize.String(), "the measured mirrors")
+	assert.Nil(t, got.Status.GrewFrom)
 
 	// A push and a sync that measured 12 GiB: the need passes the headroom,
 	// the share grows to 12 + 6 = 18 GiB after the sync.
@@ -787,6 +813,9 @@ func TestAProvisionedClassIsSizedAndGrown(t *testing.T) {
 	assert.Equal(t, "18Gi", requestedString(&f.claims()[0]))
 	assert.Equal(t, "18Gi", got.Status.VolumeSize.String())
 	assert.Equal(t, "12Gi", got.Status.NeededSize.String())
+	assert.Equal(t, "12Gi", got.Status.StoredSize.String())
+	require.NotNil(t, got.Status.GrewFrom)
+	assert.Equal(t, "9Gi", got.Status.GrewFrom.String(), "the sync grew the share from 9 GiB")
 
 	// A repository added with 10 GiB reported: 15 GiB estimated on top of
 	// the 12 measured; the share grows before the mirror is cloned.
@@ -797,6 +826,25 @@ func TestAProvisionedClassIsSizedAndGrown(t *testing.T) {
 	require.NotNil(t, got.Status.ActiveSync)
 	assert.Equal(t, "41Gi", requestedString(&f.claims()[0]), "12 + 15 need, 13.5 headroom, rounded up")
 	assert.Equal(t, "41Gi", got.Status.VolumeSize.String())
+	require.NotNil(t, got.Status.GrewFrom)
+	assert.Equal(t, "18Gi", got.Status.GrewFrom.String(), "grown before the mirroring")
+
+	// The sync measured 13 GiB: the 41 GiB share has room, and the size it
+	// grew from before the mirroring stands for the cycle.
+	items := f.listings.items[testProvider+"/"+testOwner]
+	got = f.completeCycle(got, f.clock(), entry(items[0], 1<<30), entry(items[1], 11<<30), entry(items[2], 1<<30))
+	assert.Equal(t, "41Gi", got.Status.VolumeSize.String())
+	assert.Equal(t, "13Gi", got.Status.StoredSize.String())
+	require.NotNil(t, got.Status.GrewFrom)
+	assert.Equal(t, "18Gi", got.Status.GrewFrom.String())
+
+	// The next cycle, with nothing changed, grows nothing: the marker goes.
+	f.advance(got.Status.NextSync.Sub(f.clock()))
+	f.reconcile("platform")
+	got = f.workspace("platform")
+	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)
+	assert.Nil(t, got.Status.GrewFrom)
+	assert.Equal(t, "13Gi", got.Status.StoredSize.String())
 }
 
 // TestTheCeilingFailsTheCycle: a size past the installation's ceiling fails

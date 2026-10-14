@@ -76,6 +76,13 @@ type Workspace struct {
 	// its StorageClass provisions a size.
 	NeededSize string `json:"neededSize,omitempty"`
 	VolumeSize string `json:"volumeSize,omitempty"`
+	// StoredBytes is what the volume stores, measured at the last sync: the
+	// mirrors and the Session directories, which get_workspace's storage
+	// splits; absent before the first sync.
+	StoredBytes *int64 `json:"storedBytes,omitempty"`
+	// GrewFrom is the provisioned share's size before the last sync grew it;
+	// empty when the last sync did not grow it.
+	GrewFrom string `json:"grewFrom,omitempty"`
 	// Sessions is the number of Session directories on the volume.
 	Sessions   int         `json:"sessions"`
 	Conditions []Condition `json:"conditions,omitempty"`
@@ -218,7 +225,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	nameArg := mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name"))
 
 	s.AddTool(mcp.NewTool("list_workspaces",
-		mcp.WithDescription("List the workspaces of your Organizations: sources, last and next sync, repository count, the volume's CSI handle and the Sessions with a directory on it."),
+		mcp.WithDescription("List the workspaces of your Organizations: sources, last and next sync, repository count, the volume's CSI handle, what the volume stores (storedBytes), the size a provisioned share grew from at the last sync (grewFrom), and the Sessions with a directory on it."),
 		mcp.WithString("organization", mcp.Description("Only this Organization's workspaces; you must be a member")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
@@ -425,10 +432,15 @@ func (t *workspaceTools) view(ctx context.Context, ws *v1alpha1.Workspace) (Work
 		Repositories:    len(ws.Status.Repositories),
 		NeededSize:      quantity(ws.Status.NeededSize),
 		VolumeSize:      quantity(ws.Status.VolumeSize),
+		GrewFrom:        quantity(ws.Status.GrewFrom),
 		Sessions:        len(ws.Status.Sessions),
 	}
 	if w.Sources == nil {
 		w.Sources = []v1alpha1.Source{}
+	}
+	if s := ws.Status.StoredSize; s != nil {
+		stored := s.Value()
+		w.StoredBytes = &stored
 	}
 	// The controller's own timer, set from the last cycle's end; before the
 	// first cycle, the schedule's next time from now.

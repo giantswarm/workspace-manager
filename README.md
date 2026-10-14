@@ -212,7 +212,12 @@ Job running now: `job`, `startedAt`, `trigger`), `syncRequest` (a
 `requestedBy`), the number of `repositories` and `sessions`, `volume`
 (`claimName`, and the CSI `driver` and `handle` read from the bound
 PersistentVolume, which a Session's volume reference names; else `pending`
-says why), `neededSize`, `volumeSize` and the `conditions`. `nextSync` is
+says why), `neededSize`, `volumeSize`, `storedBytes` (what the volume stores,
+measured at the last sync: the mirrors and the Session directories that
+`get_workspace`'s `storage` splits; absent before the first sync), `grewFrom`
+(the provisioned share's size before the last sync grew it; empty when it did
+not) and the `conditions`. `list_workspaces` carries both from the status, so a
+list needs no `get_workspace` per row. `nextSync` is
 the time the controller's timer is set for, `status.nextSync`: the schedule's
 next time after the last cycle, in UTC (nightly at 03:00, weekly on Sunday at
 03:00, custom on its weekdays at its hour), or the retry of a failed cycle;
@@ -290,7 +295,7 @@ which the status carries.
 The status records it all, and nothing else writes it: `lastSync` (`time`,
 `result` `Succeeded`, `NoChange` or `Failed`, `trigger`, `job`, `message`),
 `activeSync` while a Job runs, `nextSync`, `repositories`, `neededSize`,
-`volumeSize`, and the conditions `VolumeClaimed` and `Synced` (`True` with
+`volumeSize`, `storedSize`, `grewFrom`, and the conditions `VolumeClaimed` and `Synced` (`True` with
 reason `Synced` or `NoChange`; `Unknown` with `Syncing`; `False` with
 `ListingFailed`, `SyncFailed`, `SizeCeiling` or `VolumeMissing`). A cycle
 that failed before its Job (the listing, the sizing, the claim) is tried

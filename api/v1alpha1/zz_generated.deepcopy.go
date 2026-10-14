@@ -335,6 +335,16 @@ func (in *WorkspaceStatus) DeepCopyInto(out *WorkspaceStatus) {
 		x := (*in).DeepCopy()
 		*out = &x
 	}
+	if in.StoredSize != nil {
+		in, out := &in.StoredSize, &out.StoredSize
+		x := (*in).DeepCopy()
+		*out = &x
+	}
+	if in.GrewFrom != nil {
+		in, out := &in.GrewFrom, &out.GrewFrom
+		x := (*in).DeepCopy()
+		*out = &x
+	}
 	if in.Volume != nil {
 		in, out := &in.Volume, &out.Volume
 		*out = new(VolumeRef)

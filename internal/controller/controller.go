@@ -410,6 +410,11 @@ func (c *Controller) Reconcile(ctx context.Context, ws *v1alpha1.Workspace) (tim
 			return 0, err
 		}
 	}
+	if ws.Status.StoredSize == nil && ws.Status.Manifest != "" {
+		if err := c.recordStored(ctx, ws); err != nil {
+			return 0, err
+		}
+	}
 	claim, err := c.volumes.Get(ctx, ws)
 	if err != nil {
 		return 0, err
