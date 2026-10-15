@@ -69,6 +69,7 @@ Manages the Agent Platform's workspaces, the sources agent sessions work on and 
 | oauth.allowPublicClientRegistration | bool | `false` | Accept unauthenticated dynamic client registration (labs only). |
 | muster.mcpServer.enabled | bool | `false` | Register this server with muster by rendering an `mcpservers.muster.giantswarm.io` CR in the release namespace. Tools then appear as `x_<name>_<tool>`. |
 | muster.mcpServer.name | string | `"workspace-manager"` | MCPServer CR name (drives the tool prefix). |
+| muster.mcpServer.displayName | string | `"Workspace Manager"` | Name the Dev Portal shows for this server, rendered as the MCPServer's `ui.giantswarm.io/display-name` annotation. Empty renders no annotation. |
 | muster.mcpServer.autoStart | bool | `true` | Start the server connection when muster initializes. |
 | muster.mcpServer.description | string | `"Workspaces of this installation, the sources agent sessions work on and their provider sign-ins, for the Agent Platform"` | Human-readable description shown by muster. |
 | muster.mcpServer.labels | object | `{}` | Extra labels on the MCPServer CR. |

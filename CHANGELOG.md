@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `muster.mcpServer.displayName` (default `Workspace Manager`) is rendered as the MCPServer's `ui.giantswarm.io/display-name` annotation, the name the Dev Portal shows for the server ([backstage#3012](https://github.com/giantswarm/backstage/pull/3012)). Empty renders no annotation. ([#110](https://github.com/giantswarm/workspace-manager/pull/110))
 - `authorize_workspace` requests a sync of a granted workspace whose last sync is older than the refresh threshold (`--sync-refresh-after`, the chart's `sync.refreshAfter`, 1h), without the Session waiting for it, and says so in `syncRequested`. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
 - A live workspace's session directory goes at its own cleanup date in a cleanup-only Job (trigger `cleanup`) that fetches nothing, no longer at the next scheduled cycle; a deleted workspace whose directories have no earlier date is looked after a day after its last cycle. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
 
