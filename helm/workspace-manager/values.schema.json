@@ -88,6 +88,10 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+                "agentNamespace": {
+                    "type": "string",
+                    "description": "The namespace whose Agents may start a Session with a grant, its `agent_namespace`: kagent's Session admission refuses one on an Agent elsewhere. Required with `signingKey`."
+                },
                 "audience": {
                     "type": "string",
                     "description": "The grant's audience: the one kagent's Session admission requires."

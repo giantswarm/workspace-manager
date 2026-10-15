@@ -111,7 +111,7 @@ func validServeOptions() *serveOptions {
 	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour, sessionPoll: time.Minute,
 		sizingFactor: 2, sizingHeadroom: "10Gi", sizingHeadroomShare: 0.25, sizingMaxSize: "500Gi",
 		syncJobTemplate: "testdata/sync-job.yaml", leaderElection: true, leaderIdentity: "workspace-manager-0",
-		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager"}
+		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager", grantAgentNamespace: "kagent"}
 }
 
 func TestServeControllerConfig(t *testing.T) {
@@ -249,4 +249,6 @@ func TestWorkspaceGrantsFailTheStart(t *testing.T) {
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantTTL = 0 }), "--grant-ttl must be positive")
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAudience = "" }), "an issuer and an audience")
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantBroker = "" }), "broker name")
+	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAgentNamespace = "" }), "Agent namespace")
+	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAgentNamespace = "Not/A-Namespace" }), "no namespace name")
 }

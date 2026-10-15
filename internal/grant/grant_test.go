@@ -97,11 +97,12 @@ func TestSignedGrantVerifiesAgainstTheJWKS(t *testing.T) {
 	signer := &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 3 * time.Minute, Now: func() time.Time { return now }}
 	require.NoError(t, signer.Validate())
 	g := grant.Grant{
-		Workspace: grant.Workspace{Namespace: "kagent", Name: "otter-mcp"},
-		Volume:    grant.Volume{Driver: "nfs.csi.k8s.io", Handle: "nfs-server#share#pvc-1"},
-		Mounts:    []grant.Mount{{SubPath: grant.SessionDirectory}, {SubPath: grant.Mirrors, ReadOnly: true}},
-		Changed:   []string{"acme/api"},
-		Providers: []grant.Provider{{Hostname: "github.com", Audience: "github", Scheme: "Basic", Username: "x-access-token", Broker: "workspace-manager"}},
+		AgentNamespace: "kagent",
+		Workspace:      grant.Workspace{Namespace: "kagent", Name: "otter-mcp"},
+		Volume:         grant.Volume{Driver: "nfs.csi.k8s.io", Handle: "nfs-server#share#pvc-1"},
+		Mounts:         []grant.Mount{{SubPath: grant.SessionDirectory}, {SubPath: grant.Mirrors, ReadOnly: true}},
+		Changed:        []string{"acme/api"},
+		Providers:      []grant.Provider{{Hostname: "github.com", Audience: "github", Scheme: "Basic", Username: "x-access-token", Broker: "workspace-manager"}},
 	}
 	token, expiry, err := signer.Sign(context.Background(), "alice-sub", g)
 	require.NoError(t, err)
@@ -136,7 +137,8 @@ func TestSignedGrantVerifiesAgainstTheJWKS(t *testing.T) {
 	require.NoError(t, err)
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(payload, &raw))
-	assert.ElementsMatch(t, []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "workspace", "volume", "mounts", "changed", "providers"}, keysOf(raw))
+	assert.ElementsMatch(t, []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "agent_namespace", "workspace", "volume", "mounts", "changed", "providers"}, keysOf(raw))
+	assert.Equal(t, "kagent", raw["agent_namespace"], "kagent's admission compares it with the Session's Agent namespace")
 	assert.Equal(t, []any{map[string]any{"sub_path": "sessions/${SESSION_ID}"}, map[string]any{"sub_path": "mirrors", "read_only": true}}, raw["mounts"])
 }
 

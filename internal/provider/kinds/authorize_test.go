@@ -37,6 +37,9 @@ import (
 
 const authNamespace = "kagent"
 
+// agentNamespace is the grant's Agent namespace, apart from the workspaces'.
+const agentNamespace = "agents"
+
 var authSynced = time.Date(2026, 10, 10, 2, 0, 0, 0, time.UTC)
 
 // authWorkspaces is a workspace.Store of fixed Workspaces.
@@ -132,10 +135,11 @@ func authSetup(t *testing.T) *authFixture {
 			{Name: "github", KindName: github.KindName, Kind: ghKind},
 			{Name: "code", KindName: fake.KindName, Kind: fkKind},
 		},
-		Tokens:     f.tokens,
-		ConnectURL: func(instance string) string { return "https://wm.example.com/connect/" + instance },
-		Signer:     &grant.Signer{Keys: f.keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
-		Broker:     "workspace-manager",
+		Tokens:         f.tokens,
+		ConnectURL:     func(instance string) string { return "https://wm.example.com/connect/" + instance },
+		Signer:         &grant.Signer{Keys: f.keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
+		Broker:         "workspace-manager",
+		AgentNamespace: agentNamespace,
 	})
 	require.NoError(t, err)
 	return f
@@ -186,6 +190,7 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 
 	claims := verified(t, f.keys, res.Grant)
 	assert.Equal(t, "alice@acme.test", claims.Subject, "the grant names the person by email, not by the sign-in key")
+	assert.Equal(t, agentNamespace, claims.AgentNamespace, "the grant names the namespace whose Agents it admits")
 	assert.Equal(t, grant.Workspace{Namespace: authNamespace, Name: "otter"}, claims.Workspace)
 	assert.Equal(t, grant.Volume{Driver: "nfs.csi.k8s.io", Handle: "nfs-server#share#pvc-otter"}, claims.Volume)
 	assert.Equal(t, []grant.Mount{{SubPath: "sessions/${SESSION_ID}"}, {SubPath: "mirrors", ReadOnly: true}}, claims.Mounts)
@@ -421,15 +426,16 @@ func TestALargeOrganizationIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
 			require.NoError(t, err)
 			cs, keys := authCluster(t, entries)
 			a, err := authorize.New(authorize.Config{
-				Workspaces:   authWorkspaces{"big": authWorkspace("big", authReady)},
-				Core:         cs,
-				Namespace:    authNamespace,
-				Instances:    []provider.Instance{{Name: "github", KindName: github.KindName, Kind: ghKind}},
-				Tokens:       authTokens{"alice": {"github": gh.Person(reads...)}},
-				ConnectURL:   func(instance string) string { return "https://wm.example.com/connect/" + instance },
-				Signer:       &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
-				Broker:       "workspace-manager",
-				CheckTimeout: tc.checkTimeout,
+				Workspaces:     authWorkspaces{"big": authWorkspace("big", authReady)},
+				Core:           cs,
+				Namespace:      authNamespace,
+				Instances:      []provider.Instance{{Name: "github", KindName: github.KindName, Kind: ghKind}},
+				Tokens:         authTokens{"alice": {"github": gh.Person(reads...)}},
+				ConnectURL:     func(instance string) string { return "https://wm.example.com/connect/" + instance },
+				Signer:         &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
+				Broker:         "workspace-manager",
+				AgentNamespace: agentNamespace,
+				CheckTimeout:   tc.checkTimeout,
 			})
 			require.NoError(t, err)
 
@@ -467,14 +473,15 @@ func TestALargeGitLabGroupIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
 	require.NoError(t, err)
 	cs, keys := authCluster(t, []mirror.Entry{{Provider: "gitlab", Owner: "acme", Name: "team~r0042", PushedAt: authSynced.Add(-time.Hour)}})
 	a, err := authorize.New(authorize.Config{
-		Workspaces: authWorkspaces{"big": authWorkspace("big", authReady)},
-		Core:       cs,
-		Namespace:  authNamespace,
-		Instances:  []provider.Instance{{Name: "gitlab", KindName: gitlab.KindName, Kind: glKind}},
-		Tokens:     authTokens{"alice": {"gitlab": gl.Person(reads...)}},
-		ConnectURL: func(instance string) string { return "https://wm.example.com/connect/" + instance },
-		Signer:     &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
-		Broker:     "workspace-manager",
+		Workspaces:     authWorkspaces{"big": authWorkspace("big", authReady)},
+		Core:           cs,
+		Namespace:      authNamespace,
+		Instances:      []provider.Instance{{Name: "gitlab", KindName: gitlab.KindName, Kind: glKind}},
+		Tokens:         authTokens{"alice": {"gitlab": gl.Person(reads...)}},
+		ConnectURL:     func(instance string) string { return "https://wm.example.com/connect/" + instance },
+		Signer:         &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
+		Broker:         "workspace-manager",
+		AgentNamespace: agentNamespace,
 	})
 	require.NoError(t, err)
 

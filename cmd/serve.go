@@ -90,15 +90,16 @@ type serveOptions struct {
 
 	providersConfig string
 
-	managerNamespace string
-	signInKeysSecret string
-	signInCurrentKey string
-	grantSigningKey  string
-	grantTTL         time.Duration
-	grantAudience    string
-	grantBroker      string
-	checkTimeout     time.Duration
-	refreshAfter     time.Duration
+	managerNamespace    string
+	signInKeysSecret    string
+	signInCurrentKey    string
+	grantSigningKey     string
+	grantTTL            time.Duration
+	grantAudience       string
+	grantBroker         string
+	grantAgentNamespace string
+	checkTimeout        time.Duration
+	refreshAfter        time.Duration
 
 	tokenExchangeClientID     string
 	tokenExchangeClientSecret string
@@ -157,6 +158,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.DurationVar(&o.grantTTL, "grant-ttl", envDuration("WORKSPACE_MANAGER_GRANT_TTL", grant.DefaultTTL), "How long a workspace grant is valid, a Go duration (WORKSPACE_MANAGER_GRANT_TTL)")
 	f.StringVar(&o.grantAudience, "grant-audience", envOr("WORKSPACE_MANAGER_GRANT_AUDIENCE", "kagent"), "The workspace grant's audience: the one kagent's Session admission requires (WORKSPACE_MANAGER_GRANT_AUDIENCE)")
 	f.StringVar(&o.grantBroker, "grant-broker", envOr("WORKSPACE_MANAGER_GRANT_BROKER", "workspace-manager"), "The name kagent knows this manager's token endpoint by, which every provider host of a grant names (WORKSPACE_MANAGER_GRANT_BROKER)")
+	f.StringVar(&o.grantAgentNamespace, "grant-agent-namespace", envOr("WORKSPACE_MANAGER_GRANT_AGENT_NAMESPACE", ""), "The namespace whose Agents may start a Session with a workspace grant, its `agent_namespace`: kagent's Session admission refuses one on an Agent elsewhere. Required with --grant-signing-key (WORKSPACE_MANAGER_GRANT_AGENT_NAMESPACE)")
 	f.DurationVar(&o.checkTimeout, "access-check-timeout", envDuration("WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT", authorize.DefaultCheckTimeout), "How long authorize_workspace waits for the providers' answers about the person's access before it refuses, saying so, a Go duration; below the MCP client's tool timeout (muster's MCPServer `timeout`, 30s by default) (WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT)")
 	f.DurationVar(&o.refreshAfter, "sync-refresh-after", envDuration("WORKSPACE_MANAGER_SYNC_REFRESH_AFTER", authorize.DefaultRefreshAfter), "The refresh threshold: authorize_workspace requests a sync of a workspace whose last sync is older, without the Session waiting for it, a Go duration (WORKSPACE_MANAGER_SYNC_REFRESH_AFTER)")
 	f.StringVar(&o.tokenExchangeClientID, "token-exchange-client-id", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID", ""), "The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers; empty serves no token exchange. Needs providers and OAuth (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID)")
@@ -467,22 +469,23 @@ func workspaceGrants(ctx context.Context, o *serveOptions, si *signIns, clients 
 		names[i] = p.Name
 	}
 	a, err := authorize.New(authorize.Config{
-		Workspaces:   workspace.NewStore(clients.Dynamic(), o.namespace, orgs, names),
-		Core:         clients.Typed(),
-		Namespace:    o.namespace,
-		Instances:    providers,
-		Tokens:       si.store,
-		ConnectURL:   si.clients.ConnectURL,
-		Signer:       &grant.Signer{Keys: keys, Issuer: si.baseURL, Audience: o.grantAudience, TTL: o.grantTTL},
-		Broker:       o.grantBroker,
-		CheckTimeout: o.checkTimeout,
-		RefreshAfter: o.refreshAfter,
+		Workspaces:     workspace.NewStore(clients.Dynamic(), o.namespace, orgs, names),
+		Core:           clients.Typed(),
+		Namespace:      o.namespace,
+		Instances:      providers,
+		Tokens:         si.store,
+		ConnectURL:     si.clients.ConnectURL,
+		Signer:         &grant.Signer{Keys: keys, Issuer: si.baseURL, Audience: o.grantAudience, TTL: o.grantTTL},
+		Broker:         o.grantBroker,
+		AgentNamespace: o.grantAgentNamespace,
+		CheckTimeout:   o.checkTimeout,
+		RefreshAfter:   o.refreshAfter,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	log.Info("workspace grants enabled", "signingKey", o.grantSigningKey, "keyID", k.Signing.KeyID, "published", len(k.Public.Keys),
-		"issuer", si.baseURL, "audience", o.grantAudience, "ttl", o.grantTTL, "broker", o.grantBroker)
+		"issuer", si.baseURL, "audience", o.grantAudience, "ttl", o.grantTTL, "broker", o.grantBroker, "agentNamespace", o.grantAgentNamespace)
 	return a, grant.JWKS(keys, log), nil
 }
 
