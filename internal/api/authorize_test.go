@@ -46,13 +46,14 @@ func TestAuthorizeWorkspaceTool(t *testing.T) {
 	cs := k8sfake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "keys", Namespace: "wm"},
 		Data: map[string][]byte{"grant": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})}})
 	a, err := authorize.New(authorize.Config{
-		Workspaces: oneWorkspace{&v1alpha1.Workspace{ObjectMeta: metav1.ObjectMeta{Name: "otter"}}},
-		Core:       cs,
-		Namespace:  "kagent",
-		Tokens:     noSignIns{},
-		ConnectURL: func(string) string { return "" },
-		Signer:     &grant.Signer{Keys: &grant.KeySource{Client: cs, Namespace: "wm", Secret: "keys", Key: "grant"}, Issuer: "https://wm.example.com", Audience: "kagent"},
-		Broker:     "workspace-manager",
+		Workspaces:     oneWorkspace{&v1alpha1.Workspace{ObjectMeta: metav1.ObjectMeta{Name: "otter"}}},
+		Core:           cs,
+		Namespace:      "kagent",
+		Tokens:         noSignIns{},
+		ConnectURL:     func(string) string { return "" },
+		Signer:         &grant.Signer{Keys: &grant.KeySource{Client: cs, Namespace: "wm", Secret: "keys", Key: "grant"}, Issuer: "https://wm.example.com", Audience: "kagent"},
+		Broker:         "workspace-manager",
+		AgentNamespace: "kagent",
 	})
 	require.NoError(t, err)
 	cfg := Config{Authorizer: a}

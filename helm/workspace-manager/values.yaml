@@ -228,6 +228,10 @@ grant:
   # -- The name kagent knows this manager's token endpoint by, as its token
   # broker: every provider host of a grant names it.
   broker: workspace-manager
+  # -- The namespace whose Agents may start a Session with a grant, its
+  # `agent_namespace`: kagent's Session admission refuses one on an Agent
+  # elsewhere. Required with `signingKey`.
+  agentNamespace: kagent
 
 tokenExchange:
   # -- The installation's kagent client: the only client the token exchange

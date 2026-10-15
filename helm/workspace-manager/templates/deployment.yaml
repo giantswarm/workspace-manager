@@ -111,6 +111,7 @@ spec:
             - --grant-ttl={{ $.Values.grant.ttl }}
             - --grant-audience={{ $.Values.grant.audience }}
             - --grant-broker={{ $.Values.grant.broker }}
+            - --grant-agent-namespace={{ required "grant.agentNamespace is required with grant.signingKey.name" $.Values.grant.agentNamespace }}
             {{- end }}
             {{- with .Values.tokenExchange.clientID }}
             {{- /* POST /token for the installation's kagent client. */}}

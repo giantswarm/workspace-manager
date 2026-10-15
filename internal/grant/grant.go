@@ -2,13 +2,14 @@
 // signs once a person may read every repository of a workspace, which kagent's
 // Session admission verifies against the published keys (JWKSPath) before it
 // mounts the workspace's volume into the Session. The grant names the person,
-// the workspace, its volume and the mounts of it a Session may have, the
-// repositories pushed to since the last sync and the provider hosts whose
-// credentials the Session gets. It carries no token.
+// the namespace whose Agents may start a Session with it, the workspace, its
+// volume and the mounts of it a Session may have, the repositories pushed to
+// since the last sync and the provider hosts whose credentials the Session
+// gets. It carries no token.
 //
-// The claim names are kagent's JWT admission's: `volume` {driver, handle},
-// `mounts` [{sub_path, read_only}], `changed` [owner/name] and `providers`
-// [{hostname, audience, scheme, username, broker}].
+// The claim names are kagent's JWT admission's: `agent_namespace`, `volume`
+// {driver, handle}, `mounts` [{sub_path, read_only}], `changed` [owner/name]
+// and `providers` [{hostname, audience, scheme, username, broker}].
 package grant
 
 import (
@@ -67,11 +68,14 @@ type Provider struct {
 
 // Grant is what a grant admits: everything but who and when.
 type Grant struct {
-	Workspace Workspace  `json:"workspace"`
-	Volume    Volume     `json:"volume"`
-	Mounts    []Mount    `json:"mounts"`
-	Changed   []string   `json:"changed,omitempty"`
-	Providers []Provider `json:"providers,omitempty"`
+	// AgentNamespace is the namespace whose Agents may start a Session with
+	// the grant; kagent refuses one on an Agent elsewhere.
+	AgentNamespace string     `json:"agent_namespace"`
+	Workspace      Workspace  `json:"workspace"`
+	Volume         Volume     `json:"volume"`
+	Mounts         []Mount    `json:"mounts"`
+	Changed        []string   `json:"changed,omitempty"`
+	Providers      []Provider `json:"providers,omitempty"`
 }
 
 // Claims are a grant's payload.

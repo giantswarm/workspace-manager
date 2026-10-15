@@ -47,6 +47,9 @@ tests:
           content: --grant-broker=workspace-manager
       - contains:
           path: spec.template.spec.containers[0].args
+          content: --grant-agent-namespace=kagent
+      - contains:
+          path: spec.template.spec.containers[0].args
           content: --sync-cycle=1h
       - contains:
           path: spec.template.spec.containers[0].args

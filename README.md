@@ -123,7 +123,10 @@ past it is `refused`, saying so. The answer's `outcome`:
 
 The grant's claims are kagent's JWT admission's: `iss` the manager's base URL,
 `sub` the person's email, `aud` `--grant-audience` (`kagent`), `exp`,
-`nbf`, `iat`, `jti`; `workspace` {namespace, name}; `volume` {driver, handle}
+`nbf`, `iat`, `jti`; `agent_namespace` `--grant-agent-namespace` (the
+chart's `kagent`), the namespace whose Agents may start a Session with it,
+kagent's admission refusing one on an Agent elsewhere; `workspace` {namespace,
+name}, the namespace being the manager's own; `volume` {driver, handle}
 of the workspace's CSI volume; `mounts` `sessions/${SESSION_ID}` read-write
 and `mirrors` read-only; `changed` [`<owner>/<name>`]; and `providers`, one per
 git and API host of each provider of the workspace {hostname, pathPrefix

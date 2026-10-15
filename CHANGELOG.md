@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The workspace grant names the namespace whose Agents may start a Session with it, the claim `agent_namespace`, from `--grant-agent-namespace` (the chart's `grant.agentNamespace`, `kagent`); the manager refuses to start with a grant signing key and no such namespace. kagent's Session admission refuses a grant on an Agent of another namespace. ([#108](https://github.com/giantswarm/workspace-manager/issues/108))
 - A session directory's cleanup window defaults to 14 days after its Session's last turn instead of 30: the chart's `sessions.cleanupAfter` is `336h` and `serve`'s `--sessions-cleanup-after` defaults to 336h, kagent's Session idle TTL as the agent-platform chart sets it (kagent deletes an idle Session, and its directory with it, by then, so a longer window never applied). The agent-platform chart already forwards its TTL as `sessions.cleanupAfter`; nothing else changes. ([#106](https://github.com/giantswarm/workspace-manager/issues/106))
 - `serve` refuses to start without a sync Job template (`--sync-job-template`, which the chart renders) or without an image for its `sync` container (`--sync-image` or the template's), naming the flag; it no longer starts a controller whose every sync Job the API server refuses, and no sync Job, input or credentials Secret is made without an image. `--sync-service-account`, the account of the template-less Job, is gone. ([#38](https://github.com/giantswarm/workspace-manager/issues/38))
 

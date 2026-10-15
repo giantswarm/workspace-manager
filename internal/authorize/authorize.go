@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
@@ -72,6 +73,9 @@ type Config struct {
 	// Broker is the name kagent knows the manager's token endpoint by: every
 	// provider host of a grant names it.
 	Broker string
+	// AgentNamespace is the namespace whose Agents may start a Session with
+	// a grant, which every grant names.
+	AgentNamespace string
 	// CheckTimeout bounds the providers' answers about the person's access;
 	// zero is DefaultCheckTimeout. A check that does not finish in time is a
 	// refusal saying so, before the caller's own timeout ends the call.
@@ -108,6 +112,9 @@ func New(cfg Config) (*Authorizer, error) {
 	}
 	if cfg.Namespace == "" || cfg.Broker == "" {
 		errs = append(errs, errors.New("authorize: the namespace and the broker name are required"))
+	}
+	if msgs := validation.IsDNS1123Label(cfg.AgentNamespace); len(msgs) > 0 {
+		errs = append(errs, fmt.Errorf("authorize: the Agent namespace %q is no namespace name: %s", cfg.AgentNamespace, strings.Join(msgs, "; ")))
 	}
 	if cfg.CheckTimeout < 0 {
 		errs = append(errs, fmt.Errorf("authorize: the check timeout must not be negative, got %s", cfg.CheckTimeout))
@@ -314,11 +321,12 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 	sort.Strings(res.Changed)
 
 	g := grant.Grant{
-		Workspace: grant.Workspace{Namespace: a.cfg.Namespace, Name: name},
-		Volume:    *volume,
-		Mounts:    []grant.Mount{{SubPath: grant.SessionDirectory}, {SubPath: grant.Mirrors, ReadOnly: true}},
-		Changed:   res.Changed,
-		Providers: a.providers(providers),
+		AgentNamespace: a.cfg.AgentNamespace,
+		Workspace:      grant.Workspace{Namespace: a.cfg.Namespace, Name: name},
+		Volume:         *volume,
+		Mounts:         []grant.Mount{{SubPath: grant.SessionDirectory}, {SubPath: grant.Mirrors, ReadOnly: true}},
+		Changed:        res.Changed,
+		Providers:      a.providers(providers),
 	}
 	token, expiry, err := a.cfg.Signer.Sign(ctx, id.Email, g)
 	if err != nil {

@@ -51,6 +51,7 @@ Manages the Agent Platform's workspaces, the sources agent sessions work on and 
 | grant.ttl | string | `"5m"` | How long a grant is valid, a Go duration: the time a surface has to pass it to agent-manager's `start_session`. |
 | grant.audience | string | `"kagent"` | The grant's audience: the one kagent's Session admission requires. |
 | grant.broker | string | `"workspace-manager"` | The name kagent knows this manager's token endpoint by, as its token broker: every provider host of a grant names it. |
+| grant.agentNamespace | string | `"kagent"` | The namespace whose Agents may start a Session with a grant, its `agent_namespace`: kagent's Session admission refuses one on an Agent elsewhere. Required with `signingKey`. |
 | tokenExchange.clientID | string | `""` | The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers, with the person's access token for a provider instance. Empty serves no token exchange. Needs `providers` and `oauth.enabled`; kagent's namespace belongs in `networkPolicy.ingressNamespaces`. |
 | tokenExchange.clientSecret.name | string | `""` | Secret in the release namespace with the kagent client's secret, read on every exchange; the chart never renders it. |
 | tokenExchange.clientSecret.key | string | `"client-secret"` | Key of the client secret in that Secret. |
