@@ -38,8 +38,8 @@ import (
 const DefaultResync = 10 * time.Minute
 
 // DefaultSessionCleanupAfter is how long a Session's directory outlives the
-// Session's last turn: 30 days.
-const DefaultSessionCleanupAfter = 30 * 24 * time.Hour
+// Session's last turn: 14 days, the platform's Session idle TTL.
+const DefaultSessionCleanupAfter = 14 * 24 * time.Hour
 
 // DeletionRecheck is how long after its last cycle a deleted workspace whose
 // session directories have no earlier cleanup date is looked after again.

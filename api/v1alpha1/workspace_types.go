@@ -322,7 +322,7 @@ type SessionDirectory struct {
 	// Size measured at the last sync.
 	// +optional
 	Size *resource.Quantity `json:"size,omitempty"`
-	// CleanupAfter is when the directory is deleted: the cleanup window (30
+	// CleanupAfter is when the directory is deleted: the cleanup window (14
 	// days by default) after its Session's last turn. A Session deleted in
 	// kagent loses its directory at once, within the manager's session poll.
 	// +optional

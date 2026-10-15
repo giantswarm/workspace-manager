@@ -656,7 +656,7 @@
             "properties": {
                 "cleanupAfter": {
                     "type": "string",
-                    "description": "How long a Session's directory on the workspace volume outlives the Session's last turn, a Go duration (`720h` is 30 days); every turn moves the date, a Session deleted in kagent loses its directory at once (see `poll`), and a directory whose Session kagent does not know goes this long after the sync that first found it. The sync Job cleans up, from kagent's record of each Session's last turn (`kagent.address`). Passed to `serve` as its `sessions-cleanup-after` flag."
+                    "description": "How long a Session's directory on the workspace volume outlives the Session's last turn, a Go duration (`336h` is 14 days, kagent's Session idle TTL as the agent-platform chart sets it); every turn moves the date, a Session deleted in kagent loses its directory at once (see `poll`), and a directory whose Session kagent does not know goes this long after the sync that first found it. The sync Job cleans up, from kagent's record of each Session's last turn (`kagent.address`). Passed to `serve` as its `sessions-cleanup-after` flag."
                 },
                 "poll": {
                     "type": "string",
