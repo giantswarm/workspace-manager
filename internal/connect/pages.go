@@ -41,7 +41,10 @@ type IdentityProvider interface {
 // sign-in, `/callback/<instance>` completes it, and `/signin` is where the
 // identity provider returns. Both provider pages need a browser signed in to
 // the manager, so a callback is completed only by the person its state was
-// made for: a link one person hands another connects nobody.
+// made for: a link one person hands another connects nobody. A callback signs
+// the browser in through the Dex connector of the state's person, so a person
+// who reached the manager through another connector of the same identity
+// provider is not mistaken for someone else.
 type Pages struct {
 	c   *Connector
 	idp IdentityProvider
@@ -69,6 +72,8 @@ type signInState struct {
 	Verifier string `json:"v"`
 	Return   string `json:"r"`
 	Expiry   int64  `json:"e"`
+	// Connector is the Dex connector the sign-in must come through, if any.
+	Connector string `json:"c,omitempty"`
 }
 
 // Connect serves `GET /connect/{instance}`: it sends a signed-in browser to
@@ -81,7 +86,7 @@ func (p *Pages) Connect(w http.ResponseWriter, r *http.Request) {
 	}
 	person, ok := p.person(r)
 	if !ok {
-		p.signIn(w, r)
+		p.signIn(w, r, "")
 		return
 	}
 	u, _, err := p.c.AuthorizationURL(r.Context(), person, instance)
@@ -107,16 +112,27 @@ func (p *Pages) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	// The state is checked before the browser is sent to sign in, so a
 	// forged or stale link goes nowhere.
-	if _, err := p.c.CheckState(instance, q.Get("state")); err != nil {
+	statePerson, err := p.c.CheckState(instance, q.Get("state"))
+	if err != nil {
 		page(w, http.StatusBadRequest, instance+" is not connected", "This sign-in link is invalid or has expired. Start again from the connect link.")
 		return
 	}
+	connector := dexConnector(statePerson)
 	person, ok := p.person(r)
 	if !ok {
-		p.signIn(w, r)
+		p.signIn(w, r, connector)
 		return
 	}
-	err := p.c.Complete(r.Context(), person, instance, q.Get("state"), q.Get("code"))
+	if person != statePerson && connector != "" && dexConnector(person) != connector {
+		// The browser signed in through another connector, maybe as the
+		// same person: it signs in again through the state's. A sign-in
+		// through that connector as someone else is refused below.
+		p.c.log.InfoContext(r.Context(), "page sign-in again through the state's connector", "instance", instance, "connector", connector)
+		p.setCookie(w, sessionCookie, "", -1)
+		p.signIn(w, r, connector)
+		return
+	}
+	err = p.c.Complete(r.Context(), person, instance, q.Get("state"), q.Get("code"))
 	switch {
 	case err == nil:
 		page(w, http.StatusOK, instance+" connected", "Your agents can now use "+instance+" as you. You can close this page.")
@@ -159,6 +175,13 @@ func (p *Pages) SignIn(w http.ResponseWriter, r *http.Request) {
 		page(w, http.StatusUnauthorized, "Sign-in failed", "The identity provider did not name you. Open the connect link again.")
 		return
 	}
+	if st.Connector != "" && dexConnector(info.ID) != st.Connector {
+		// Dex did not keep to the requested connector: a session from
+		// another one would only send the callback back here.
+		p.c.log.WarnContext(r.Context(), "page sign-in: another connector than requested", "connector", st.Connector)
+		page(w, http.StatusUnauthorized, "Sign-in failed", "This link needs the sign-in through "+st.Connector+". Open the connect link again.")
+		return
+	}
 	value, err := seal(p.c.keyring, sessionContext, session{Person: info.ID, Expiry: p.c.now().Add(p.ttl).Unix()})
 	if err != nil {
 		page(w, http.StatusInternalServerError, "Sign-in failed", "The session cannot be kept right now.")
@@ -182,18 +205,20 @@ func (p *Pages) person(r *http.Request) (string, bool) {
 }
 
 // signIn sends the browser to the identity provider, to return to the
-// request's own URL.
-func (p *Pages) signIn(w http.ResponseWriter, r *http.Request) {
+// request's own URL; through connector unless it is "", which leaves the
+// choice to the person at Dex.
+func (p *Pages) signIn(w http.ResponseWriter, r *http.Request, connector string) {
 	nonce := make([]byte, 24)
 	if _, err := rand.Read(nonce); err != nil {
 		page(w, http.StatusInternalServerError, "Sign-in failed", "The sign-in cannot start right now.")
 		return
 	}
 	st := signInState{
-		Nonce:    base64.RawURLEncoding.EncodeToString(nonce),
-		Verifier: oauth2.GenerateVerifier(),
-		Return:   r.URL.RequestURI(),
-		Expiry:   p.c.now().Add(p.c.ttl).Unix(),
+		Nonce:     base64.RawURLEncoding.EncodeToString(nonce),
+		Verifier:  oauth2.GenerateVerifier(),
+		Return:    r.URL.RequestURI(),
+		Expiry:    p.c.now().Add(p.c.ttl).Unix(),
+		Connector: connector,
 	}
 	state, err := seal(p.c.keyring, signInContext, st)
 	if err != nil {
@@ -201,7 +226,11 @@ func (p *Pages) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.setCookie(w, signInCookie, st.Nonce, int(p.c.ttl.Seconds()))
-	http.Redirect(w, r, p.idp.AuthorizationURL(state, oauth2.S256ChallengeFromVerifier(st.Verifier), "S256", nil, nil), http.StatusSeeOther)
+	var opts *providers.AuthorizationURLOptions
+	if connector != "" {
+		opts = &providers.AuthorizationURLOptions{Extra: map[string]string{"connector_id": connector}}
+	}
+	http.Redirect(w, r, p.idp.AuthorizationURL(state, oauth2.S256ChallengeFromVerifier(st.Verifier), "S256", nil, opts), http.StatusSeeOther)
 }
 
 // setCookie sets an HttpOnly cookie for the whole host. SameSite Lax,

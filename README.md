@@ -40,6 +40,11 @@ the manager in clear. The provider returns to `/callback/<instance>` (on
 GitHub the `-agents` App's callback URL), which stores the token only for the
 person the state was made for: the browser proves who it is by signing in to
 Dex at `/signin`, so a connect link one person hands another connects nobody.
+That sign-in asks Dex for the connector the state's subject came through
+(`connector_id`, read from the Dex `sub`), and a browser signed in through
+another connector signs in again through that one before the callback
+completes, so one person who reaches the portal and the manager through
+different connectors of one identity provider is not refused.
 Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
 `/connect/<instance>` starts the same flow for a person in the browser: the
 link other surfaces show.
