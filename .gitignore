@@ -9,3 +9,5 @@
 .idea/
 .vscode/
 .DS_Store
+# pinned tool binaries (make golangci-lint)
+/.bin/

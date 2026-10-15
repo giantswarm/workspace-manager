@@ -22,7 +22,9 @@
 - `make generate`: the API's deepcopy functions and the CRD in
   `helm/workspace-manager/files/crds` from `api/` (controller-gen);
   `make verify-generate` fails when they are stale (in the `envtest` job).
-- `make lint`: golangci-lint.
+- `make lint`: golangci-lint, the version CI's pre-commit job installs
+  (read from `.github/workflows/zz_generated.pre-commit.yaml`, downloaded to
+  `.bin/`); `make pre-commit` runs every hook with that same binary.
 - `make helm-test`: `helm lint` and the helm-unittest suites in
   `helm/workspace-manager/tests/` (the `chart-test` CI job).
 - `make docker-build`: a local dev image (`TAG=workspace-manager:dev`).
