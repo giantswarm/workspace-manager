@@ -164,11 +164,11 @@ tests:
     set:
       muster:
         mcpServer:
-          displayName: Workspaces
+          displayName: "Workspaces: all of them"
     asserts:
       - equal:
           path: metadata.annotations["ui.giantswarm.io/display-name"]
-          value: Workspaces
+          value: "Workspaces: all of them"
 
   - it: renders no annotation with an empty display name
     set:
@@ -177,4 +177,4 @@ tests:
           displayName: ""
     asserts:
       - notExists:
-          path: metadata.annotations
+          path: metadata.annotations["ui.giantswarm.io/display-name"]
