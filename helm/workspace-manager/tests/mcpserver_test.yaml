@@ -1,7 +1,8 @@
 # The muster registration: off by default, one streamable-http MCPServer at
 # the Service, unpinned (no authorization server, no GitHub App), the auth
-# block only with OAuth, and the audiences the MCPServer requires are the same
-# ones the Deployment trusts (deployment_test.yaml).
+# block only with OAuth, the audiences the MCPServer requires are the same
+# ones the Deployment trusts (deployment_test.yaml), and the display name the
+# portal shows as an annotation.
 #
 # Run with: make helm-test (helm unittest helm/workspace-manager)
 suite: mcpserver registration
@@ -152,3 +153,28 @@ tests:
       - equal:
           path: spec.timeout
           value: 90
+
+  - it: carries the display name the portal shows
+    asserts:
+      - equal:
+          path: metadata.annotations["ui.giantswarm.io/display-name"]
+          value: Workspace Manager
+
+  - it: renders the display name from muster.mcpServer.displayName
+    set:
+      muster:
+        mcpServer:
+          displayName: Workspaces
+    asserts:
+      - equal:
+          path: metadata.annotations["ui.giantswarm.io/display-name"]
+          value: Workspaces
+
+  - it: renders no annotation with an empty display name
+    set:
+      muster:
+        mcpServer:
+          displayName: ""
+    asserts:
+      - notExists:
+          path: metadata.annotations
