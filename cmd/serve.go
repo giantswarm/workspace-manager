@@ -59,7 +59,9 @@ func (k *kubeFlags) config() kube.Config {
 }
 
 type serveOptions struct {
-	listen string
+	listen    string
+	readyWait time.Duration
+	drain     time.Duration
 
 	kube kubeFlags
 
@@ -126,6 +128,8 @@ environment variable named next to it; flags win over the environment.`,
 	}
 	f := cmd.Flags()
 	f.StringVar(&o.listen, "listen", envOr("WORKSPACE_MANAGER_LISTEN", ":8080"), "Listen address (WORKSPACE_MANAGER_LISTEN)")
+	f.DurationVar(&o.readyWait, "ready-provider-wait", envDuration("WORKSPACE_MANAGER_READY_PROVIDER_WAIT", provider.DefaultReachWait), "How long a starting replica stays unready until every provider instance answers once, a Go duration; past it the replica is Ready anyway (WORKSPACE_MANAGER_READY_PROVIDER_WAIT)")
+	f.DurationVar(&o.drain, "shutdown-drain", envDuration("WORKSPACE_MANAGER_SHUTDOWN_DRAIN", 10*time.Second), "How long a stopping replica keeps serving, unready, before it closes its listener: the time its Service takes to stop sending it connections, a Go duration (WORKSPACE_MANAGER_SHUTDOWN_DRAIN)")
 	o.kube.add(f)
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
@@ -242,7 +246,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	}
 	ctl := controller.New(ctlCfg)
 
-	srvCfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
+	if o.readyWait <= 0 {
+		return fmt.Errorf("--ready-provider-wait must be positive, got %s", o.readyWait)
+	}
+	if o.drain < 0 {
+		return fmt.Errorf("--shutdown-drain must not be negative, got %s", o.drain)
+	}
+	// Readiness waits for the providers' first answer: a replica the Service
+	// sends a Session start to reaches them.
+	reach := &provider.Reach{Instances: providers, Wait: o.readyWait, Logger: log}
+	srvCfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath, Ready: reach.Ready, Drain: o.drain}
 	if o.oauthEnabled {
 		srvCfg.OAuth = &server.OAuthConfig{
 			BaseURL:                       o.oauthBaseURL,
@@ -302,6 +315,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return srv.Run(ctx) })
 	g.Go(func() error { return ctl.Run(ctx) })
+	g.Go(func() error { reach.Run(ctx); return nil })
 	return g.Wait()
 }
 

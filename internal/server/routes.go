@@ -23,8 +23,9 @@ func (s *Server) routes(mux *http.ServeMux, cfg Config, mcpSrv *mcpserver.MCPSer
 	mux.HandleFunc("GET /healthz", ok)
 	// Readiness does not track the API server or Dex: the endpoint must stay
 	// reachable so clients read a failure from the tool result instead of an
-	// unready Service.
-	mux.HandleFunc("GET /readyz", ok)
+	// unready Service. It holds a starting replica back until its providers
+	// answered once, and turns a stopping one away while it drains.
+	mux.HandleFunc("GET /readyz", s.readyz)
 
 	if s.oauth != nil {
 		s.oauth.register(mux)
