@@ -72,14 +72,14 @@ func TestServeStorageClassFlag(t *testing.T) {
 	assert.Equal(t, "azurefile-nfs", got)
 }
 
-// TestServeControllerFlags: the cycle, the cleanup window and the sizing
-// default to the controller's own values and each reads its environment
-// variable.
+// TestServeControllerFlags: the cycle, the cleanup window (336h, 14 days)
+// and the sizing default to the controller's own values and each reads its
+// environment variable.
 func TestServeControllerFlags(t *testing.T) {
 	f := newServeCmd().Flags()
 	for name, def := range map[string]string{
 		"sync-cycle":               controller.DefaultResync.String(),
-		"sessions-cleanup-after":   controller.DefaultSessionCleanupAfter.String(),
+		"sessions-cleanup-after":   "336h0m0s", // 14 days, kagent's Session idle TTL on the platform
 		"sessions-poll":            controller.DefaultSessionPoll.String(),
 		"sizing-factor":            "1.5",
 		"sizing-headroom":          "4Gi",

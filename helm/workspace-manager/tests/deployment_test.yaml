@@ -22,7 +22,7 @@ tests:
             - --namespace=kagent
             - --sync-cycle=10m
             - --sync-refresh-after=1h
-            - --sessions-cleanup-after=720h
+            - --sessions-cleanup-after=336h
             - --sessions-poll=30s
             - --sizing-factor=1.5
             - --sizing-headroom=4Gi

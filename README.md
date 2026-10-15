@@ -331,7 +331,7 @@ record of each Session's last turn:
   kagent's audience (`--kagent-token-file`), keeps those whose workspace
   volume is this workspace's (by CSI driver and handle) and hands them, with
   the window `--sessions-cleanup-after` (the chart's
-  `sessions.cleanupAfter`, 720h), to the Job in its selection.
+  `sessions.cleanupAfter`, 336h), to the Job in its selection.
 - **The window.** A directory is deleted once its Session's last turn
   (`last_turn_time`; its creation before the first turn) is older than the
   window; every turn moves the date. A Session kagent listed at the previous
