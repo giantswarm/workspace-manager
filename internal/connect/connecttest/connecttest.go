@@ -1,7 +1,8 @@
 // Package connecttest fakes the parties of a provider sign-in for tests: an
 // OAuth 2.0 authorization server that enforces PKCE and serves both the
 // GitHub App paths and the RFC 7009 ones, a Dex that signs a test browser in
-// as whichever person it carries, and that browser.
+// as whichever person it carries, through the connector it asks for, and that
+// browser.
 package connecttest
 
 import (
@@ -20,6 +21,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/providers"
 	"golang.org/x/oauth2"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Revocation is one revocation the authorization server accepted.
@@ -200,10 +202,11 @@ type Dex struct {
 	// RedirectURL is the manager's sign-in route; set once the manager runs.
 	RedirectURL string
 
-	mu     sync.Mutex
-	n      int
-	codes  map[string]dexCode
-	tokens map[string]string
+	mu         sync.Mutex
+	n          int
+	codes      map[string]dexCode
+	tokens     map[string]string
+	connectors []string
 }
 
 type dexCode struct{ person, challenge string }
@@ -224,6 +227,7 @@ func (d *Dex) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.mu.Lock()
+	d.connectors = append(d.connectors, r.URL.Query().Get("connector_id"))
 	d.n++
 	code := fmt.Sprintf("dex-code-%d", d.n)
 	d.codes[code] = dexCode{person: person, challenge: r.URL.Query().Get("code_challenge")}
@@ -231,9 +235,31 @@ func (d *Dex) authorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, d.RedirectURL+"?"+url.Values{"code": {code}, "state": {r.URL.Query().Get("state")}}.Encode(), http.StatusFound)
 }
 
+// Connectors are the connector_id of every sign-in so far, "" for one that
+// left the choice to the person.
+func (d *Dex) Connectors() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.connectors...)
+}
+
 // AuthorizationURL implements connect.IdentityProvider.
-func (d *Dex) AuthorizationURL(state, codeChallenge, codeChallengeMethod string, _ []string, _ *providers.AuthorizationURLOptions) string {
-	return d.URL + "/auth?" + url.Values{"state": {state}, "code_challenge": {codeChallenge}, "code_challenge_method": {codeChallengeMethod}}.Encode()
+func (d *Dex) AuthorizationURL(state, codeChallenge, codeChallengeMethod string, _ []string, opts *providers.AuthorizationURLOptions) string {
+	v := url.Values{"state": {state}, "code_challenge": {codeChallenge}, "code_challenge_method": {codeChallengeMethod}}
+	if opts != nil && opts.Extra["connector_id"] != "" {
+		v.Set("connector_id", opts.Extra["connector_id"])
+	}
+	return d.URL + "/auth?" + v.Encode()
+}
+
+// Subject is the `sub` Dex issues for userID signed in through connector:
+// the unpadded URL-safe base64 of its IDTokenSubject protobuf.
+func Subject(userID, connector string) string {
+	b := protowire.AppendTag(nil, 1, protowire.BytesType)
+	b = protowire.AppendString(b, userID)
+	b = protowire.AppendTag(b, 2, protowire.BytesType)
+	b = protowire.AppendString(b, connector)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // ExchangeCode implements connect.IdentityProvider.
@@ -266,6 +292,25 @@ func (d *Dex) ValidateToken(_ context.Context, accessToken string) (*providers.U
 // trusts the httptest certificate and is signed in at dex as person.
 func NewBrowser(t *testing.T, dex *Dex, person string) *http.Client {
 	t.Helper()
+	return newBrowser(t, dex, func(string) string { return person })
+}
+
+// NewConnectorBrowser is the browser of one person who can sign in at dex
+// through each connector of userID's: a sign-in asking for a connector comes
+// through it, one leaving the choice to the person through picks, the
+// connector the person picks at Dex's picker.
+func NewConnectorBrowser(t *testing.T, dex *Dex, userID, picks string) *http.Client {
+	t.Helper()
+	return newBrowser(t, dex, func(connector string) string {
+		if connector == "" {
+			connector = picks
+		}
+		return Subject(userID, connector)
+	})
+}
+
+func newBrowser(t *testing.T, dex *Dex, person func(connector string) string) *http.Client {
+	t.Helper()
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +320,7 @@ func NewBrowser(t *testing.T, dex *Dex, person string) *http.Client {
 	return &http.Client{Jar: jar, Transport: roundTripper(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host == dexHost {
 			r = r.Clone(r.Context())
-			r.Header.Set(PersonHeader, person)
+			r.Header.Set(PersonHeader, person(r.URL.Query().Get("connector_id")))
 		}
 		return base.RoundTrip(r)
 	})}

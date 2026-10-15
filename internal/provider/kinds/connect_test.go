@@ -167,6 +167,7 @@ func TestConnectProvidersIndependently(t *testing.T) {
 	status, page := get(t, alice, e.manager+"/connect/github")
 	require.Equal(t, http.StatusOK, status, page)
 	assert.Contains(t, page, "github connected")
+	assert.Equal(t, []string{""}, e.dex.Connectors(), "the connect page leaves the connector to the person")
 	assert.Equal(t, map[string]bool{"github": true, "gitlab": false, "code": false}, e.connected(t, "alice"))
 
 	// The link connect_provider hands out completes in the browser too.
@@ -253,6 +254,53 @@ func TestConnectGitLab(t *testing.T) {
 	assert.Empty(t, e.signIns(t))
 }
 
+// TestConnectThroughAnotherConnector: a person whose connect_provider caller
+// signed in to the portal through one Dex connector, and who picks another
+// at the manager's own sign-in, connects all the same.
+func TestConnectThroughAnotherConnector(t *testing.T) {
+	ctx := context.Background()
+	portal := connecttest.Subject("alice", "giantswarm-ad")
+
+	t.Run("without a session", func(t *testing.T) {
+		e := newConnectEnv(t)
+		alice := connecttest.NewConnectorBrowser(t, e.dex, "alice", "giantswarm-github")
+		link, _, err := e.conn.AuthorizationURL(ctx, portal, "code")
+		require.NoError(t, err)
+		status, page := get(t, alice, link)
+		require.Equal(t, http.StatusOK, status, page)
+		// The sign-in asked for the state's connector: no picker.
+		assert.Equal(t, []string{"giantswarm-ad"}, e.dex.Connectors())
+		assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": true}, e.connected(t, portal))
+	})
+
+	t.Run("with a session through another connector", func(t *testing.T) {
+		e := newConnectEnv(t)
+		alice := connecttest.NewConnectorBrowser(t, e.dex, "alice", "giantswarm-github")
+		// The connect page leaves the choice to the person, who picks GitHub.
+		status, page := get(t, alice, e.manager+"/connect/github")
+		require.Equal(t, http.StatusOK, status, page)
+		assert.Equal(t, map[string]bool{"github": true, "gitlab": false, "code": false},
+			e.connected(t, connecttest.Subject("alice", "giantswarm-github")))
+
+		// The portal's link drops that session and signs in through the
+		// portal's connector.
+		link, _, err := e.conn.AuthorizationURL(ctx, portal, "code")
+		require.NoError(t, err)
+		status, page = get(t, alice, link)
+		require.Equal(t, http.StatusOK, status, page)
+		assert.Contains(t, page, "code connected")
+		assert.Equal(t, []string{"", "giantswarm-ad"}, e.dex.Connectors())
+		assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": true}, e.connected(t, portal))
+
+		// The browser is now signed in as the portal's subject.
+		link, _, err = e.conn.AuthorizationURL(ctx, portal, "gitlab")
+		require.NoError(t, err)
+		status, page = get(t, alice, link)
+		require.Equal(t, http.StatusOK, status, page)
+		assert.Equal(t, []string{"", "giantswarm-ad"}, e.dex.Connectors(), "no further sign-in")
+	})
+}
+
 func TestCallbackRefusals(t *testing.T) {
 	ctx := context.Background()
 
@@ -297,6 +345,37 @@ func TestCallbackRefusals(t *testing.T) {
 		status, page := get(t, bob, link)
 		assert.Equal(t, http.StatusForbidden, status, page)
 		assert.Contains(t, page, "another person")
+		assert.Empty(t, e.signIns(t))
+	})
+
+	t.Run("another person's state after signing in through its connector", func(t *testing.T) {
+		e := newConnectEnv(t)
+		bob := connecttest.NewConnectorBrowser(t, e.dex, "bob", "giantswarm-github")
+		status, page := get(t, bob, e.manager+"/connect/github")
+		require.Equal(t, http.StatusOK, status, page)
+		// alice's link from the portal's connector, in bob's browser signed
+		// in through another: bob signs in again through alice's connector,
+		// and is still not alice.
+		link, _, err := e.conn.AuthorizationURL(ctx, connecttest.Subject("alice", "giantswarm-ad"), "code")
+		require.NoError(t, err)
+		status, page = get(t, bob, link)
+		assert.Equal(t, http.StatusForbidden, status, page)
+		assert.Contains(t, page, "another person")
+		assert.Equal(t, []string{"", "giantswarm-ad"}, e.dex.Connectors())
+		assert.Equal(t, map[string]bool{"github": false, "gitlab": false, "code": false}, e.connected(t, connecttest.Subject("alice", "giantswarm-ad")))
+	})
+
+	t.Run("dex ignores the connector", func(t *testing.T) {
+		e := newConnectEnv(t)
+		// A Dex that signs the browser in through another connector than
+		// asked for: the sign-in is refused instead of looping.
+		alice := connecttest.NewBrowser(t, e.dex, connecttest.Subject("alice", "giantswarm-github"))
+		link, _, err := e.conn.AuthorizationURL(ctx, connecttest.Subject("alice", "giantswarm-ad"), "code")
+		require.NoError(t, err)
+		status, page := get(t, alice, link)
+		assert.Equal(t, http.StatusUnauthorized, status, page)
+		assert.Contains(t, page, "giantswarm-ad")
+		assert.Equal(t, []string{"giantswarm-ad"}, e.dex.Connectors())
 		assert.Empty(t, e.signIns(t))
 	})
 
