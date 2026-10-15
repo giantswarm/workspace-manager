@@ -216,6 +216,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	if err != nil {
 		return fmt.Errorf("workspace-manager needs Kubernetes access: %w", err)
 	}
+	// A CRD that prunes the status the controller records a running sync
+	// Job in would have it start sync Jobs without end: refuse it at once.
+	if err := controller.CheckCRD(ctx, clients.Dynamic()); err != nil {
+		return err
+	}
 	ctlCfg.Dynamic, ctlCfg.Core, ctlCfg.Logger = clients.Dynamic(), clients.Typed(), log
 	// The controller claims each Workspace's volume; without a class it
 	// claims none and says so in every Workspace's condition.

@@ -82,7 +82,7 @@ Manages the Agent Platform's workspaces, the sources agent sessions work on and 
 | serviceAccount.create | bool | `true` | Create a ServiceAccount. |
 | serviceAccount.annotations | object | `{}` | Annotations on the ServiceAccount. |
 | serviceAccount.name | string | `""` | ServiceAccount name (generated when empty). |
-| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace` (the manager writes the Workspaces, their volume claims, the sync Jobs and their input, and the controller's election Lease), its ClusterRole (it reads PersistentVolumes and the StorageClass), and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). No person or group is bound to anything. |
+| rbac.create | bool | `true` | Create the ServiceAccount's Role and RoleBinding in `workspaces.namespace` (the manager writes the Workspaces, their volume claims, the sync Jobs and their input, and the controller's election Lease), its ClusterRole (it reads PersistentVolumes, the StorageClass and the Workspace CRD), and the sync Job's own ServiceAccount and Role there (`<fullname>-sync`, allowed to write its result ConfigMap). No person or group is bound to anything. |
 | podAnnotations | object | `{}` | Annotations on the pod. |
 | podLabels | object | `{}` | Labels on the pod. |
 | podSecurityContext | object | `{"fsGroup":1000,"runAsGroup":1000,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context. |

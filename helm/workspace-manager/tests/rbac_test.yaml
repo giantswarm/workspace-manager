@@ -63,7 +63,7 @@ tests:
               name: workspace-manager
               namespace: agent-platform
 
-  - it: lets the manager read the PersistentVolumes and the StorageClass, and nothing else cluster-wide
+  - it: lets the manager read the PersistentVolumes, the StorageClass and the Workspace CRD, and nothing else cluster-wide
     template: templates/rbac.yaml
     asserts:
       - hasDocuments:
@@ -80,6 +80,10 @@ tests:
               verbs: [get]
             - apiGroups: [storage.k8s.io]
               resources: [storageclasses]
+              verbs: [get]
+            - apiGroups: [apiextensions.k8s.io]
+              resources: [customresourcedefinitions]
+              resourceNames: [workspaces.workspace-manager.giantswarm.io]
               verbs: [get]
       - documentIndex: 3
         equal:
