@@ -181,9 +181,10 @@ func (k *Kind) Hosts() provider.Hosts {
 
 // List implements provider.Kind: the repositories of the App's installation
 // on owner, which is what cred, the owner's SyncCredential, can see and the
-// sync can fetch; from the listing cache within provider.ListingFreshness.
+// sync can fetch; from the listing cache within provider.ListingFreshness, unless
+// ctx asks for a provider.FreshListing.
 func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
-	return k.cache.Get(owner, func() ([]provider.Item, error) { return k.list(ctx, cred, owner) })
+	return k.cache.Get(ctx, owner, func() ([]provider.Item, error) { return k.list(ctx, cred, owner) })
 }
 
 // list pages through the installation's repositories, perPage a call.

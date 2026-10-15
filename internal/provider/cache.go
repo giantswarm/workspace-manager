@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"slices"
 	"sync"
 	"time"
@@ -35,13 +36,34 @@ func NewListingCache(clock Clock) *ListingCache {
 	return &ListingCache{clock: clock, entries: map[string]listing{}}
 }
 
+// freshListing marks a context whose List makes a listing of its own.
+type freshListing struct{}
+
+// FreshListing is ctx for a List that never answers from the cache: a
+// requested sync reads what the provider holds now, however recently the
+// owner was listed. Its listing refreshes the cache for the callers after it.
+func FreshListing(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshListing{}, true)
+}
+
+func isFreshListing(ctx context.Context) bool {
+	fresh, _ := ctx.Value(freshListing{}).(bool)
+	return fresh
+}
+
 // Get returns owner's items, from the cache while its listing is fresh, else
-// from list. The result is the caller's own slice.
-func (c *ListingCache) Get(owner string, list func() ([]Item, error)) ([]Item, error) {
-	if items, ok := c.fresh(owner); ok {
+// from list; under FreshListing always from list. The result is the caller's
+// own slice.
+func (c *ListingCache) Get(ctx context.Context, owner string, list func() ([]Item, error)) ([]Item, error) {
+	key := owner
+	if isFreshListing(ctx) {
+		// A listing in flight may have started before this call: it shares
+		// only one started under FreshListing too.
+		key = "fresh\x00" + owner
+	} else if items, ok := c.fresh(owner); ok {
 		return items, nil
 	}
-	v, err, _ := c.flight.Do(owner, func() (any, error) {
+	v, err, _ := c.flight.Do(key, func() (any, error) {
 		items, err := list()
 		if err != nil {
 			return nil, err

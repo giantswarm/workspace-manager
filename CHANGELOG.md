@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A cleanup-only sync cycle records what its Job removed: `Succeeded`, with `removed <n> session directories, dropped <n> mirrors` in `lastSync.message` and the `Synced` condition, when it deleted a session directory or a dropped mirror, and `NoChange` only when it removed nothing. The sync Job writes its removals beside the manifest in its result ConfigMap (`removed.json`). ([#43](https://github.com/giantswarm/workspace-manager/issues/43))
+- A requested sync cycle (`sync_workspace`, a Session's start past `sync.refreshAfter`) lists every owner anew instead of answering from the minute-long listing cache, so a refresh threshold below a minute no longer misses the push the Session's grant named. ([#87](https://github.com/giantswarm/workspace-manager/issues/87))
+
 ### Changed
 
 - `serve` refuses to start without a sync Job template (`--sync-job-template`, which the chart renders) or without an image for its `sync` container (`--sync-image` or the template's), naming the flag; it no longer starts a controller whose every sync Job the API server refuses, and no sync Job, input or credentials Secret is made without an image. `--sync-service-account`, the account of the template-less Job, is gone. ([#38](https://github.com/giantswarm/workspace-manager/issues/38))

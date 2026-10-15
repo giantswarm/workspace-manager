@@ -126,8 +126,13 @@ func runSync(ctx context.Context, o *syncOptions) error {
 		if err != nil {
 			return err
 		}
-		// Replaces the data, so a previous run's error goes.
-		if err := kube.WriteConfigMap(ctx, clients.Typed(), o.namespace, o.resultConfigMap, map[string]string{mirror.ManifestFile: string(raw)}); err != nil {
+		removed, err := json.Marshal(res.Removal())
+		if err != nil {
+			return fmt.Errorf("encode what the sync removed: %w", err)
+		}
+		// Replaces the data, so a previous run's error and removals go.
+		data := map[string]string{mirror.ManifestFile: string(raw), mirror.RemovedKey: string(removed)}
+		if err := kube.WriteConfigMap(ctx, clients.Typed(), o.namespace, o.resultConfigMap, data); err != nil {
 			return err
 		}
 		log.Info("manifest written as the Job's result", "configmap", o.namespace+"/"+o.resultConfigMap)

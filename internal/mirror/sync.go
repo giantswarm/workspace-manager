@@ -76,6 +76,11 @@ type Result struct {
 	CleanedUp []string
 }
 
+// Removal is what the sync removed from the volume.
+func (r *Result) Removal() Removed {
+	return Removed{SessionDirectories: r.CleanedUp, Mirrors: r.Deleted}
+}
+
 type action int
 
 const (
@@ -123,7 +128,7 @@ func (s *Syncer) Run(ctx context.Context, sel *Selection) (*Result, error) {
 	if res.Manifest.Repositories, res.Deleted, err = s.removeUnborrowed(res.Manifest.Repositories); err != nil {
 		return nil, err
 	}
-	for _, list := range []*[]string{&res.Added, &res.Fetched, &res.Unchanged, &res.Dropped, &res.Removed, &res.Deleted} {
+	for _, list := range []*[]string{&res.Added, &res.Fetched, &res.Unchanged, &res.Dropped, &res.Removed, &res.Deleted, &res.CleanedUp} {
 		sort.Strings(*list)
 	}
 	if err := res.Manifest.Write(s.Volume); err != nil {

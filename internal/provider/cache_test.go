@@ -41,30 +41,54 @@ func TestListingCacheServesAFreshListing(t *testing.T) {
 		return []Item{{Owner: "acme", Name: "api", Topics: []string{"platform"}}}, nil
 	}
 
-	first, err := c.Get("acme", list)
+	first, err := c.Get(context.Background(), "acme", list)
 	require.NoError(t, err)
 	clock.advance(ListingFreshness - time.Second)
-	second, err := c.Get("acme", list)
+	second, err := c.Get(context.Background(), "acme", list)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
 	assert.EqualValues(t, 1, listings.Load(), "one listing within the freshness")
 
 	second[0].Name = "changed"
-	third, err := c.Get("acme", list)
+	third, err := c.Get(context.Background(), "acme", list)
 	require.NoError(t, err)
 	assert.Equal(t, "api", third[0].Name, "a caller's slice is its own")
 
 	clock.advance(time.Second)
-	_, err = c.Get("acme", list)
+	_, err = c.Get(context.Background(), "acme", list)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, listings.Load(), "a new listing once the freshness passed")
+}
+
+func TestListingCacheListsAnewForAFreshListing(t *testing.T) {
+	clock := &stoppedClock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	c := NewListingCache(clock)
+	pushed := clock.now
+	list := func() ([]Item, error) { return []Item{{Owner: "acme", Name: "api", LastChange: pushed}}, nil }
+
+	_, err := c.Get(context.Background(), "acme", list)
+	require.NoError(t, err)
+	pushed = pushed.Add(time.Second)
+	clock.advance(3 * time.Second)
+
+	cached, err := c.Get(context.Background(), "acme", list)
+	require.NoError(t, err)
+	assert.True(t, cached[0].LastChange.Before(pushed), "within the freshness a listing is shared")
+
+	fresh, err := c.Get(FreshListing(context.Background()), "acme", list)
+	require.NoError(t, err)
+	assert.Equal(t, pushed, fresh[0].LastChange, "a fresh listing sees the push")
+
+	after, err := c.Get(context.Background(), "acme", list)
+	require.NoError(t, err)
+	assert.Equal(t, pushed, after[0].LastChange, "the fresh listing refreshed the cache")
 }
 
 func TestListingCacheIsPerOwner(t *testing.T) {
 	c := NewListingCache(&stoppedClock{now: time.Now()})
 	owners := map[string]int{}
 	for _, owner := range []string{"acme", "umbrella", "acme"} {
-		_, err := c.Get(owner, func() ([]Item, error) {
+		_, err := c.Get(context.Background(), owner, func() ([]Item, error) {
 			owners[owner]++
 			return nil, nil
 		})
@@ -83,9 +107,9 @@ func TestListingCacheKeepsNoFailedListing(t *testing.T) {
 		}
 		return []Item{{Owner: "acme", Name: "api"}}, nil
 	}
-	_, err := c.Get("acme", list)
+	_, err := c.Get(context.Background(), "acme", list)
 	require.EqualError(t, err, "rate limited")
-	items, err := c.Get("acme", list)
+	items, err := c.Get(context.Background(), "acme", list)
 	require.NoError(t, err)
 	assert.Len(t, items, 1)
 	assert.Equal(t, 2, calls)
@@ -109,7 +133,7 @@ func TestListingCacheSharesAListingInFlight(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			items, err := c.Get("acme", list)
+			items, err := c.Get(context.Background(), "acme", list)
 			assert.NoError(t, err)
 			results[i] = items
 		}()

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -111,6 +112,13 @@ func directory(id string, known bool) mirror.SessionDirectory {
 // directories and the listed repositories, and reconciles the outcome.
 func (f *fixture) finishCycle(ws *v1alpha1.Workspace, at time.Time, dirs ...mirror.SessionDirectory) {
 	f.t.Helper()
+	f.finishCycleRemoving(ws, at, mirror.Removed{}, dirs...)
+}
+
+// finishCycleRemoving is finishCycle with what the Job removed written beside
+// its manifest, as the sync writes it.
+func (f *fixture) finishCycleRemoving(ws *v1alpha1.Workspace, at time.Time, removed mirror.Removed, dirs ...mirror.SessionDirectory) {
+	f.t.Helper()
 	var entries []mirror.Entry
 	for _, it := range f.listings.items[testProvider+"/"+testOwner] {
 		entries = append(entries, entry(it, 1<<20))
@@ -118,8 +126,10 @@ func (f *fixture) finishCycle(ws *v1alpha1.Workspace, at time.Time, dirs ...mirr
 	m := mirror.Manifest{SyncedAt: at, Repositories: entries, Sessions: dirs}
 	raw, err := m.JSON()
 	require.NoError(f.t, err)
+	rawRemoved, err := json.Marshal(removed)
+	require.NoError(f.t, err)
 	cm := f.configMap(ManifestName(ws))
-	cm.Data = map[string]string{mirror.ManifestFile: string(raw)}
+	cm.Data = map[string]string{mirror.ManifestFile: string(raw), mirror.RemovedKey: string(rawRemoved)}
 	_, err = f.core.CoreV1().ConfigMaps(testNamespace).Update(context.Background(), cm, metav1.UpdateOptions{})
 	require.NoError(f.t, err)
 	f.finishJob(ws, batchv1.JobComplete, at)
@@ -189,6 +199,47 @@ func TestADeletedSessionsDirectoryGoesAtOnce(t *testing.T) {
 	assert.Zero(t, f.reconcile("platform"))
 	assert.Equal(t, listed, s.count())
 	assert.Len(t, f.jobs(), jobs+1)
+}
+
+// TestACleanupOnlyCycleRecordsWhatItRemoved: a cycle whose selection equals
+// the last manifest only looks after the session directories and the
+// dropped mirrors. It records NoChange when its Job removed nothing, and
+// Succeeded with the counts, in the last sync and the Synced condition, when
+// the Job deleted a session directory or dropped a mirror.
+func TestACleanupOnlyCycleRecordsWhatItRemoved(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	f.withSessions("platform")
+
+	f.requestSync("platform")
+	f.reconcile("platform")
+	ws := f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	require.True(t, ws.Status.ActiveSync.CleanupOnly, "nothing changed: the Job only looks after the volume")
+	job := ws.Status.ActiveSync.Job
+	f.finishCycleRemoving(ws, f.clock(), mirror.Removed{SessionDirectories: []string{"a", "b", "old"}, Mirrors: []string{"acme/legacy"}}, directory("u", false))
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.LastSync)
+	assert.Equal(t, v1alpha1.SyncSucceeded, ws.Status.LastSync.Result, "the Job removed data: a change")
+	assert.Equal(t, "removed 3 session directories, dropped 1 mirror", ws.Status.LastSync.Message)
+	cond := syncedCondition(t, ws)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, v1alpha1.ReasonSynced, cond.Reason)
+	assert.Equal(t, "the selection equals the last manifest and nothing was pushed since; sync job "+job+
+		" looked after the session directories; removed 3 session directories, dropped 1 mirror", cond.Message)
+
+	f.advance(time.Minute)
+	f.requestSync("platform")
+	f.reconcile("platform")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	require.True(t, ws.Status.ActiveSync.CleanupOnly)
+	f.finishCycle(ws, f.clock(), directory("u", false))
+	ws = f.workspace("platform")
+	assert.Equal(t, v1alpha1.SyncNoChange, ws.Status.LastSync.Result, "the Job removed nothing")
+	assert.Empty(t, ws.Status.LastSync.Message)
+	cond = syncedCondition(t, ws)
+	assert.Equal(t, v1alpha1.ReasonNoChange, cond.Reason)
+	assert.NotContains(t, cond.Message, "removed")
 }
 
 // TestADirectoryGoesAtItsCleanupDate: with no sync due, a live workspace's

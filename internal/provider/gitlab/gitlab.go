@@ -213,12 +213,13 @@ func (k *Kind) SyncCredential(ctx context.Context, secrets provider.Secrets, _ s
 
 // List implements provider.Kind: owner's projects that cred, the owner's
 // SyncCredential, can see, each with its primary language and its head's
-// date; from the listing cache within provider.ListingFreshness.
+// date; from the listing cache within provider.ListingFreshness, unless ctx
+// asks for a provider.FreshListing.
 func (k *Kind) List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]provider.Item, error) {
 	if err := checkOwner(owner); err != nil {
 		return nil, err
 	}
-	return k.cache.Get(owner, func() ([]provider.Item, error) {
+	return k.cache.Get(ctx, owner, func() ([]provider.Item, error) {
 		projects, err := k.listAs(ctx, cred, owner, true)
 		if err != nil {
 			return nil, err
