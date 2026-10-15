@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -38,6 +39,13 @@ type Config struct {
 	// JWKS, when set, publishes the workspace grant's verification keys at
 	// grant.JWKSPath.
 	JWKS http.Handler
+	// Ready, when set, holds /readyz back until it reports true: the
+	// provider path answers (provider.Reach).
+	Ready func() bool
+	// Drain is how long the listener keeps serving after the stop signal,
+	// /readyz refusing, before it shuts down: the time the Service takes to
+	// stop sending new connections, which would otherwise be refused.
+	Drain time.Duration
 }
 
 // Server is the assembled HTTP server.
@@ -45,6 +53,9 @@ type Server struct {
 	http     *http.Server
 	oauth    *oauthRuntime
 	exchange *exchange.Handler
+	ready    func() bool
+	drain    time.Duration
+	draining atomic.Bool
 	log      *slog.Logger
 }
 
@@ -56,7 +67,7 @@ func New(cfg Config, mcpSrv *mcpserver.MCPServer, log *slog.Logger) (*Server, er
 	if cfg.MCPPath == "" {
 		cfg.MCPPath = "/mcp"
 	}
-	s := &Server{log: log}
+	s := &Server{log: log, ready: cfg.Ready, drain: cfg.Drain}
 	if cfg.OAuth != nil {
 		o, err := newOAuth(*cfg.OAuth, cfg.MCPPath, log)
 		if err != nil {
@@ -84,6 +95,19 @@ func New(cfg Config, mcpSrv *mcpserver.MCPServer, log *slog.Logger) (*Server, er
 		IdleTimeout: 120 * time.Second,
 	}
 	return s, nil
+}
+
+// readyz answers ready once the provider path answers (Config.Ready), and
+// not ready while draining.
+func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case s.draining.Load():
+		http.Error(w, "draining", http.StatusServiceUnavailable)
+	case s.ready != nil && !s.ready():
+		http.Error(w, "waiting for the providers to answer", http.StatusServiceUnavailable)
+	default:
+		ok(w, r)
+	}
 }
 
 func ok(w http.ResponseWriter, _ *http.Request) {
@@ -140,6 +164,18 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return nil
 	case <-ctx.Done():
+	}
+	if s.drain > 0 {
+		s.draining.Store(true)
+		s.log.Info("draining: not ready, still serving", "for", s.drain)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return fmt.Errorf("http server: %w", err)
+			}
+			return nil
+		case <-time.After(s.drain):
+		}
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

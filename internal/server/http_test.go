@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,4 +88,61 @@ func TestMCPBodyIsBounded(t *testing.T) {
 
 	resp = postMCP(t, ts.URL, "", `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// /readyz holds a starting replica back until its providers answered
+// (Config.Ready); /healthz does not wait for them.
+func TestReadyzWaitsForTheProviders(t *testing.T) {
+	var ready atomic.Bool
+	srv, err := New(Config{Addr: "127.0.0.1:0", Ready: ready.Load}, api.NewMCPServer(api.Config{}, "test"), quiet())
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	status := func(path string) int {
+		resp, err := http.Get(ts.URL + path) //nolint:noctx // test
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	assert.Equal(t, http.StatusServiceUnavailable, status("/readyz"))
+	assert.Equal(t, http.StatusOK, status("/healthz"))
+	ready.Store(true)
+	assert.Equal(t, http.StatusOK, status("/readyz"))
+}
+
+// A stopping replica keeps serving for the drain, unready, so a connection
+// the Service still sends it is answered, never refused; then it closes.
+func TestRunDrainsBeforeShutdown(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+	srv, err := New(Config{Addr: addr, Drain: 500 * time.Millisecond}, api.NewMCPServer(api.Config{}, "test"), quiet())
+	require.NoError(t, err)
+
+	ctx, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	get := func() (int, error) {
+		resp, err := http.Get("http://" + addr + "/readyz") //nolint:noctx // test
+		if err != nil {
+			return 0, err
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	require.Eventually(t, func() bool { c, err := get(); return err == nil && c == http.StatusOK }, 5*time.Second, 10*time.Millisecond)
+
+	stop()
+	require.Eventually(t, func() bool { c, err := get(); return err == nil && c == http.StatusServiceUnavailable }, time.Second, 10*time.Millisecond,
+		"the stop signal closed the listener at once instead of draining")
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("not stopped after the drain")
+	}
+	_, err = get()
+	assert.Error(t, err, "still serving after the drain")
 }
