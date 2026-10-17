@@ -55,13 +55,16 @@ type Mount struct {
 }
 
 // Provider is one host, or the request paths under PathPrefix on it, the
-// Session gets the person's credential on, from the token broker named
-// Broker for the provider instance Audience.
+// Session gets the person's credential for the provider instance Provider on,
+// presented with Scheme. Audience, Username and Broker carry the same for a
+// kagent that does not read Provider yet: Audience is Provider, and the
+// credential comes from the token broker named Broker.
 type Provider struct {
 	Hostname   string `json:"hostname"`
 	PathPrefix string `json:"pathPrefix,omitempty"`
-	Audience   string `json:"audience"`
 	Scheme     string `json:"scheme"`
+	Provider   string `json:"provider"`
+	Audience   string `json:"audience"`
 	Username   string `json:"username,omitempty"`
 	Broker     string `json:"broker"`
 }

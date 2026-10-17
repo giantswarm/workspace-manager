@@ -219,8 +219,8 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	}
 	host := f.code.Hosts().Git[0].Name
 	assert.ElementsMatch(t, []grant.Provider{
-		{Hostname: host, Audience: "code", Scheme: "Basic", Username: "oauth2", Broker: "workspace-manager"},
-		{Hostname: host, PathPrefix: "/api/", Audience: "code", Scheme: "Bearer", Broker: "workspace-manager"},
+		{Hostname: host, Provider: "code", Audience: "code", Scheme: "Basic", Username: "oauth2", Broker: "workspace-manager"},
+		{Hostname: host, PathPrefix: "/api/", Provider: "code", Audience: "code", Scheme: "Bearer", Broker: "workspace-manager"},
 	}, code, "one host: Basic for git, Bearer under the API's path prefix")
 
 	for _, token := range f.tokens["alice"] {
