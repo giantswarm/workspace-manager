@@ -18,7 +18,7 @@ func addAuthorizeTool(s *mcpserver.MCPServer, a *authorize.Authorizer) {
 		mcp.WithDescription("Check that you can read every repository of a workspace before starting a Session on it. "+
 			"Granted: a short-lived grant to pass to start_session, naming the repositories pushed to since the last sync. "+
 			"Refused: the repositories you cannot read, or why the workspace cannot be started on yet. "+
-			"connect_required: the providers to connect first, with their links."),
+			"connect_required: the providers whose App to grant in muster first, and how."),
 		mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),

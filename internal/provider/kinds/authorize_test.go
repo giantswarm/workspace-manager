@@ -26,13 +26,13 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/grant"
 	"github.com/giantswarm/workspace-manager/internal/identity"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
+	"github.com/giantswarm/workspace-manager/internal/muster"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/fake"
 	"github.com/giantswarm/workspace-manager/internal/provider/github"
 	"github.com/giantswarm/workspace-manager/internal/provider/github/githubtest"
 	"github.com/giantswarm/workspace-manager/internal/provider/gitlab"
 	"github.com/giantswarm/workspace-manager/internal/provider/gitlab/gitlabtest"
-	"github.com/giantswarm/workspace-manager/internal/signin"
 )
 
 const authNamespace = "kagent"
@@ -65,19 +65,24 @@ func (w authWorkspaces) RequestSync(ctx context.Context, name string, at time.Ti
 	return ws, nil
 }
 
-// authTokens are the people's sign-ins: person → instance → access token.
+// authTokens are the tokens muster attaches to a person's call: person →
+// instance → access token.
 type authTokens map[string]map[string]string
 
-func (t authTokens) Access(_ context.Context, person, instance string) (signin.Access, error) {
-	tok, ok := t[person][instance]
-	if !ok {
-		return signin.Access{}, signin.ErrNotSignedIn
+// as is the context of a call by person, carrying their tokens.
+func (t authTokens) as(person string) context.Context {
+	ctx := context.Background()
+	for instance, tok := range t[person] {
+		ctx = identity.ContextWithProviderToken(ctx, instance, tok)
 	}
-	return signin.Access{Token: tok}, nil
+	return ctx
 }
 
-// person is a caller: the Dex subject their sign-ins are keyed by, and the
-// email the grant names them by.
+// grants are the test's muster registration, pinned to the GitHub instance.
+var grants = muster.Grants{Instance: "github", Server: "workspace-manager"}
+
+// person is a caller: the Dex subject, and the email the grant names them
+// by.
 func person(subject string) *identity.Identity {
 	return &identity.Identity{Subject: subject, Email: subject + "@acme.test"}
 }
@@ -135,8 +140,7 @@ func authSetup(t *testing.T) *authFixture {
 			{Name: "github", KindName: github.KindName, Kind: ghKind},
 			{Name: "code", KindName: fake.KindName, Kind: fkKind},
 		},
-		Tokens:         f.tokens,
-		ConnectURL:     func(instance string) string { return "https://wm.example.com/connect/" + instance },
+		Grants:         grants,
 		Signer:         &grant.Signer{Keys: f.keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
 		Broker:         "workspace-manager",
 		AgentNamespace: agentNamespace,
@@ -179,7 +183,7 @@ func authCluster(t *testing.T, entries []mirror.Entry) (*k8sfake.Clientset, *gra
 func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	f := authSetup(t)
 	before := time.Now().Truncate(time.Second)
-	res, err := f.authorizer.Authorize(context.Background(), person("alice"), "otter")
+	res, err := f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "otter")
 	require.NoError(t, err)
 	require.Equal(t, authorize.Granted, res.Outcome, res.Reason)
 	assert.Equal(t, []string{"acme/api", "acme/web", "umbrella/theirs"}, res.Repositories, "the dropped mirror is no repository of the workspace")
@@ -189,7 +193,7 @@ func TestAPersonReadingEverythingGetsAGrant(t *testing.T) {
 	assert.WithinDuration(t, before.Add(2*time.Minute), *res.ExpiresAt, 2*time.Second, "expires as configured")
 
 	claims := verified(t, f.keys, res.Grant)
-	assert.Equal(t, "alice@acme.test", claims.Subject, "the grant names the person by email, not by the sign-in key")
+	assert.Equal(t, "alice@acme.test", claims.Subject, "the grant names the person by email, not by the Dex subject")
 	assert.Equal(t, agentNamespace, claims.AgentNamespace, "the grant names the namespace whose Agents it admits")
 	assert.Equal(t, grant.Workspace{Namespace: authNamespace, Name: "otter"}, claims.Workspace)
 	assert.Equal(t, grant.Volume{Driver: "nfs.csi.k8s.io", Handle: "nfs-server#share#pvc-otter"}, claims.Volume)
@@ -254,7 +258,7 @@ func verified(t *testing.T, keys *grant.KeySource, token string) grant.Claims {
 // naming the subject would admit nobody.
 func TestTheGrantNamesTheCallerAsKagentNamesTheCreator(t *testing.T) {
 	f := authSetup(t)
-	res, err := f.authorizer.Authorize(context.Background(), &identity.Identity{Subject: "alice", Email: "alice@acme.test"}, "otter")
+	res, err := f.authorizer.Authorize(f.tokens.as("alice"), &identity.Identity{Subject: "alice", Email: "alice@acme.test"}, "otter")
 	require.NoError(t, err)
 	require.Equal(t, authorize.Granted, res.Outcome, res.Reason)
 	sub := verified(t, f.keys, res.Grant).Subject
@@ -262,7 +266,7 @@ func TestTheGrantNamesTheCallerAsKagentNamesTheCreator(t *testing.T) {
 		assert.Equal(t, admitted, sub == creator, "creator %q against the grant's sub %q", creator, sub)
 	}
 
-	res, err = f.authorizer.Authorize(context.Background(), &identity.Identity{Subject: "alice"}, "otter")
+	res, err = f.authorizer.Authorize(f.tokens.as("alice"), &identity.Identity{Subject: "alice"}, "otter")
 	require.ErrorIs(t, err, authorize.ErrNoEmail)
 	assert.Nil(t, res)
 }
@@ -296,7 +300,7 @@ func TestAGrantPastTheRefreshThresholdRequestsASync(t *testing.T) {
 			f := authSetup(t)
 			ws := f.workspaces["otter"]
 			c.status(&ws.Status)
-			res, err := f.authorizer.Authorize(context.Background(), person("alice"), "otter")
+			res, err := f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "otter")
 			require.NoError(t, err)
 			require.Equal(t, authorize.Granted, res.Outcome, res.Reason)
 			assert.NotEmpty(t, res.Grant, "the grant does not wait for the sync")
@@ -304,7 +308,7 @@ func TestAGrantPastTheRefreshThresholdRequestsASync(t *testing.T) {
 			assert.Equal(t, c.requested, ws.Annotations[v1alpha1.AnnotationSyncRequested] != "")
 
 			if c.requested {
-				res, err = f.authorizer.Authorize(context.Background(), person("alice"), "otter")
+				res, err = f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "otter")
 				require.NoError(t, err)
 				assert.False(t, res.SyncRequested, "a sync requested already is not requested again")
 			}
@@ -314,7 +318,7 @@ func TestAGrantPastTheRefreshThresholdRequestsASync(t *testing.T) {
 
 func TestARefusedCheckRequestsNoSync(t *testing.T) {
 	f := authSetup(t)
-	res, err := f.authorizer.Authorize(context.Background(), person("bob"), "otter")
+	res, err := f.authorizer.Authorize(f.tokens.as("bob"), person("bob"), "otter")
 	require.NoError(t, err)
 	require.Equal(t, authorize.Refused, res.Outcome)
 	assert.False(t, res.SyncRequested)
@@ -326,7 +330,8 @@ func lastSync(at time.Time, trigger v1alpha1.SyncTrigger) *v1alpha1.LastSync {
 }
 
 func TestAPersonMissingARepositoryIsRefusedWithItsName(t *testing.T) {
-	res, err := authSetup(t).authorizer.Authorize(context.Background(), person("bob"), "otter")
+	f := authSetup(t)
+	res, err := f.authorizer.Authorize(f.tokens.as("bob"), person("bob"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.Refused, res.Outcome)
 	assert.Equal(t, []string{"acme/web"}, res.Unreadable)
@@ -335,45 +340,49 @@ func TestAPersonMissingARepositoryIsRefusedWithItsName(t *testing.T) {
 	assert.Empty(t, res.Changed)
 }
 
-func TestAPersonNotConnectedGetsTheConnectLink(t *testing.T) {
-	res, err := authSetup(t).authorizer.Authorize(context.Background(), person("carol"), "otter")
+func TestAPersonWithoutAGrantIsToldToGrantInMuster(t *testing.T) {
+	f := authSetup(t)
+	res, err := f.authorizer.Authorize(f.tokens.as("carol"), person("carol"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
-	assert.Equal(t, []authorize.Connect{{Provider: "code", URL: "https://wm.example.com/connect/code"}}, res.Connect)
-	assert.Contains(t, res.Reason, "connect code")
+	assert.Equal(t, []authorize.Connect{{Provider: "code", SignIn: grants.SignIn("code")}}, res.Connect)
+	assert.Contains(t, res.Connect[0].SignIn, "muster holds no grant for provider code")
+	assert.Contains(t, res.Reason, "grant code in muster")
 	assert.Empty(t, res.Grant)
 
-	res, err = authSetup(t).authorizer.Authorize(context.Background(), person("dave"), "otter")
+	f = authSetup(t)
+	res, err = f.authorizer.Authorize(f.tokens.as("dave"), person("dave"), "otter")
 	require.NoError(t, err)
-	assert.Len(t, res.Connect, 2, "every provider the person has not connected, at once")
+	assert.Len(t, res.Connect, 2, "every provider the person has not granted, at once")
 }
 
 func TestAWorkspaceNotSyncedYetIsRefused(t *testing.T) {
 	f := authSetup(t)
-	res, err := f.authorizer.Authorize(context.Background(), person("alice"), "fresh")
+	res, err := f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "fresh")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.Refused, res.Outcome)
 	assert.Contains(t, res.Reason, "has not synced yet")
 	assert.Empty(t, res.Grant)
 
-	res, err = f.authorizer.Authorize(context.Background(), person("alice"), "pending")
+	res, err = f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "pending")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.Refused, res.Outcome)
 	assert.Contains(t, res.Reason, "not bound yet")
 }
 
 func TestAnUnknownWorkspaceIsAnError(t *testing.T) {
-	_, err := authSetup(t).authorizer.Authorize(context.Background(), person("alice"), "nope")
+	f := authSetup(t)
+	_, err := f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "nope")
 	require.Error(t, err)
 }
 
-func TestASignInTheProviderRefusesAsksToConnectAgain(t *testing.T) {
+func TestATokenTheProviderRefusesAsksToGrantAgain(t *testing.T) {
 	f := authSetup(t)
 	f.tokens["alice"]["github"] = "revoked"
-	res, err := f.authorizer.Authorize(context.Background(), person("alice"), "otter")
+	res, err := f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
-	assert.Equal(t, []authorize.Connect{{Provider: "github", URL: "https://wm.example.com/connect/github"}}, res.Connect)
+	assert.Equal(t, []authorize.Connect{{Provider: "github", SignIn: "grant the App of provider github once in muster: core_auth_login server=workspace-manager"}}, res.Connect)
 	assert.Empty(t, res.Grant)
 	assert.Empty(t, res.Changed)
 }
@@ -430,8 +439,7 @@ func TestALargeOrganizationIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
 				Core:           cs,
 				Namespace:      authNamespace,
 				Instances:      []provider.Instance{{Name: "github", KindName: github.KindName, Kind: ghKind}},
-				Tokens:         authTokens{"alice": {"github": gh.Person(reads...)}},
-				ConnectURL:     func(instance string) string { return "https://wm.example.com/connect/" + instance },
+				Grants:         grants,
 				Signer:         &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
 				Broker:         "workspace-manager",
 				AgentNamespace: agentNamespace,
@@ -439,9 +447,10 @@ func TestALargeOrganizationIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
 			})
 			require.NoError(t, err)
 
+			alice := identity.ContextWithProviderToken(context.Background(), "github", gh.Person(reads...))
 			gh.Latency = latency
 			start := time.Now()
-			res, err := a.Authorize(context.Background(), person("alice"), "big")
+			res, err := a.Authorize(alice, person("alice"), "big")
 			took := time.Since(start)
 			t.Logf("%d of 2,000 repositories selected: %s in %s, %d listing pages", tc.selected, res.Outcome, took.Round(time.Millisecond), gh.Listed())
 			require.NoError(t, err)
@@ -477,17 +486,17 @@ func TestALargeGitLabGroupIsCheckedInWhatTheWorkspaceSelects(t *testing.T) {
 		Core:           cs,
 		Namespace:      authNamespace,
 		Instances:      []provider.Instance{{Name: "gitlab", KindName: gitlab.KindName, Kind: glKind}},
-		Tokens:         authTokens{"alice": {"gitlab": gl.Person(reads...)}},
-		ConnectURL:     func(instance string) string { return "https://wm.example.com/connect/" + instance },
+		Grants:         muster.Grants{Instance: "gitlab", Server: "workspace-manager"},
 		Signer:         &grant.Signer{Keys: keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
 		Broker:         "workspace-manager",
 		AgentNamespace: agentNamespace,
 	})
 	require.NoError(t, err)
 
+	alice := identity.ContextWithProviderToken(context.Background(), "gitlab", gl.Person(reads...))
 	gl.Latency = latency
 	start := time.Now()
-	res, err := a.Authorize(context.Background(), person("alice"), "big")
+	res, err := a.Authorize(alice, person("alice"), "big")
 	took := time.Since(start)
 	t.Logf("1 of 2,000 projects selected: %s in %s, %d listing pages", res.Outcome, took.Round(time.Millisecond), gl.Listed())
 	require.NoError(t, err)

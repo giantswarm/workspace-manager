@@ -58,24 +58,16 @@ providers:
       app:
         id: "4242"
         privateKey: {name: github-app, key: private-key}
-      oauth:
-        clientID: Iv1.example
-        clientSecret: {name: github-oauth, key: client-secret}
   - name: gitlab
     kind: gitlab
     values:
       url: https://gitlab.example.com:8443
       token: {name: workspace-gitlab, key: token}
-      oauth:
-        clientID: abc
-        clientSecret: {name: workspace-gitlab, key: client-secret}
   - name: other
     kind: fake
     values:
       host: code.example.test
       token: {name: other-sync, key: token}
-      clientID: other-client
-      clientSecret: {name: other-oauth, key: client-secret}
 `
 
 func TestLoadKindsSideBySide(t *testing.T) {
@@ -89,7 +81,6 @@ func TestLoadKindsSideBySide(t *testing.T) {
 	assert.Equal(t, "gitlab", instances[1].Name)
 	assert.Equal(t, gitlab.KindName, instances[1].KindName)
 	assert.Equal(t, []provider.Host{{Name: "gitlab.example.com:8443", Scheme: provider.SchemeBasic, User: "oauth2"}}, instances[1].Hosts().Git)
-	assert.Equal(t, "https://gitlab.example.com:8443/oauth/authorize", instances[1].SignIn().AuthURL)
 	assert.Equal(t, "other", instances[2].Name)
 	assert.Equal(t, fake.KindName, instances[2].KindName)
 	assert.Equal(t, "code.example.test", instances[2].Hosts().Git[0].Name)
@@ -102,7 +93,7 @@ func TestLoadRefuses(t *testing.T) {
 		{"duplicate name", sideBySide + `
   - name: github
     kind: fake
-    values: {host: x.test, clientID: c}
+    values: {host: x.test}
 `, `provider "github": duplicate name`},
 		{"unknown kind", `
 providers:
@@ -124,14 +115,13 @@ providers:
     kind: github
     values:
       app: {id: "1", privateKey: {name: github-app}}
-      oauth: {clientID: c, clientSecret: {name: s, key: k}}
 `, `provider "github" (kind github): values: app.privateKey.key required`},
 		{"missing GitLab token", `
 providers:
   - name: gitlab
     kind: gitlab
     values:
-      oauth: {clientID: c, clientSecret: {name: s, key: k}}
+      url: https://gitlab.example.com
 `, `provider "gitlab" (kind gitlab): values: token.key, token.name required`},
 		{"unknown value", `
 providers:
@@ -139,6 +129,14 @@ providers:
     kind: github
     values: {token: x}
 `, `provider "github" (kind github): values: json: unknown field "token"`},
+		{"the OAuth client moved to muster", `
+providers:
+  - name: github
+    kind: github
+    values:
+      app: {id: "1", privateKey: {name: github-app, key: private-key}}
+      oauth: {clientID: c, clientSecret: {name: s, key: k}}
+`, `provider "github" (kind github): values: json: unknown field "oauth"`},
 		{"unknown instance field", `
 providers:
   - name: github

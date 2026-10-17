@@ -24,10 +24,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/controller"
-	"github.com/giantswarm/workspace-manager/internal/kube"
-	"github.com/giantswarm/workspace-manager/internal/signin"
+	"github.com/giantswarm/workspace-manager/internal/muster"
+	"github.com/giantswarm/workspace-manager/internal/provider"
 )
 
 func TestLoadProvidersFailsTheStart(t *testing.T) {
@@ -38,7 +37,6 @@ providers:
     kind: github
     values:
       app: {id: "1", privateKey: {name: app, key: private-key}}
-      oauth: {clientID: c, clientSecret: {name: app, key: client-secret}}
   - name: github
     kind: gitlab
 `), 0o600))
@@ -111,7 +109,8 @@ func validServeOptions() *serveOptions {
 	return &serveOptions{namespace: "kagent", storageClass: "efs-rwx", syncCycle: time.Hour, sessionCleanupAfter: 720 * time.Hour, sessionPoll: time.Minute,
 		sizingFactor: 2, sizingHeadroom: "10Gi", sizingHeadroomShare: 0.25, sizingMaxSize: "500Gi",
 		syncJobTemplate: "testdata/sync-job.yaml", leaderElection: true, leaderIdentity: "workspace-manager-0",
-		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager", grantAgentNamespace: "kagent"}
+		grantTTL: 5 * time.Minute, grantAudience: "kagent", grantBroker: "workspace-manager", grantAgentNamespace: "kagent",
+		oauthBaseURL: "https://wm.example.com"}
 }
 
 func TestServeControllerConfig(t *testing.T) {
@@ -224,9 +223,6 @@ func TestWorkspaceGrantsFailTheStart(t *testing.T) {
 			"bytes": make([]byte, 32),
 		},
 	}), dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())}
-	connectClients, err := connect.NewClients(nil, kube.Secrets{}, "https://wm.example.com")
-	require.NoError(t, err)
-	si := &signIns{store: &signin.KubeStore{}, clients: connectClients, baseURL: "https://wm.example.com"}
 	ctx := context.Background()
 	grants := func(ref string, mutate ...func(*serveOptions)) error {
 		o := validServeOptions()
@@ -234,14 +230,11 @@ func TestWorkspaceGrantsFailTheStart(t *testing.T) {
 		for _, m := range mutate {
 			m(o)
 		}
-		_, _, err := workspaceGrants(ctx, o, si, clients, nil, nil, slog.Default())
+		_, _, err := workspaceGrants(ctx, o, muster.Grants{}, clients, nil, nil, slog.Default())
 		return err
 	}
 
 	require.NoError(t, grants("workspace-manager-keys/grant"))
-	a, jwks, err := workspaceGrants(ctx, &serveOptions{}, si, clients, nil, nil, slog.Default())
-	require.NoError(t, err)
-	assert.True(t, a == nil && jwks == nil, "no signing key, no authorize_workspace and no JWKS")
 	assert.ErrorContains(t, grants("workspace-manager-keys"), "must be <secret>/<key>")
 	assert.ErrorContains(t, grants("workspace-manager-keys/missing"), `no entry "missing"`)
 	assert.ErrorContains(t, grants("other/grant"), "not found")
@@ -251,4 +244,42 @@ func TestWorkspaceGrantsFailTheStart(t *testing.T) {
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantBroker = "" }), "broker name")
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAgentNamespace = "" }), "Agent namespace")
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAgentNamespace = "Not/A-Namespace" }), "no namespace name")
+}
+
+// TestMusterGrants: --muster-provider pins the registration to a configured
+// instance's App; none pins nothing; an unknown instance fails the start.
+func TestMusterGrants(t *testing.T) {
+	providers := []provider.Instance{{Name: "github", KindName: "github"}, {Name: "gitlab", KindName: "gitlab"}}
+	o := &serveOptions{musterServer: "workspace-manager"}
+
+	grants, pin, err := musterGrants(o, providers)
+	require.NoError(t, err)
+	assert.Nil(t, pin, "no provider named, no pin")
+	assert.Empty(t, grants.Instance)
+
+	o.musterProvider = "github"
+	grants, pin, err = musterGrants(o, providers)
+	require.NoError(t, err)
+	require.NotNil(t, pin)
+	assert.Equal(t, muster.Grants{Instance: "github", Server: "workspace-manager"}, grants)
+	assert.Equal(t, grants, pin.Grants)
+
+	o.musterProvider = "bitbucket"
+	_, _, err = musterGrants(o, providers)
+	assert.ErrorContains(t, err, `--muster-provider "bitbucket" names no configured provider instance`)
+
+	o.musterProvider, o.musterServer = "github", ""
+	_, _, err = musterGrants(o, providers)
+	assert.ErrorContains(t, err, "--muster-server")
+}
+
+// TestServeMusterFlags: the pin is off by default and the registration's
+// name is the chart's.
+func TestServeMusterFlags(t *testing.T) {
+	f := newServeCmd().Flags()
+	assert.Empty(t, f.Lookup("muster-provider").DefValue)
+	assert.Equal(t, "workspace-manager", f.Lookup("muster-server").DefValue)
+	for _, gone := range []string{"signin-keys-secret", "signin-current-key", "token-exchange-client-id", "token-exchange-client-secret"} {
+		assert.Nil(t, f.Lookup(gone), gone)
+	}
 }

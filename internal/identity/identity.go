@@ -97,3 +97,29 @@ func TokenFromContext(ctx context.Context) (string, bool) {
 	t, ok := ctx.Value(tokenKey).(string)
 	return t, ok && t != ""
 }
+
+type providerTokensKey struct{}
+
+// ContextWithProviderToken returns ctx carrying the person's token for a
+// provider instance as muster attached it to the call, beside any it carries
+// for another instance.
+func ContextWithProviderToken(ctx context.Context, instance, token string) context.Context {
+	if instance == "" || token == "" {
+		return ctx
+	}
+	prev, _ := ctx.Value(providerTokensKey{}).(map[string]string)
+	tokens := make(map[string]string, len(prev)+1)
+	for k, v := range prev {
+		tokens[k] = v
+	}
+	tokens[instance] = token
+	return context.WithValue(ctx, providerTokensKey{}, tokens)
+}
+
+// ProviderToken returns the person's token for a provider instance on this
+// call, if muster attached one.
+func ProviderToken(ctx context.Context, instance string) (string, bool) {
+	tokens, _ := ctx.Value(providerTokensKey{}).(map[string]string)
+	t, ok := tokens[instance]
+	return t, ok && t != ""
+}

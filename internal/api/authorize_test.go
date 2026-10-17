@@ -21,7 +21,6 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/authorize"
 	"github.com/giantswarm/workspace-manager/internal/grant"
 	"github.com/giantswarm/workspace-manager/internal/identity"
-	"github.com/giantswarm/workspace-manager/internal/signin"
 )
 
 type oneWorkspace struct{ ws *v1alpha1.Workspace }
@@ -30,12 +29,6 @@ func (o oneWorkspace) Get(context.Context, string) (*v1alpha1.Workspace, error) 
 
 func (o oneWorkspace) RequestSync(context.Context, string, time.Time) (*v1alpha1.Workspace, error) {
 	return o.ws, nil
-}
-
-type noSignIns struct{}
-
-func (noSignIns) Access(context.Context, string, string) (signin.Access, error) {
-	return signin.Access{}, signin.ErrNotSignedIn
 }
 
 func TestAuthorizeWorkspaceTool(t *testing.T) {
@@ -49,8 +42,6 @@ func TestAuthorizeWorkspaceTool(t *testing.T) {
 		Workspaces:     oneWorkspace{&v1alpha1.Workspace{ObjectMeta: metav1.ObjectMeta{Name: "otter"}}},
 		Core:           cs,
 		Namespace:      "kagent",
-		Tokens:         noSignIns{},
-		ConnectURL:     func(string) string { return "" },
 		Signer:         &grant.Signer{Keys: &grant.KeySource{Client: cs, Namespace: "wm", Secret: "keys", Key: "grant"}, Issuer: "https://wm.example.com", Audience: "kagent"},
 		Broker:         "workspace-manager",
 		AgentNamespace: "kagent",

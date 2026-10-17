@@ -248,20 +248,14 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 func TestEnterpriseServer(t *testing.T) {
 	k, err := github.New(github.Values{
-		URL:   "https://ghe.example.com/",
-		App:   github.AppValues{ID: "1", PrivateKey: provider.SecretRef{Name: "a", Key: "k"}},
-		OAuth: github.OAuthValues{ClientID: "c", ClientSecret: provider.SecretRef{Name: "a", Key: "s"}},
+		URL: "https://ghe.example.com/",
+		App: github.AppValues{ID: "1", PrivateKey: provider.SecretRef{Name: "a", Key: "k"}},
 	}, github.Options{})
 	require.NoError(t, err)
 	assert.Equal(t, provider.Hosts{
 		Git: []provider.Host{{Name: "ghe.example.com", Scheme: provider.SchemeBasic, User: "x-access-token"}},
 		CLI: "gh",
 	}, k.Hosts(), "the API under the git host takes the git host's one credential")
-	s := k.SignIn()
-	assert.Equal(t, "https://ghe.example.com/login/oauth/authorize", s.AuthURL)
-	assert.Equal(t, "https://ghe.example.com/login/oauth/access_token", s.TokenURL)
-	assert.Equal(t, "https://ghe.example.com/api/v3/applications/c/grant", s.RevocationURL)
-	assert.Equal(t, provider.RevokeGrant, s.Revocation)
 }
 
 func TestRefusesInvalidValues(t *testing.T) {
@@ -271,7 +265,7 @@ func TestRefusesInvalidValues(t *testing.T) {
 
 	_, err = github.New(github.Values{}, github.Options{})
 	require.Error(t, err)
-	assert.Equal(t, "values: app.id, app.privateKey.key, app.privateKey.name, oauth.clientID, oauth.clientSecret.key, oauth.clientSecret.name required", err.Error())
+	assert.Equal(t, "values: app.id, app.privateKey.key, app.privateKey.name required", err.Error())
 }
 
 // org is an organization of n repositories, r0000 on, every one of them read

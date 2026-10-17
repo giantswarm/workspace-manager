@@ -1,12 +1,13 @@
 # workspace-manager
 
 Manages the Agent Platform's workspaces, the sources agent sessions work on,
-and their provider sign-ins, as one MCP server behind muster.
+as one MCP server behind muster.
 
 The chart registers it with muster like every other manager, through its own
 `MCPServer` (`muster.mcpServer.enabled`; the tools appear as
-`x_workspace-manager_<tool>`), unpinned with `forwardToken`: muster forwards
-the person's Dex id_token, which workspace-manager validates as an OAuth 2.1
+`x_workspace-manager_<tool>`): muster forwards the person's Dex id_token,
+unpinned with `forwardToken` or beside the person's App token when pinned to
+a provider's App (below), which workspace-manager validates as an OAuth 2.1
 resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
 The caller's identity and Dex token travel with every request, and a request
 without one is refused with 401. The manager checks the caller's Organization
@@ -19,67 +20,40 @@ from that identity and writes with its own ServiceAccount.
 | `/mcp` | MCP over streamable HTTP; behind the OAuth guard when `--enable-oauth` |
 | `/healthz`, `/readyz` | Probes, always open |
 | `/.well-known/oauth-*`, `/oauth/*` | OAuth metadata and this server's own OAuth flow, with `--enable-oauth` |
-| `/connect/<instance>`, `/callback/<instance>`, `/signin` | A person's provider sign-in in the browser, with providers and `--enable-oauth`; otherwise a 503 "No provider configured" page (below) |
-| `POST /token` | Token exchange (RFC 8693) for the installation's kagent client, with providers, `--enable-oauth` and `--token-exchange-client-id` (below) |
 | `GET /.well-known/jwks.json` | The workspace grant's verification keys, unauthenticated, with providers, `--enable-oauth` and `--grant-signing-key` (below) |
 | `:9464/metrics` | Prometheus metrics (`OTEL_METRICS_EXPORTER=prometheus`) |
 
-## Provider sign-ins
+## The person's provider token: muster's grant
 
-A person connects each provider instance their workspaces need once. The MCP
-tools `list_providers` (every instance, its kind and whether the caller is
-connected), `connect_provider` (the provider's authorization URL) and
-`disconnect_provider` (revokes the grant at the provider and forgets the
-sign-in) act for the caller's Dex subject.
+A person's provider sign-in lives in muster, the platform's one store of a
+person's grants, never in the manager. The person grants the provider's App
+once in muster (one grant per App per person), which keeps the grant, refreshes
+it and attaches the person's App token to every call of this server's
+`MCPServer`, pinned to that App (`auth.authorizationServer` with `grantScope:
+subject`, and `auth.forwardIdentity`, which puts the person's Dex ID token in
+`X-Muster-Id-Token` beside it). `--muster-provider` names the provider instance
+whose App that is (the chart's `muster.mcpServer.auth.provider`) and
+`--muster-server` the registration's name in muster.
 
-The sign-in is OAuth 2.0 authorization code with PKCE, the instance's client
-secret read by Secret reference. Its `state` is sealed with the sign-in keys
-(`--signin-keys-secret`, `--signin-current-key`): it binds the person, the
-instance and the PKCE verifier for ten minutes, and the verifier never leaves
-the manager in clear. The provider returns to `/callback/<instance>` (on
-GitHub the `-agents` App's callback URL), which stores the token only for the
-person the state was made for: the browser proves who it is by signing in to
-Dex at `/signin`, so a connect link one person hands another connects nobody.
-That sign-in asks Dex for the connector the state's subject came through
-(`connector_id`, read from the Dex `sub`), and a browser signed in through
-another connector signs in again through that one before the callback
-completes, so one person who reaches the portal and the manager through
-different connectors of one identity provider is not refused.
-Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
-`/connect/<instance>` starts the same flow for a person in the browser: the
-link other surfaces show.
+- Every MCP call carries the App token as its bearer. The manager asks the
+  provider whose it is (`GET /user`, trusted for five minutes per token) and
+  hands it to the tools for that instance only; the Dex ID token is then
+  validated as an unpinned registration's bearer is (below) and names the
+  caller.
+- A call without a bearer, or with one the provider refuses, is a `401`;
+  muster answers it with its own sign-in link for the App, so a person who has
+  not granted the App gets muster's link instead of a tool's answer.
+- `list_providers` names every instance with whether the person granted its
+  App: the pinned instance is connected exactly when muster attached its token
+  to the call. muster holds no grant of any other instance, so another
+  instance is never connected, and `authorize_workspace` asks to grant it.
+- The manager stores no token, serves no credential and is on no git
+  request's path: the egress gateway fetches the person's token from muster
+  for a Session's sandbox. Disconnecting is muster's.
 
-The sign-in routes (`/connect/<instance>`, `/callback/<instance>`, `/signin`)
-are served only with at least one configured provider instance and
-`--enable-oauth`. Without them each answers `503 Service Unavailable` with a
-short "No provider configured" page naming the missing configuration, never a
-404.
-
-## Token exchange
-
-On every turn of a Session with a workspace, kagent exchanges the turn
-caller's Dex token for the person's access token at a provider instance:
-`POST /token`, OAuth 2.0 Token Exchange (RFC 8693). Only the installation's
-kagent client is answered (`--token-exchange-client-id`, its secret by Secret
-reference `--token-exchange-client-secret=<secret>/<key>`, read on every
-exchange), authenticated with `client_secret_basic` or `client_secret_post`;
-every other client gets `invalid_client`.
-
-- `grant_type` `urn:ietf:params:oauth:grant-type:token-exchange`;
-  `subject_token` the caller's Dex token, accepted on the MCP bearer's terms
-  (`subject_token_type` `id_token`, `jwt` or `access_token`); `audience` one
-  provider instance's name.
-- The response is the stored access token, refreshed ahead of expiry:
-  `issued_token_type` access token, `token_type` Bearer, `expires_in`; never a
-  refresh token. While the stored token is valid beyond the refresh margin, no
-  provider request is made.
-- A person without a sign-in, or whose refresh was revoked, gets
-  `invalid_target` with `error_uri` the instance's `/connect/<instance>`; an
-  unknown audience gets `invalid_target` without one; an invalid subject
-  token gets `invalid_request`.
-- Every exchange is logged (person, instance, client, outcome) and counted
-  (`workspace_manager.token_exchange.requests` by provider instance and
-  outcome), never with a token.
+Sign-ins earlier versions kept in the manager's namespace (a sealed Secret and
+a refresh Lease per person and provider instance) are deleted at every start,
+by their labels, without being read.
 
 Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
@@ -88,7 +62,8 @@ Traces go to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 Before a Session starts on a workspace, the surface calls the MCP tool
 `authorize_workspace(workspace)` as the person. The manager reads the last
 sync's manifest (the ConfigMap `status.manifest` names) and, with the person's
-own sign-in to each provider of the workspace, checks per owner which of its
+own token for each provider of the workspace (muster's grant, above), checks
+per owner which of its
 repositories the person reads, with the person's user-to-server token on
 GitHub: up to 100 repositories of an owner each asked for on its own
 (`GET /repos/<owner>/<name>`, eight at a time), more in one listing of the
@@ -118,8 +93,10 @@ past it is `refused`, saying so. The answer's `outcome`:
   `reason` says why the workspace cannot be started on yet: it has not
   synced, its volume is not bound, or it is being deleted; or that a
   provider did not answer within the check's bound.
-- `connect_required`: `connect` lists each provider the person has not
-  connected, with its `/connect/<instance>` link.
+- `connect_required`: `connect` lists each provider whose App the person has
+  not granted in muster, each with `signIn` saying how (`core_auth_login
+  server=<muster-server>` for the pinned instance, whose answer is muster's
+  sign-in link). A token the provider refuses during the check asks the same.
 
 The grant's claims are kagent's JWT admission's: `iss` the manager's base URL,
 `sub` the person's email, `aud` `--grant-audience` (`kagent`), `exp`,
@@ -131,11 +108,10 @@ of the workspace's CSI volume; `mounts` `sessions/${SESSION_ID}` read-write
 and `mirrors` read-only; `changed` [`<owner>/<name>`]; and `providers`, one per
 git and API host of each provider of the workspace {hostname, pathPrefix
 (only on an API under a path of a git host, as GitLab's `/api/`), audience (the
-instance), scheme, username, broker (`--grant-broker`, the name kagent knows
-the token endpoint by)}. It carries no token.
+instance), scheme, username, broker (`--grant-broker`, the token broker the
+egress gateway fetches the person's token from)}. It carries no token.
 
-The grant names the person by **email**, not by the Dex subject the sign-ins
-are keyed by: kagent's admission compares `sub` with the Session's creator as
+The grant names the person by **email**, not by the Dex subject: kagent's admission compares `sub` with the Session's creator as
 kagent's authenticator identifies the caller, which on the Agent Platform is
 the `email` claim (the edge sets `x-user-id` from it, the controller's user-id
 claim is `email`), so a grant naming the subject admits nobody. A caller whose
@@ -494,21 +470,19 @@ volume mounted at `--volume`:
 ## Layout
 
 - `cmd/`: the CLI (`serve`, `sync`, `version`); every flag also reads an environment variable.
-- `internal/server`: the HTTP listener, the OAuth resource server and the caller's identity on each request; `routes.go` is the one place every route is registered.
-- `internal/identity`: the caller and the caller's Dex token on the request context.
+- `internal/server`: the HTTP listener, the OAuth resource server, muster's App pin and the caller's identity on each request; `routes.go` is the one place every route is registered.
+- `internal/identity`: the caller, the caller's Dex token and the provider token muster attached on the request context.
 - `api/v1alpha1`: the Workspace API; `make generate` writes its deepcopy functions and the CRD the chart ships (`helm/workspace-manager/files/crds`).
 - `internal/workspace`: the Organization check, the provider validation, the Workspace store every tool reads and writes through, the selection a workspace's sources resolve to from the providers' listings (with why each repository is in), the last sync's manifest, and the volume's CSI handle.
 - `internal/controller`: the manager's controller, leader-elected among the replicas, watching the Workspaces of the workspaces' namespace and their sync Jobs: it runs each Workspace's sync cycle (the triggers, the no-op check, the selection and the credentials, the Job from the chart's template, the outcome from the manifest), sizes, claims and grows the volume from the installation's StorageClass, hands the Job kagent's Sessions for the session directories' cleanup, runs a deleted Workspace's cleanup to its last directory before its volume goes, and writes the Workspace's status, which nothing else writes.
 - `internal/kagent`: kagent's Sessions for the cleanup (`SessionService/ListSessions` over every creator), from the stubs in `internal/kagent/gen` that `make generate-kagent` makes from the protos pinned in `hack/kagent-proto`; `internal/kagent/kagenttest` is a fake kagent for tests.
-- `internal/kube`: the manager's Kubernetes clients.
-- `internal/api`: the MCP server, its tools (`list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace`, `delete_workspace`, `sync_workspace`, `list_repositories`, `preview_workspace`, `list_providers`, `connect_provider`, `disconnect_provider`, `authorize_workspace`) and its tracing and metrics middleware.
+- `internal/kube`: the manager's Kubernetes clients, and the deletion of the sign-ins earlier versions stored.
+- `internal/api`: the MCP server, its tools (`list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace`, `delete_workspace`, `sync_workspace`, `list_repositories`, `preview_workspace`, `list_providers`, `authorize_workspace`) and its tracing and metrics middleware.
 - `internal/authorize`: the access check at a Session's start: the manifest against what the person reads at each provider, the volume's CSI handle, and the grant.
 - `internal/grant`: the workspace grant: its claims, the signing keys from their Secret and the JWKS.
-- `internal/connect`: the person's connection to each provider instance: the OAuth 2.0 authorization code flow with PKCE (`golang.org/x/oauth2`), a sealed short-lived `state` binding the person, the instance and the verifier, the disconnect that revokes at the provider, and the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`.
-- `internal/provider`: the provider contract (listing, what a person reads, sync credential, sign-in, run-time hosts), the selection and change rules every provider shares, the listing cache (one listing per owner within a minute, shared by the workspaces resolved on the owner and by an editor's picker), and the provider instance list (`--providers-config`, the chart's `providers`).
+- `internal/muster`: the person's provider token as muster attaches it to a call, and how a person grants a provider's App in muster.
+- `internal/provider`: the provider contract (listing, what a person reads, sync credential, whose a person's token is, run-time hosts), the selection and change rules every provider shares, the listing cache (one listing per owner within a minute, shared by the workspaces resolved on the owner and by an editor's picker), and the provider instance list (`--providers-config`, the chart's `providers`).
 - `internal/provider/<kind>`: one provider kind each (`github`; `fake` for tests only); `internal/provider/kinds` is the one list of kinds the binary serves and the only package that imports one. `internal/provider/providertest` is the contract suite every kind passes. The `github` kind lists a GitHub App installation's repositories (name, language, topics, archived, fork, last push, size in KiB) with the installation token it mints per owner and renews before expiry, and waits out a rate limit as GitHub asks (`Retry-After`, the primary limit's reset, else a minute).
-- `internal/exchange`: the token exchange `POST /token` (RFC 8693) for the installation's kagent client.
-- `internal/signin`: each person's provider sign-ins: one Secret per person and provider instance, sealed with AES-256-GCM under rotatable keys, named by a hash of the person; access tokens refreshed ahead of expiry, once across replicas (a Lease per sign-in), so a provider that rotates refresh tokens never sees one redeemed twice.
 - `internal/mirror`: the sync: the volume's layout, the mirrors, the session directories' cleanup and inventory, the manifest, the credential helper and the borrowed-objects rule.
 - `helm/workspace-manager`: the chart; see its [README](helm/workspace-manager/README.md).
 

@@ -335,3 +335,12 @@ func validateHTTPS(baseURL string) error {
 		return fmt.Errorf("oauth: base URL scheme must be http or https: %s", baseURL)
 	}
 }
+
+// identityOf is the request identity of a validated mcp-oauth user.
+func identityOf(info *providers.UserInfo) *identity.Identity {
+	id := &identity.Identity{Subject: info.ID, Email: info.Email, Name: info.Name, Groups: info.Groups, Source: identity.SourceOAuth}
+	if info.IsSSO() {
+		id.Source = identity.SourceSSO
+	}
+	return id
+}

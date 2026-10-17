@@ -32,8 +32,8 @@ type Backend interface {
 	Put(item provider.Item)
 	// Delete removes an item.
 	Delete(owner, name string)
-	// Person issues a person's own access token, as their sign-in to the
-	// provider holds it, reading the items named `<owner>/<name>` and no
+	// Person issues a person's own access token, as muster's grant of the
+	// person holds it, reading the items named `<owner>/<name>` and no
 	// other.
 	Person(readable ...string) string
 }
@@ -231,18 +231,18 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		}
 	})
 
-	t.Run("sign-in", func(t *testing.T) {
-		k, _, _ := setup(t)
-		s := k.SignIn()
-		for name, raw := range map[string]string{"auth": s.AuthURL, "token": s.TokenURL, "revocation": s.RevocationURL} {
-			u, err := url.Parse(raw)
-			if assert.NoError(t, err, name) {
-				assert.True(t, u.IsAbs() && u.Host != "", "%s URL %q is absolute", name, raw)
-			}
-		}
-		assert.Contains(t, []provider.Revocation{"", provider.RevokeRFC7009, provider.RevokeGrant}, s.Revocation, "revocation method")
-		assert.NotEmpty(t, s.ClientID)
-		assert.Contains(t, k.SecretRefs(), s.ClientSecret, "the client secret is one of the instance's Secret references")
+	t.Run("person", func(t *testing.T) {
+		k, b, _ := setup(t)
+		ctx := context.Background()
+		tok := b.Person(Owner + "/api")
+		who, err := k.Person(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: tok}))
+		require.NoError(t, err)
+		assert.NotEmpty(t, who, "the person's account is named")
+		again, err := k.Person(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: tok}))
+		require.NoError(t, err)
+		assert.Equal(t, who, again, "one token, one account")
+		_, err = k.Person(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "revoked"}))
+		assert.ErrorIs(t, err, provider.ErrCredentialRefused, "a token the provider does not know is refused")
 	})
 }
 

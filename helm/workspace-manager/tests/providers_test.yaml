@@ -17,9 +17,6 @@ set:
         app:
           id: "123"
           privateKey: {name: github-agents-app, key: private-key}
-        oauth:
-          clientID: Iv1.abc
-          clientSecret: {name: github-agents-app, key: client-secret}
     - name: ghes
       kind: github
       values:
@@ -27,17 +24,11 @@ set:
         app:
           id: "7"
           privateKey: {name: ghes-app, key: private-key}
-        oauth:
-          clientID: Iv1.def
-          clientSecret: {name: ghes-app, key: client-secret}
     - name: gitlab
       kind: gitlab
       values:
         url: https://gitlab.example.com
         token: {name: workspace-gitlab, key: token}
-        oauth:
-          clientID: abc
-          clientSecret: {name: workspace-gitlab, key: client-secret}
 tests:
   - it: renders every instance into providers.yaml
     template: templates/providers-configmap.yaml

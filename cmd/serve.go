@@ -24,16 +24,14 @@ import (
 
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/authorize"
-	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/controller"
-	"github.com/giantswarm/workspace-manager/internal/exchange"
 	"github.com/giantswarm/workspace-manager/internal/grant"
 	"github.com/giantswarm/workspace-manager/internal/kagent"
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/muster"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/kinds"
 	"github.com/giantswarm/workspace-manager/internal/server"
-	"github.com/giantswarm/workspace-manager/internal/signin"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
@@ -91,8 +89,8 @@ type serveOptions struct {
 	providersConfig string
 
 	managerNamespace    string
-	signInKeysSecret    string
-	signInCurrentKey    string
+	musterProvider      string
+	musterServer        string
 	grantSigningKey     string
 	grantTTL            time.Duration
 	grantAudience       string
@@ -100,9 +98,6 @@ type serveOptions struct {
 	grantAgentNamespace string
 	checkTimeout        time.Duration
 	refreshAfter        time.Duration
-
-	tokenExchangeClientID     string
-	tokenExchangeClientSecret string
 
 	oauthEnabled                  bool
 	oauthBaseURL                  string
@@ -151,18 +146,16 @@ environment variable named next to it; flags win over the environment.`,
 	f.BoolVar(&o.leaderElection, "leader-election", envBool("WORKSPACE_MANAGER_LEADER_ELECTION", true), "Elect one replica to run the controller, through the Lease `"+controller.DefaultLease+"` in the workspaces' namespace; off runs it in every replica, for a single local process only (WORKSPACE_MANAGER_LEADER_ELECTION)")
 	f.StringVar(&o.leaderIdentity, "leader-election-identity", envOr("POD_NAME", ""), "This replica's name in the election; empty takes the host name, the pod's (POD_NAME)")
 	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
-	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace: provider Secrets, the sealing keys and the sign-ins live there (POD_NAMESPACE)")
-	f.StringVar(&o.signInKeysSecret, "signin-keys-secret", envOr("WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET", ""), "Secret in the manager's namespace with the sign-in sealing keys, each data entry a key id and its 32 raw bytes; required with providers and OAuth (WORKSPACE_MANAGER_SIGNIN_KEYS_SECRET)")
-	f.StringVar(&o.signInCurrentKey, "signin-current-key", envOr("WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY", ""), "The id of the sealing key that seals new sign-ins (WORKSPACE_MANAGER_SIGNIN_CURRENT_KEY)")
-	f.StringVar(&o.grantSigningKey, "grant-signing-key", envOr("WORKSPACE_MANAGER_GRANT_SIGNING_KEY", ""), "The key the workspace grant a Session carries is signed with, as `<secret>/<key>` of a Secret in the manager's namespace: a PEM private key, EC P-256 or P-384 or RSA of at least 2048 bits. Every other entry of the Secret holding such a key is published beside it at "+grant.JWKSPath+", so a key rotates by adding the next one, switching to it and removing the old one. Empty serves no authorize_workspace. Needs providers and OAuth (WORKSPACE_MANAGER_GRANT_SIGNING_KEY)")
+	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace, where the provider Secrets and the grant's signing key live; the provider sign-ins earlier versions kept there are deleted at start (POD_NAMESPACE)")
+	f.StringVar(&o.musterProvider, "muster-provider", envOr("WORKSPACE_MANAGER_MUSTER_PROVIDER", ""), "The provider instance whose App muster pins this server's MCPServer to (auth.authorizationServer, grantScope subject, forwardIdentity): the bearer of every MCP call is the person's App token, muster's grant, verified with the provider, and the person's Dex ID token arrives in "+server.ForwardedIdentityHeader+". It is the person's token for that provider in authorize_workspace and list_providers; muster holds no grant of any other instance. Empty: no person's provider token, and authorize_workspace asks to grant every provider. Needs --enable-oauth (WORKSPACE_MANAGER_MUSTER_PROVIDER)")
+	f.StringVar(&o.musterServer, "muster-server", envOr("WORKSPACE_MANAGER_MUSTER_SERVER", "workspace-manager"), "This server's MCPServer name in muster, which the refusals name for core_auth_login (WORKSPACE_MANAGER_MUSTER_SERVER)")
+	f.StringVar(&o.grantSigningKey, "grant-signing-key", envOr("WORKSPACE_MANAGER_GRANT_SIGNING_KEY", ""), "The key the workspace grant a Session carries is signed with, as `<secret>/<key>` of a Secret in the manager's namespace: a PEM private key, EC P-256 or P-384 or RSA of at least 2048 bits. Every other entry of the Secret holding such a key is published beside it at "+grant.JWKSPath+", so a key rotates by adding the next one, switching to it and removing the old one. Empty serves no authorize_workspace. Needs providers, OAuth and --manager-namespace (WORKSPACE_MANAGER_GRANT_SIGNING_KEY)")
 	f.DurationVar(&o.grantTTL, "grant-ttl", envDuration("WORKSPACE_MANAGER_GRANT_TTL", grant.DefaultTTL), "How long a workspace grant is valid, a Go duration (WORKSPACE_MANAGER_GRANT_TTL)")
 	f.StringVar(&o.grantAudience, "grant-audience", envOr("WORKSPACE_MANAGER_GRANT_AUDIENCE", "kagent"), "The workspace grant's audience: the one kagent's Session admission requires (WORKSPACE_MANAGER_GRANT_AUDIENCE)")
-	f.StringVar(&o.grantBroker, "grant-broker", envOr("WORKSPACE_MANAGER_GRANT_BROKER", "workspace-manager"), "The name kagent knows this manager's token endpoint by, which every provider host of a grant names (WORKSPACE_MANAGER_GRANT_BROKER)")
+	f.StringVar(&o.grantBroker, "grant-broker", envOr("WORKSPACE_MANAGER_GRANT_BROKER", "workspace-manager"), "The token broker the egress gateway fetches the person's token from, as kagent's Session admission knows it, which every provider host of a grant names (WORKSPACE_MANAGER_GRANT_BROKER)")
 	f.StringVar(&o.grantAgentNamespace, "grant-agent-namespace", envOr("WORKSPACE_MANAGER_GRANT_AGENT_NAMESPACE", ""), "The namespace whose Agents may start a Session with a workspace grant, its `agent_namespace`: kagent's Session admission refuses one on an Agent elsewhere. Required with --grant-signing-key (WORKSPACE_MANAGER_GRANT_AGENT_NAMESPACE)")
 	f.DurationVar(&o.checkTimeout, "access-check-timeout", envDuration("WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT", authorize.DefaultCheckTimeout), "How long authorize_workspace waits for the providers' answers about the person's access before it refuses, saying so, a Go duration; below the MCP client's tool timeout (muster's MCPServer `timeout`, 30s by default) (WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT)")
 	f.DurationVar(&o.refreshAfter, "sync-refresh-after", envDuration("WORKSPACE_MANAGER_SYNC_REFRESH_AFTER", authorize.DefaultRefreshAfter), "The refresh threshold: authorize_workspace requests a sync of a workspace whose last sync is older, without the Session waiting for it, a Go duration (WORKSPACE_MANAGER_SYNC_REFRESH_AFTER)")
-	f.StringVar(&o.tokenExchangeClientID, "token-exchange-client-id", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID", ""), "The installation's kagent client: the only client the token exchange `POST /token` (RFC 8693) answers; empty serves no token exchange. Needs providers and OAuth (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_ID)")
-	f.StringVar(&o.tokenExchangeClientSecret, "token-exchange-client-secret", envOr("WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET", ""), "The kagent client's secret as `<secret>/<key>` of a Secret in the manager's namespace, read on every exchange (WORKSPACE_MANAGER_TOKEN_EXCHANGE_CLIENT_SECRET)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("WORKSPACE_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (WORKSPACE_MANAGER_MCP_PATH)")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("WORKSPACE_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint, validated against Dex (mcp-oauth); the caller's identity and Dex token travel with every request, and a request without a Dex token is refused (WORKSPACE_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("WORKSPACE_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (WORKSPACE_MANAGER_OAUTH_BASE_URL)")
@@ -233,6 +226,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// provider instances' sync credentials, read from their Secrets.
 	ctlCfg.Instances = providers
 	if o.managerNamespace != "" {
+		// The person's token is muster's grant: no sign-in an earlier
+		// version stored stays in the cluster.
+		if err := kube.PurgeSignIns(ctx, clients.Typed(), o.managerNamespace); err != nil {
+			return err
+		}
 		secrets := kube.Secrets{Client: clients.Typed(), Namespace: o.managerNamespace}
 		ctlCfg.Secrets = secrets
 		ctlCfg.Listings = workspace.NewListings(providers, secrets)
@@ -284,28 +282,21 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	} else if len(providers) > 0 {
 		log.Warn("list_repositories and preview_workspace are off: they read the providers' Secrets in --manager-namespace (POD_NAMESPACE)")
 	}
-	if len(providers) > 0 {
-		if srvCfg.OAuth == nil {
-			log.Warn("provider sign-ins are off: they need --enable-oauth, which names the person")
-		} else {
-			si, err := providerSignIns(ctx, o, srvCfg.OAuth, clients, providers, log)
-			if err != nil {
-				return err
-			}
-			apiCfg.Connector, srvCfg.Pages = si.connector, si.pages
-			if srvCfg.TokenExchange, err = tokenExchange(o, si, providers, log); err != nil {
-				return err
-			}
-			if apiCfg.Authorizer, srvCfg.JWKS, err = workspaceGrants(ctx, o, si, clients, orgs, providers, log); err != nil {
-				return err
-			}
+	grants, pin, err := musterGrants(o, providers)
+	if err != nil {
+		return err
+	}
+	apiCfg.Grants, srvCfg.Pin = grants, pin
+	if pin != nil && srvCfg.OAuth == nil {
+		return fmt.Errorf("--muster-provider needs --enable-oauth, which validates the forwarded Dex ID token")
+	}
+	if o.grantSigningKey != "" {
+		if len(providers) == 0 || srvCfg.OAuth == nil || o.managerNamespace == "" {
+			return fmt.Errorf("--grant-signing-key needs providers, --enable-oauth and --manager-namespace")
 		}
-	}
-	if o.grantSigningKey != "" && apiCfg.Connector == nil {
-		return fmt.Errorf("--grant-signing-key needs providers and --enable-oauth")
-	}
-	if o.tokenExchangeClientID != "" && srvCfg.TokenExchange == nil {
-		return fmt.Errorf("--token-exchange-client-id needs providers and --enable-oauth")
+		if apiCfg.Authorizer, srvCfg.JWKS, err = workspaceGrants(ctx, o, grants, clients, orgs, providers, log); err != nil {
+			return err
+		}
 	}
 	srv, err := server.New(srvCfg, api.NewMCPServer(apiCfg, build.Version), log)
 	if err != nil {
@@ -326,51 +317,24 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	return g.Wait()
 }
 
-// signIns are the person's provider sign-ins as serve wires them.
-type signIns struct {
-	connector *connect.Connector
-	pages     *connect.Pages
-	store     *signin.KubeStore
-	clients   *connect.Clients
-	secrets   kube.Secrets
-	// baseURL is the manager's public URL, the grant's issuer.
-	baseURL string
-}
-
-// providerSignIns builds the person's provider sign-ins: the sealing keys,
-// the sign-in store, the connector and its browser pages, which sign the
-// browser in to Dex at connect.SignInPath.
-func providerSignIns(ctx context.Context, o *serveOptions, oauthCfg *server.OAuthConfig, clients *kube.Clients, providers []provider.Instance, log *slog.Logger) (*signIns, error) {
-	if o.managerNamespace == "" || o.signInKeysSecret == "" || o.signInCurrentKey == "" {
-		return nil, fmt.Errorf("provider sign-ins need --manager-namespace, --signin-keys-secret and --signin-current-key")
+// musterGrants are the person's provider tokens as muster attaches them, and
+// the pin of this server's registration to --muster-provider's App; no pin
+// without it. A pinned instance the installation does not configure fails the
+// start.
+func musterGrants(o *serveOptions, providers []provider.Instance) (muster.Grants, *server.Pin, error) {
+	grants := muster.Grants{Instance: o.musterProvider, Server: o.musterServer}
+	if o.musterProvider == "" {
+		return grants, nil, nil
 	}
-	keyring, err := signin.LoadKeyring(ctx, clients.Typed(), o.managerNamespace, o.signInKeysSecret, o.signInCurrentKey)
-	if err != nil {
-		return nil, err
+	if o.musterServer == "" {
+		return grants, nil, errors.New("--muster-server must name this server's MCPServer in muster")
 	}
-	secrets := kube.Secrets{Client: clients.Typed(), Namespace: o.managerNamespace}
-	oauthClients, err := connect.NewClients(providers, secrets, oauthCfg.BaseURL)
-	if err != nil {
-		return nil, err
+	for _, p := range providers {
+		if p.Name == o.musterProvider {
+			return grants, &server.Pin{Grants: grants, Kind: p.Kind}, nil
+		}
 	}
-	store, err := signin.NewKubeStore(signin.Options{Client: clients.Typed(), Namespace: o.managerNamespace, Keyring: keyring, OAuth2: oauthClients, Logger: log})
-	if err != nil {
-		return nil, err
-	}
-	conn, err := connect.New(connect.Options{Clients: oauthClients, Store: store, Keyring: keyring, Logger: log})
-	if err != nil {
-		return nil, err
-	}
-	idp, err := oauthCfg.DexProvider(connect.SignInPath, log)
-	if err != nil {
-		return nil, err
-	}
-	pages, err := connect.NewPages(conn, idp)
-	if err != nil {
-		return nil, err
-	}
-	log.Info("provider sign-ins enabled", "namespace", o.managerNamespace, "keysSecret", o.signInKeysSecret, "currentKey", keyring.Current())
-	return &signIns{connector: conn, pages: pages, store: store, clients: oauthClients, secrets: secrets, baseURL: oauthCfg.BaseURL}, nil
+	return grants, nil, fmt.Errorf("--muster-provider %q names no configured provider instance", o.musterProvider)
 }
 
 // controllerConfig is the controller's configuration from the flags, the
@@ -443,15 +407,12 @@ func (o *serveOptions) controllerConfig() (controller.Config, error) {
 	return cfg, nil
 }
 
-// workspaceGrants builds authorize_workspace and the grant's JWKS; nil
-// without --grant-signing-key. The signing key is read now, so a missing or
+// workspaceGrants builds authorize_workspace and the grant's JWKS, the grant
+// issued by this server's public URL. The signing key is read now, so a missing or
 // unusable key fails the start instead of the first grant.
-func workspaceGrants(ctx context.Context, o *serveOptions, si *signIns, clients kube.Client, orgs workspace.Organizations,
+func workspaceGrants(ctx context.Context, o *serveOptions, grants muster.Grants, clients kube.Client, orgs workspace.Organizations,
 	providers []provider.Instance, log *slog.Logger,
 ) (*authorize.Authorizer, http.Handler, error) {
-	if o.grantSigningKey == "" {
-		return nil, nil, nil
-	}
 	name, key, ok := strings.Cut(o.grantSigningKey, "/")
 	if !ok || name == "" || key == "" {
 		return nil, nil, fmt.Errorf("--grant-signing-key must be <secret>/<key>, got %q", o.grantSigningKey)
@@ -473,9 +434,8 @@ func workspaceGrants(ctx context.Context, o *serveOptions, si *signIns, clients 
 		Core:           clients.Typed(),
 		Namespace:      o.namespace,
 		Instances:      providers,
-		Tokens:         si.store,
-		ConnectURL:     si.clients.ConnectURL,
-		Signer:         &grant.Signer{Keys: keys, Issuer: si.baseURL, Audience: o.grantAudience, TTL: o.grantTTL},
+		Grants:         grants,
+		Signer:         &grant.Signer{Keys: keys, Issuer: o.oauthBaseURL, Audience: o.grantAudience, TTL: o.grantTTL},
 		Broker:         o.grantBroker,
 		AgentNamespace: o.grantAgentNamespace,
 		CheckTimeout:   o.checkTimeout,
@@ -485,30 +445,8 @@ func workspaceGrants(ctx context.Context, o *serveOptions, si *signIns, clients 
 		return nil, nil, err
 	}
 	log.Info("workspace grants enabled", "signingKey", o.grantSigningKey, "keyID", k.Signing.KeyID, "published", len(k.Public.Keys),
-		"issuer", si.baseURL, "audience", o.grantAudience, "ttl", o.grantTTL, "broker", o.grantBroker, "agentNamespace", o.grantAgentNamespace)
+		"issuer", o.oauthBaseURL, "audience", o.grantAudience, "ttl", o.grantTTL, "broker", o.grantBroker, "agentNamespace", o.grantAgentNamespace)
 	return a, grant.JWKS(keys, log), nil
-}
-
-// tokenExchange configures POST /token for the installation's kagent client;
-// nil without --token-exchange-client-id.
-func tokenExchange(o *serveOptions, si *signIns, providers []provider.Instance, log *slog.Logger) (*exchange.Config, error) {
-	if o.tokenExchangeClientID == "" {
-		return nil, nil
-	}
-	name, key, ok := strings.Cut(o.tokenExchangeClientSecret, "/")
-	if !ok || name == "" || key == "" {
-		return nil, fmt.Errorf("--token-exchange-client-secret must be <secret>/<key>, got %q", o.tokenExchangeClientSecret)
-	}
-	log.Info("token exchange enabled", "client", o.tokenExchangeClientID, "clientSecret", name+"/"+key)
-	return &exchange.Config{
-		ClientID:     o.tokenExchangeClientID,
-		ClientSecret: provider.SecretRef{Name: name, Key: key},
-		Secrets:      si.secrets,
-		Instances:    providers,
-		Tokens:       si.store,
-		ConnectURL:   si.clients.ConnectURL,
-		Logger:       log,
-	}, nil
 }
 
 // loadProviders reads and validates the provider instances.

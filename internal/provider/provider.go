@@ -4,8 +4,9 @@
 // A provider fills a workspace's volume from somewhere (GitHub, another git
 // host, a file service) and tells the manager what changed since a recorded
 // state. Everything a workspace needs from it goes through Kind: the listing,
-// the sync credential, the person's sign-in and the hosts the person's token
-// is set on at run time. A kind lives in its own package below this one and is
+// the sync credential, the check of the person's token and the hosts that
+// token is set on at run time. The person's token itself is muster's grant,
+// never the manager's. A kind lives in its own package below this one and is
 // compiled in by internal/provider/kinds alone, so adding a kind is one
 // implementation and that one line, never a change anywhere else.
 package provider
@@ -20,8 +21,8 @@ import (
 )
 
 // ErrCredentialRefused is wrapped by a Kind's error when the provider refused
-// the credential itself (revoked, expired, unknown): for a person's own
-// sign-in, they connect again.
+// the credential itself (revoked, expired, unknown): for the person's token,
+// they grant the provider's App in muster again.
 var ErrCredentialRefused = errors.New("the provider refused the credential")
 
 // Kind is one provider implementation, configured as one instance. Its parts
@@ -34,7 +35,7 @@ type Kind interface {
 	List(ctx context.Context, cred oauth2.TokenSource, owner string) ([]Item, error)
 
 	// Readable returns those of owner's items named in names that the person
-	// whose own sign-in cred is can read, each with its last change: the
+	// whose own token cred is can read, each with its last change: the
 	// access check at a Session's start. It never answers from a cache, so
 	// the answer is the person's access at the time of the call; a name
 	// missing from the result is an item the person cannot read. A credential
@@ -45,9 +46,10 @@ type Kind interface {
 	// the sync fetches with, built from the instance's Secret references.
 	SyncCredential(ctx context.Context, secrets Secrets, owner string) (oauth2.TokenSource, error)
 
-	// SignIn is the person's OAuth 2.0 authorization-code sign-in to the
-	// provider.
-	SignIn() SignIn
+	// Person is the account the person's token, cred, belongs to at the
+	// provider: muster attaches it to every call, and a token the provider
+	// refuses is an error wrapping ErrCredentialRefused.
+	Person(ctx context.Context, cred oauth2.TokenSource) (string, error)
 
 	// Hosts are where the person's token is set at run time, and the CLI the
 	// Harness images carry for the provider.
@@ -133,39 +135,6 @@ func (r SecretRef) String() string { return r.Name + "/" + r.Key }
 type Secrets interface {
 	Value(ctx context.Context, ref SecretRef) ([]byte, error)
 }
-
-// SignIn is a provider's OAuth 2.0 authorization-code sign-in with PKCE.
-type SignIn struct {
-	// AuthURL is the authorization endpoint the person is sent to.
-	AuthURL string
-	// TokenURL redeems the code and refreshes the token.
-	TokenURL string
-	// RevocationURL revokes a person's grant when they disconnect.
-	RevocationURL string
-	// Revocation is how RevocationURL is called; empty is RevokeRFC7009.
-	Revocation Revocation
-	// ClientID is the OAuth client's public identifier.
-	ClientID string
-	// ClientSecret is the OAuth client's secret.
-	ClientSecret SecretRef
-	// Scopes requested; empty where the provider grants by the client's own
-	// permissions (a GitHub App).
-	Scopes []string
-}
-
-// Revocation is how a provider revokes a person's grant. Both authenticate
-// with the client's Basic credentials.
-type Revocation string
-
-const (
-	// RevokeRFC7009 POSTs the token as a form (`token`, `token_type_hint`),
-	// the refresh token where there is one: OAuth 2.0 Token Revocation.
-	RevokeRFC7009 Revocation = "rfc7009"
-	// RevokeGrant DELETEs with a JSON body `{"access_token": …}`, which
-	// revokes the whole grant the token belongs to: a GitHub App's
-	// `DELETE /applications/{client_id}/grant`.
-	RevokeGrant Revocation = "grant"
-)
 
 // Scheme is how a token is set on a host.
 type Scheme string

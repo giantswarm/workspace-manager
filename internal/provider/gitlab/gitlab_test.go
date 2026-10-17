@@ -437,7 +437,6 @@ func TestSelfManaged(t *testing.T) {
 	k, err := gitlab.New(gitlab.Values{
 		URL:   "https://gitlab.example.com:8443/",
 		Token: provider.SecretRef{Name: "gl", Key: "token"},
-		OAuth: gitlab.OAuthValues{ClientID: "c", ClientSecret: provider.SecretRef{Name: "gl", Key: "s"}},
 	}, gitlab.Options{})
 	require.NoError(t, err)
 	assert.Equal(t, provider.Hosts{
@@ -445,24 +444,13 @@ func TestSelfManaged(t *testing.T) {
 		API: []provider.Host{{Name: "gitlab.example.com:8443", PathPrefix: "/api/", Scheme: provider.SchemeBearer}},
 		CLI: "glab",
 	}, k.Hosts(), "git takes Basic oauth2 on the host, the API Bearer under /api/")
-	s := k.SignIn()
-	assert.Equal(t, provider.SignIn{ //nolint:gosec // G101: URLs and a Secret reference, no credential
-		AuthURL:       "https://gitlab.example.com:8443/oauth/authorize",
-		TokenURL:      "https://gitlab.example.com:8443/oauth/token",
-		RevocationURL: "https://gitlab.example.com:8443/oauth/revoke",
-		Revocation:    provider.RevokeRFC7009,
-		ClientID:      "c",
-		ClientSecret:  provider.SecretRef{Name: "gl", Key: "s"},
-		Scopes:        []string{"api", "read_user", "read_repository", "write_repository"},
-	}, s)
-	assert.Equal(t, []provider.SecretRef{{Name: "gl", Key: "token"}, {Name: "gl", Key: "s"}}, k.SecretRefs())
+	assert.Equal(t, []provider.SecretRef{{Name: "gl", Key: "token"}}, k.SecretRefs())
 }
 
 func TestASeparateAPIHostTakesBearer(t *testing.T) {
 	k, err := gitlab.New(gitlab.Values{
 		URL: "https://git.example.com", APIURL: "https://api.example.com/api/v4",
 		Token: provider.SecretRef{Name: "gl", Key: "token"},
-		OAuth: gitlab.OAuthValues{ClientID: "c", ClientSecret: provider.SecretRef{Name: "gl", Key: "s"}},
 	}, gitlab.Options{})
 	require.NoError(t, err)
 	assert.Equal(t, []provider.Host{{Name: "api.example.com", Scheme: provider.SchemeBearer}}, k.Hosts().API)
@@ -472,7 +460,6 @@ func TestAnAPIUnderARelativeRootTakesItsDirectory(t *testing.T) {
 	k, err := gitlab.New(gitlab.Values{
 		URL:   "https://example.com/gitlab",
 		Token: provider.SecretRef{Name: "gl", Key: "token"},
-		OAuth: gitlab.OAuthValues{ClientID: "c", ClientSecret: provider.SecretRef{Name: "gl", Key: "s"}},
 	}, gitlab.Options{})
 	require.NoError(t, err)
 	assert.Equal(t, []provider.Host{{Name: "example.com", PathPrefix: "/gitlab/api/", Scheme: provider.SchemeBearer}}, k.Hosts().API)
@@ -481,11 +468,9 @@ func TestAnAPIUnderARelativeRootTakesItsDirectory(t *testing.T) {
 func TestDefaultsToGitLabCom(t *testing.T) {
 	k, err := gitlab.New(gitlab.Values{
 		Token: provider.SecretRef{Name: "gl", Key: "token"},
-		OAuth: gitlab.OAuthValues{ClientID: "c", ClientSecret: provider.SecretRef{Name: "gl", Key: "s"}},
 	}, gitlab.Options{})
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab.com", k.Hosts().Git[0].Name)
-	assert.Equal(t, "https://gitlab.com/oauth/authorize", k.SignIn().AuthURL)
 }
 
 func TestRefusesInvalidValues(t *testing.T) {
@@ -501,7 +486,7 @@ func TestRefusesInvalidValues(t *testing.T) {
 
 	_, err = gitlab.New(gitlab.Values{}, gitlab.Options{})
 	require.Error(t, err)
-	assert.Equal(t, "values: oauth.clientID, oauth.clientSecret.key, oauth.clientSecret.name, token.key, token.name required", err.Error())
+	assert.Equal(t, "values: token.key, token.name required", err.Error())
 
 	_, err = gitlab.Factory(gitlab.Options{})([]byte(`{"app": {}}`))
 	require.Error(t, err)

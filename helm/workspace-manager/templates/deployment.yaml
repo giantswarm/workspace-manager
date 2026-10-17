@@ -102,9 +102,11 @@ spec:
             - --allow-public-client-registration=true
             {{- end }}
             {{- if .Values.providers }}
-            {{- /* The person's provider sign-ins, sealed with these keys. */}}
-            - --signin-keys-secret={{ required "signin.keys.secretName is required with providers and oauth.enabled" .Values.signin.keys.secretName }}
-            - --signin-current-key={{ required "signin.keys.current is required with providers and oauth.enabled" .Values.signin.keys.current }}
+            {{- with .Values.muster.mcpServer.auth.provider }}
+            {{- /* The person's provider token: muster's grant of this instance's App. */}}
+            - --muster-provider={{ . }}
+            - --muster-server={{ $.Values.muster.mcpServer.name }}
+            {{- end }}
             {{- with .Values.grant.signingKey.name }}
             {{- /* The workspace grant's signing key, read at start. */}}
             - --grant-signing-key={{ . }}/{{ required "grant.signingKey.key is required with grant.signingKey.name" $.Values.grant.signingKey.key }}
@@ -112,11 +114,6 @@ spec:
             - --grant-audience={{ $.Values.grant.audience }}
             - --grant-broker={{ $.Values.grant.broker }}
             - --grant-agent-namespace={{ required "grant.agentNamespace is required with grant.signingKey.name" $.Values.grant.agentNamespace }}
-            {{- end }}
-            {{- with .Values.tokenExchange.clientID }}
-            {{- /* POST /token for the installation's kagent client. */}}
-            - --token-exchange-client-id={{ . }}
-            - --token-exchange-client-secret={{ required "tokenExchange.clientSecret.name is required with tokenExchange.clientID" $.Values.tokenExchange.clientSecret.name }}/{{ required "tokenExchange.clientSecret.key is required with tokenExchange.clientID" $.Values.tokenExchange.clientSecret.key }}
             {{- end }}
             {{- end }}
             {{- end }}

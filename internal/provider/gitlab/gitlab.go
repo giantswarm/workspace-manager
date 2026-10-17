@@ -1,8 +1,8 @@
 // Package gitlab is the GitLab provider kind: gitlab.com or a self-managed
 // GitLab. A group access token is the sync credential, a group's projects
-// (its sub-groups' included) or a user namespace's are the listing, and an
-// OAuth application's authorization-code sign-in is the person's sign-in.
-// Only internal/provider/kinds imports this package.
+// (its sub-groups' included) or a user namespace's are the listing, and the
+// person's token is an OAuth token of the person. Only internal/provider/kinds
+// imports this package.
 package gitlab
 
 import (
@@ -48,19 +48,7 @@ type Values struct {
 	// Token is the sync credential: a group access token with `read_api` and
 	// `read_repository`.
 	Token provider.SecretRef `json:"token"`
-	// OAuth is the OAuth application, for the person's sign-in.
-	OAuth OAuthValues `json:"oauth"`
 }
-
-// OAuthValues are the OAuth application's client.
-type OAuthValues struct {
-	ClientID     string             `json:"clientID"`
-	ClientSecret provider.SecretRef `json:"clientSecret"`
-}
-
-// Scopes are what the person's sign-in asks for: the API (glab), the
-// person's identity, and git reads and pushes.
-var Scopes = []string{"api", "read_user", "read_repository", "write_repository"}
 
 // Options are an instance's dependencies beyond its Values.
 type Options struct {
@@ -121,11 +109,8 @@ func New(v Values, o Options) (*Kind, error) {
 	}
 	var missing []string
 	for field, empty := range map[string]bool{
-		"token.name":              v.Token.Name == "",
-		"token.key":               v.Token.Key == "",
-		"oauth.clientID":          v.OAuth.ClientID == "",
-		"oauth.clientSecret.name": v.OAuth.ClientSecret.Name == "",
-		"oauth.clientSecret.key":  v.OAuth.ClientSecret.Key == "",
+		"token.name": v.Token.Name == "",
+		"token.key":  v.Token.Key == "",
 	} {
 		if empty {
 			missing = append(missing, field)
@@ -160,22 +145,22 @@ func parseBase(field, raw string) (*url.URL, error) {
 
 // SecretRefs implements provider.Kind.
 func (k *Kind) SecretRefs() []provider.SecretRef {
-	return []provider.SecretRef{k.v.Token, k.v.OAuth.ClientSecret}
+	return []provider.SecretRef{k.v.Token}
 }
 
-// SignIn implements provider.Kind: the OAuth application's authorization
-// code with PKCE; revoking the refresh token (RFC 7009) ends the grant.
-func (k *Kind) SignIn() provider.SignIn {
-	web := k.web.String()
-	return provider.SignIn{
-		AuthURL:       web + "/oauth/authorize",
-		TokenURL:      web + "/oauth/token",
-		RevocationURL: web + "/oauth/revoke",
-		Revocation:    provider.RevokeRFC7009,
-		ClientID:      k.v.OAuth.ClientID,
-		ClientSecret:  k.v.OAuth.ClientSecret,
-		Scopes:        slices.Clone(Scopes),
+// Person implements provider.Kind: the username GET /user answers for the
+// person's OAuth token.
+func (k *Kind) Person(ctx context.Context, cred oauth2.TokenSource) (string, error) {
+	var user struct {
+		Username string `json:"username"`
 	}
+	if err := k.get(ctx, cred, "/user", &user); err != nil {
+		return "", err
+	}
+	if user.Username == "" {
+		return "", errors.New("GET /user: no username in the answer")
+	}
+	return user.Username, nil
 }
 
 // Hosts implements provider.Kind. GitLab takes an OAuth token over git as

@@ -1,0 +1,45 @@
+{{- if .Values.rbac.create }}
+{{- /*
+The ServiceAccount's permissions in its own namespace. With providers it reads
+the provider instances' Secrets (their sync credentials) and the grant's
+signing key. At every start it deletes the provider sign-ins earlier versions
+kept there, a Secret and a refresh Lease per person and provider instance, by
+their labels, without reading them: the person's token is muster's grant, and
+none stays in the cluster.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "workspace-manager.fullname" . }}-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "workspace-manager.labels" . | nindent 4 }}
+rules:
+  {{- if .Values.providers }}
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+  {{- end }}
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [deletecollection]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [deletecollection]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "workspace-manager.fullname" . }}-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "workspace-manager.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "workspace-manager.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "workspace-manager.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

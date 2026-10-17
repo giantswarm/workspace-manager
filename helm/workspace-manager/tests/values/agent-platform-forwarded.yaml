@@ -1,8 +1,8 @@
 # The block the agent-platform meta chart forwards to this release with
 # workspaces on: its tests/fixtures/workspaces-values.yaml, its own defaults
 # for this component (resolved as it renders them) and every optional key set.
-# The sign-in store's key is this chart's signin.keys: the fixture's
-# signInStore.encryptionKey {name, key} is secretName and current here.
+# The person's provider token is muster's grant of the GitHub instance's App:
+# the registration is pinned to it.
 fullnameOverride: workspace-manager
 # The platform contract the meta chart provides as globals.
 global:
@@ -29,6 +29,11 @@ muster:
     enabled: true
     auth:
       forwardToken: true
+      provider: github
+      authorizationServer:
+        issuer: https://github.com/apps/example-agents
+        clientCredentialsSecretRef:
+          name: workspace-github-oauth-client
 providers:
   - name: github
     kind: github
@@ -36,21 +41,11 @@ providers:
       app:
         id: "123"
         privateKey: {name: workspace-github, key: private-key}
-      oauth:
-        clientID: Iv1.abc
-        clientSecret: {name: workspace-github, key: client-secret}
   - name: gitlab
     kind: gitlab
     values:
       url: https://gitlab.example.com:8443
       token: {name: workspace-gitlab, key: token}
-      oauth:
-        clientID: abc
-        clientSecret: {name: workspace-gitlab, key: client-secret}
-signin:
-  keys:
-    secretName: workspace-manager-keys
-    current: sign-in-store
 grant:
   signingKey: {name: workspace-manager-keys, key: grant}
 sync:
