@@ -1,8 +1,9 @@
 // Package github is the GitHub provider kind: github.com or a GitHub
 // Enterprise Server. A GitHub App is the provider on an installation: its
 // installation token on an owner is the sync credential, the installation's
-// repositories are the listing, and its user-to-server sign-in is the person's
-// sign-in. Only internal/provider/kinds imports this package.
+// repositories are the listing, and its user-to-server token, muster's grant
+// of the person, is the person's token. Only internal/provider/kinds imports
+// this package.
 package github
 
 import (
@@ -38,8 +39,10 @@ type Values struct {
 	APIURL string `json:"apiURL,omitempty"`
 	// App is the GitHub App the sync authenticates as.
 	App AppValues `json:"app"`
-	// OAuth is the App's OAuth client, for the person's sign-in.
-	OAuth OAuthValues `json:"oauth"`
+	// OAuth is the retired OAuth client of the person's sign-in, ignored: the
+	// person's token is muster's grant of the App. Accepted so a deployment
+	// that still configures it starts.
+	OAuth json.RawMessage `json:"oauth,omitempty"`
 }
 
 // AppValues identify the GitHub App.
@@ -48,12 +51,6 @@ type AppValues struct {
 	ID string `json:"id"`
 	// PrivateKey is the App's PEM private key.
 	PrivateKey provider.SecretRef `json:"privateKey"`
-}
-
-// OAuthValues are the App's OAuth client.
-type OAuthValues struct {
-	ClientID     string             `json:"clientID"`
-	ClientSecret provider.SecretRef `json:"clientSecret"`
 }
 
 // Options are an instance's dependencies beyond its Values.
@@ -110,12 +107,9 @@ func New(v Values, o Options) (*Kind, error) {
 	}
 	var missing []string
 	for field, empty := range map[string]bool{
-		"app.id":                  v.App.ID == "",
-		"app.privateKey.name":     v.App.PrivateKey.Name == "",
-		"app.privateKey.key":      v.App.PrivateKey.Key == "",
-		"oauth.clientID":          v.OAuth.ClientID == "",
-		"oauth.clientSecret.name": v.OAuth.ClientSecret.Name == "",
-		"oauth.clientSecret.key":  v.OAuth.ClientSecret.Key == "",
+		"app.id":              v.App.ID == "",
+		"app.privateKey.name": v.App.PrivateKey.Name == "",
+		"app.privateKey.key":  v.App.PrivateKey.Key == "",
 	} {
 		if empty {
 			missing = append(missing, field)
@@ -144,23 +138,22 @@ func parseBase(field, raw string) (*url.URL, error) {
 
 // SecretRefs implements provider.Kind.
 func (k *Kind) SecretRefs() []provider.SecretRef {
-	return []provider.SecretRef{k.v.App.PrivateKey, k.v.OAuth.ClientSecret}
+	return []provider.SecretRef{k.v.App.PrivateKey}
 }
 
-// SignIn implements provider.Kind: a GitHub App's user-to-server sign-in,
-// which takes the App's permissions rather than scopes.
-func (k *Kind) SignIn() provider.SignIn {
-	web := k.web.String()
-	return provider.SignIn{
-		AuthURL:  web + "/login/oauth/authorize",
-		TokenURL: web + "/login/oauth/access_token",
-		// DELETE with the client's Basic credentials and the token in the
-		// body revokes the person's grant.
-		RevocationURL: k.api.String() + "/applications/" + url.PathEscape(k.v.OAuth.ClientID) + "/grant",
-		Revocation:    provider.RevokeGrant,
-		ClientID:      k.v.OAuth.ClientID,
-		ClientSecret:  k.v.OAuth.ClientSecret,
+// Person implements provider.Kind: the login GET /user answers for the
+// person's user-to-server token.
+func (k *Kind) Person(ctx context.Context, cred oauth2.TokenSource) (string, error) {
+	var user struct {
+		Login string `json:"login"`
 	}
+	if err := k.get(ctx, cred, "/user", &user); err != nil {
+		return "", err
+	}
+	if user.Login == "" {
+		return "", errors.New("GET /user: no login in the answer")
+	}
+	return user.Login, nil
 }
 
 // Hosts implements provider.Kind. git takes a token as the password of any

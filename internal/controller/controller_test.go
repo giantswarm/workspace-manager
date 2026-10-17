@@ -65,7 +65,9 @@ func (stubKind) SyncCredential(context.Context, provider.Secrets, string) (oauth
 	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "stub-installation-token"}), nil
 }
 
-func (stubKind) SignIn() provider.SignIn { return provider.SignIn{} }
+func (stubKind) Person(context.Context, oauth2.TokenSource) (string, error) {
+	return "", errors.New("not used")
+}
 
 func (stubKind) Hosts() provider.Hosts {
 	return provider.Hosts{Git: []provider.Host{{Name: "code.test", Scheme: provider.SchemeBasic, User: "x-access-token"}}}

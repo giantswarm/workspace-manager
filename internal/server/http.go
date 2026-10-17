@@ -1,5 +1,6 @@
 // Package server assembles the single HTTP listener: health endpoints and the
-// MCP streamable-HTTP endpoint behind the OAuth guard when configured. Without
+// MCP streamable-HTTP endpoint behind the OAuth guard when configured, and
+// behind muster's App pin before it when pinned (Pin). Without
 // OAuth there is no authentication and no caller: only a server nothing but a
 // trusted proxy can reach runs that way, and every tool that needs the
 // caller's Organization refuses.
@@ -17,8 +18,6 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-
-	"github.com/giantswarm/workspace-manager/internal/exchange"
 )
 
 // Config configures the listener.
@@ -30,12 +29,11 @@ type Config struct {
 	// this server's own, and every call carries the caller's identity and
 	// Dex token.
 	OAuth *OAuthConfig
-	// Pages, when set, serves the person's provider connect pages.
-	Pages Pages
-	// TokenExchange, when set, serves the token exchange (RFC 8693) for the
-	// installation's kagent client. It needs OAuth, which validates the
-	// subject token.
-	TokenExchange *exchange.Config
+	// Pin, when set, makes the MCP endpoint muster's registration pinned to
+	// a provider instance's App: the bearer is the person's App token,
+	// muster's grant, and the Dex ID token arrives in
+	// ForwardedIdentityHeader. It needs OAuth, which validates that token.
+	Pin *Pin
 	// JWKS, when set, publishes the workspace grant's verification keys at
 	// grant.JWKSPath.
 	JWKS http.Handler
@@ -52,7 +50,7 @@ type Config struct {
 type Server struct {
 	http     *http.Server
 	oauth    *oauthRuntime
-	exchange *exchange.Handler
+	pin      *pinGuard
 	ready    func() bool
 	drain    time.Duration
 	draining atomic.Bool
@@ -75,15 +73,15 @@ func New(cfg Config, mcpSrv *mcpserver.MCPServer, log *slog.Logger) (*Server, er
 		}
 		s.oauth = o
 	}
-	if cfg.TokenExchange != nil {
+	if cfg.Pin != nil {
 		if s.oauth == nil {
-			return nil, errors.New("token exchange: needs OAuth, which validates the subject token")
+			return nil, errors.New("muster pin: needs OAuth, which validates the forwarded ID token")
 		}
-		h, err := exchange.New(*cfg.TokenExchange, s.oauth)
+		p, err := newPinGuard(*cfg.Pin, log)
 		if err != nil {
 			return nil, err
 		}
-		s.exchange = h
+		s.pin = p
 	}
 	mux := http.NewServeMux()
 	s.routes(mux, cfg, mcpSrv)
@@ -136,10 +134,14 @@ func traced(mux *http.ServeMux) http.Handler {
 	)
 }
 
-// guard requires an authenticated caller when OAuth is on.
+// guard requires an authenticated caller when OAuth is on, and the person's
+// App token muster attaches when pinned.
 func (s *Server) guard(next http.Handler) http.Handler {
 	if s.oauth == nil {
 		return next
+	}
+	if s.pin != nil {
+		return s.pin.protect(s.oauth.protect(next))
 	}
 	return s.oauth.protect(next)
 }

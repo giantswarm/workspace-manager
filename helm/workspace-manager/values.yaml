@@ -174,38 +174,31 @@ crds:
 # For example `{giantswarm: {memberGroups: [giantswarm-ad:developers]}}`.
 organizations: {}  # @schema additionalProperties: {type: object, additionalProperties: false, required: [memberGroups], properties: {memberGroups: {type: array, minItems: 1, items: {type: string, minLength: 1}}}}
 # -- The installation's workspace providers, several at once: each a unique
-# `name` (a DNS label: the name workspaces and sign-ins refer to), a `kind` and
-# the kind's `values`. A duplicate name, an unknown kind or invalid values fail
-# the server's start with a message naming the instance. Kind `github`
+# `name` (a DNS label: the name workspaces refer to), a `kind` and the kind's
+# `values`. A duplicate name, an unknown kind or invalid values fail the
+# server's start with a message naming the instance. Kind `github`
 # (github.com or a GitHub Enterprise Server) takes `url` (default
-# `https://github.com`), `apiURL` (derived from `url`), `app.id`,
-# `app.privateKey` and `oauth.clientID`, `oauth.clientSecret`; a Secret
-# reference is `{name, key}` of a Secret in the release namespace, e.g.
-# `{name: github, kind: github, values: {app: {id: "123", privateKey: {name:
-# github-agents-app, key: private-key}}, oauth: {clientID: Iv1.abc,
-# clientSecret: {name: github-agents-app, key: client-secret}}}}`.
-# Kind `gitlab` (gitlab.com or a self-managed GitLab) takes `url` (default
-# `https://gitlab.com`, the git host and the OAuth application's), `apiURL`
-# (default `<url>/api/v4`), `token` (a group access token with `read_api` and
-# `read_repository`, the sync's) and `oauth.clientID`, `oauth.clientSecret` (an
-# OAuth application with the scopes `api read_user read_repository
-# write_repository` and the redirect URI `<oauth.baseURL>/callback/<name>`); a
-# source's owner is a top-level group, its sub-groups' projects included and
-# named by their path below it with `~` for `/` (`team~api`), or a user.
+# `https://github.com`), `apiURL` (derived from `url`), `app.id` and
+# `app.privateKey`; a Secret reference is `{name, key}` of a Secret in the
+# release namespace, e.g. `{name: github, kind: github, values: {app: {id:
+# "123", privateKey: {name: github-agents-app, key: private-key}}}}`. Kind
+# `gitlab` (gitlab.com or a self-managed GitLab) takes `url` (default
+# `https://gitlab.com`, the git host), `apiURL` (default `<url>/api/v4`) and
+# `token` (a group access token with `read_api` and `read_repository`, the
+# sync's); a source's owner is a top-level group, its sub-groups' projects
+# included and named by their path below it with `~` for `/` (`team~api`), or
+# a user. A person's token for a provider is muster's grant of its App
+# (`muster.mcpServer.auth.provider`), never the manager's: no provider takes
+# an OAuth client here.
 providers: []  # @schema item: object ; itemProperties: {name: {type: string}, kind: {type: string, enum: [github, gitlab]}, values: {type: object, additionalProperties: true}}
 
-signin:
-  keys:
-    # -- Secret in the release namespace with the keys that seal each
-    # person's provider sign-ins and the sign-in flow's state: each data
-    # entry is a key id (a lower-case DNS label of at most 32 characters) and
-    # its 32 random bytes. Required with `providers` and `oauth.enabled`; the
-    # chart never renders it.
-    secretName: ""
-    # -- The id of the key that seals. The others still open what they
-    # sealed, so a key rotates by adding a new one, making it current and
-    # dropping the old one once every sign-in was written again.
-    current: ""
+# -- Retired with the manager's own sign-in, which moved to muster: accepted and
+# ignored, so a parent chart that still forwards its sign-in keys installs.
+# Nothing renders from it.
+signin: {}  # @schema additionalProperties: true
+# -- Retired with the token exchange `POST /token`: the person's provider token
+# is muster's grant. Accepted and ignored; nothing renders from it.
+tokenExchange: {}  # @schema additionalProperties: true
 
 grant:
   # -- The key the workspace grant a Session carries is signed with (the
@@ -225,27 +218,14 @@ grant:
   ttl: 5m
   # -- The grant's audience: the one kagent's Session admission requires.
   audience: kagent
-  # -- The name kagent knows this manager's token endpoint by, as its token
-  # broker: every provider host of a grant names it.
+  # -- The token broker the egress gateway fetches the person's token from,
+  # as kagent's Session admission knows it: every provider host of a grant
+  # names it.
   broker: workspace-manager
   # -- The namespace whose Agents may start a Session with a grant, its
   # `agent_namespace`: kagent's Session admission refuses one on an Agent
   # elsewhere. Required with `signingKey`.
   agentNamespace: kagent
-
-tokenExchange:
-  # -- The installation's kagent client: the only client the token exchange
-  # `POST /token` (RFC 8693) answers, with the person's access token for a
-  # provider instance. Empty serves no token exchange. Needs `providers` and
-  # `oauth.enabled`; kagent's namespace belongs in
-  # `networkPolicy.ingressNamespaces`.
-  clientID: ""
-  clientSecret:
-    # -- Secret in the release namespace with the kagent client's secret,
-    # read on every exchange; the chart never renders it.
-    name: ""
-    # -- Key of the client secret in that Secret.
-    key: client-secret
 
 mcp:
   # -- MCP endpoint path.
@@ -255,10 +235,11 @@ oauth:
   # -- Make workspace-manager an OAuth 2.1 resource server (mcp-oauth): the
   # MCP endpoint requires a bearer token Dex issued, and every call carries the
   # caller's identity and Dex token, from which the caller's Organization is
-  # checked. muster forwards the session's Dex id_token (its
-  # MCPServer registration with `auth.forwardToken`, unpinned like every
-  # manager); it is validated against Dex's JWKS when its audience is in
-  # `trustedAudiences`. Off: no caller, so nothing that needs an Organization
+  # checked. muster forwards the session's Dex id_token (its MCPServer
+  # registration with `auth.forwardToken`, or in `X-Muster-Id-Token` beside
+  # the person's App token when pinned to a provider's App,
+  # `muster.mcpServer.auth.provider`); it is validated against Dex's JWKS when
+  # its audience is in `trustedAudiences`. Off: no caller, so nothing that needs an Organization
   # works; only for a server nothing but a trusted proxy can reach.
   enabled: false
   # -- Public base URL of this server: the issuer of its own OAuth metadata
@@ -315,7 +296,7 @@ muster:
     # -- Start the server connection when muster initializes.
     autoStart: true
     # -- Human-readable description shown by muster.
-    description: Workspaces of this installation, the sources agent sessions work on and their provider sign-ins, for the Agent Platform
+    description: Workspaces of this installation, the sources agent sessions work on, for the Agent Platform
     # -- Extra labels on the MCPServer CR.
     labels: {}  # @schema additionalProperties: true
     # -- (int) How long muster waits for a tool's answer, in seconds (the
@@ -332,11 +313,49 @@ muster:
     # `kubernetes`); muster requests them at login, so users re-login after a
     # change. They are trusted as bearer audiences by construction, since the
     # server's trusted audiences are `oauth.trustedAudiences` plus this list.
-    # The registration is unpinned — no authorization server and no GitHub
-    # App: a provider sign-in is the workspace-manager's own business.
     auth:
       forwardToken: true
       requiredAudiences: []
+      # -- The provider instance (a `providers` name) whose App muster pins
+      # this registration to: the person grants that App once in muster
+      # (one grant per App per person), and muster attaches the person's App
+      # token to every call, with `forwardIdentity` the Dex ID token beside
+      # it in `X-Muster-Id-Token`. It is the person's token for that
+      # provider in `authorize_workspace` and `list_providers`; a person who
+      # has not granted it gets muster's sign-in link instead of a tool's
+      # answer. muster holds no grant of any other instance. Empty: the
+      # registration is unpinned (`forwardToken`), and no person has a
+      # provider token. Needs `oauth.enabled` and `authorizationServer`.
+      provider: ""
+      authorizationServer:
+        # -- The issuer identity the person's grant is filed under: the
+        # provider App's own (`https://github.com/apps/<installation>-agents`
+        # on GitHub), so the login App's grant stays separate. Required with
+        # `provider`.
+        issuer: ""
+        # -- The issuer the provider puts in the RFC 9207 `iss` parameter of
+        # its authorization response, `https://github.com/login/oauth` for
+        # every GitHub App. Empty omits the field.
+        expectedIssuer: https://github.com/login/oauth
+        # -- The provider's authorize endpoint (GitHub publishes no discovery
+        # document).
+        authorizationEndpoint: https://github.com/login/oauth/authorize
+        # -- The provider's token endpoint.
+        tokenEndpoint: https://github.com/login/oauth/access_token
+        # -- The OAuth `scope` parameter, only for an authorization server
+        # that needs one; empty for a GitHub App, whose permissions are the
+        # App's. Empty omits the field.
+        scopes: ""
+        clientCredentialsSecretRef:
+          # -- Secret with the App's OAuth client under `client-id` and
+          # `client-secret`, which muster reads; the chart never renders
+          # it. Required with `provider`.
+          name: ""
+          # -- Namespace of that Secret; empty is the release namespace.
+          namespace: ""
+        # -- `subject`: the grant belongs to the person, not to one login
+        # session.
+        grantScope: subject
 
 networkPolicy:
   # -- Create a Kubernetes NetworkPolicy for the pod (off when an umbrella

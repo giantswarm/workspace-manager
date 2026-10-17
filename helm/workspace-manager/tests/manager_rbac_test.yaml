@@ -1,0 +1,65 @@
+# The manager's Role in its own namespace: with providers it reads their
+# Secrets and the grant's signing key; always it may delete, by collection and
+# without reading them, the provider sign-ins and refresh Leases earlier
+# versions kept there. No other write, and nothing without rbac.create.
+#
+# Run with: make helm-test (helm unittest helm/workspace-manager)
+suite: manager rbac
+templates:
+  - templates/manager-rbac.yaml
+release:
+  name: workspace-manager
+  namespace: agent-platform
+tests:
+  - it: may delete the stored sign-ins and their leases, reading no Secret without providers
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: agent-platform
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [secrets]
+              verbs: [deletecollection]
+            - apiGroups: [coordination.k8s.io]
+              resources: [leases]
+              verbs: [deletecollection]
+
+  - it: reads the provider Secrets with providers
+    documentIndex: 0
+    set:
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: [secrets]
+            verbs: [get]
+
+  - it: binds the manager's ServiceAccount only
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: workspace-manager
+              namespace: agent-platform
+
+  - it: renders nothing without rbac.create
+    set:
+      rbac.create: false
+    asserts:
+      - hasDocuments:
+          count: 0

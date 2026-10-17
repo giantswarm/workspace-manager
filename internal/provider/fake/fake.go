@@ -26,9 +26,6 @@ type Values struct {
 	Host string `json:"host"`
 	// Token is the sync credential.
 	Token provider.SecretRef `json:"token"`
-	// ClientID and ClientSecret are the sign-in's OAuth client.
-	ClientID     string             `json:"clientID"`
-	ClientSecret provider.SecretRef `json:"clientSecret"`
 }
 
 // Store is the provider's data: items per owner, the sync token it accepts
@@ -85,8 +82,8 @@ func Factory(store *Store) provider.Factory {
 		if err := dec.Decode(&v); err != nil {
 			return nil, fmt.Errorf("values: %w", err)
 		}
-		if v.Host == "" || v.ClientID == "" {
-			return nil, errors.New("values: host and clientID required")
+		if v.Host == "" {
+			return nil, errors.New("values: host required")
 		}
 		return &Kind{v: v, store: store}, nil
 	}
@@ -150,17 +147,19 @@ func (k *Kind) SyncCredential(ctx context.Context, secrets provider.Secrets, _ s
 	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: string(tok)}), nil
 }
 
-// SignIn implements provider.Kind.
-func (k *Kind) SignIn() provider.SignIn {
-	base := "https://" + k.v.Host
-	return provider.SignIn{
-		AuthURL:       base + "/oauth/authorize",
-		TokenURL:      base + "/oauth/token",
-		RevocationURL: base + "/oauth/revoke",
-		ClientID:      k.v.ClientID,
-		ClientSecret:  k.v.ClientSecret,
-		Scopes:        []string{"read", "write"},
+// Person implements provider.Kind: the token itself names the person; any
+// token the store did not issue is refused.
+func (k *Kind) Person(_ context.Context, cred oauth2.TokenSource) (string, error) {
+	tok, err := cred.Token()
+	if err != nil {
+		return "", err
 	}
+	k.store.mu.Lock()
+	defer k.store.mu.Unlock()
+	if _, ok := k.store.persons[tok.AccessToken]; !ok {
+		return "", fmt.Errorf("fake: %w", provider.ErrCredentialRefused)
+	}
+	return tok.AccessToken, nil
 }
 
 // Hosts implements provider.Kind: git and, under `/api/`, an API taking
@@ -175,7 +174,7 @@ func (k *Kind) Hosts() provider.Hosts {
 
 // SecretRefs implements provider.Kind.
 func (k *Kind) SecretRefs() []provider.SecretRef {
-	return []provider.SecretRef{k.v.Token, k.v.ClientSecret}
+	return []provider.SecretRef{k.v.Token}
 }
 
 // Backend is the providertest.Backend of the fake kind.
@@ -190,8 +189,7 @@ func NewBackend() *Backend {
 
 // Values implements providertest.Backend.
 func (b *Backend) Values() json.RawMessage {
-	return json.RawMessage(`{"host":"code.fake.test","token":{"name":"fake-sync","key":"token"},` +
-		`"clientID":"fake-client","clientSecret":{"name":"fake-oauth","key":"client-secret"}}`)
+	return json.RawMessage(`{"host":"code.fake.test","token":{"name":"fake-sync","key":"token"}}`)
 }
 
 // Secrets implements providertest.Backend.

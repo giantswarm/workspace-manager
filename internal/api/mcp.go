@@ -19,9 +19,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/giantswarm/workspace-manager/internal/authorize"
-	"github.com/giantswarm/workspace-manager/internal/connect"
 	"github.com/giantswarm/workspace-manager/internal/controller"
 	"github.com/giantswarm/workspace-manager/internal/kube"
+	"github.com/giantswarm/workspace-manager/internal/muster"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
@@ -45,9 +45,9 @@ type Config struct {
 	// Sizing is the installation's volume sizing, which preview_workspace
 	// estimates a selection's volume with.
 	Sizing controller.Sizing
-	// Connector, when set, serves the person's provider sign-ins:
-	// list_providers, connect_provider and disconnect_provider.
-	Connector *connect.Connector
+	// Grants are the person's provider tokens muster attaches to the call:
+	// with Providers, they serve list_providers.
+	Grants muster.Grants
 	// Authorizer, when set, serves authorize_workspace.
 	Authorizer *authorize.Authorizer
 }
@@ -87,8 +87,8 @@ func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
 			addSelectionTools(s, &selectionTools{store: store, listings: workspace.NewListings(cfg.Providers, cfg.Secrets), sizing: sizing})
 		}
 	}
-	if cfg.Connector != nil {
-		addProviderTools(s, cfg.Connector)
+	if len(cfg.Providers) > 0 {
+		addProviderTools(s, cfg.Providers, cfg.Grants)
 	}
 	if cfg.Authorizer != nil {
 		addAuthorizeTool(s, cfg.Authorizer)

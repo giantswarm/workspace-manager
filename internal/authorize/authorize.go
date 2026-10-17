@@ -1,18 +1,17 @@
 // Package authorize is the access check at a Session's start: may the person
 // read every repository of the workspace's last sync? With the person's own
-// sign-in to each provider of the workspace, one check per owner tells which
-// of the manifest's repositories they read. All of them: a signed grant
-// (package grant) naming the person, the workspace, its volume and the
-// repositories pushed to since the sync. Otherwise a refusal naming the
-// repositories, or, for a provider the person has not connected, its connect
-// link. It runs before the workspace's volume is mounted anywhere, because
+// token for each provider of the workspace, which muster attaches to the call
+// (package muster), one check per owner tells which of the manifest's
+// repositories they read. All of them: a signed grant (package grant) naming
+// the person, the workspace, its volume and the repositories pushed to since
+// the sync. Otherwise a refusal naming the repositories, or, for a provider
+// whose App the person has not granted in muster, how to grant it. It runs before the workspace's volume is mounted anywhere, because
 // the volume's content is readable in the Session from its first turn. A
 // granted check on a workspace whose last sync is older than the refresh
 // threshold also requests a sync, which the Session does not wait for: the
 // mirrors are refreshed at Session start, never on a schedule.
 //
-// The person has two names here. Their sign-ins are keyed by the Dex subject
-// (package signin). The grant names them by email: kagent's Session admission
+// The grant names the person by email: kagent's Session admission
 // compares the grant's `sub` with the Session's creator as kagent's
 // authenticator identifies the caller, which on the Agent Platform is the
 // `email` claim (the edge sets `x-user-id` from it, the controller's user-id
@@ -37,8 +36,8 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/grant"
 	"github.com/giantswarm/workspace-manager/internal/identity"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
+	"github.com/giantswarm/workspace-manager/internal/muster"
 	"github.com/giantswarm/workspace-manager/internal/provider"
-	"github.com/giantswarm/workspace-manager/internal/signin"
 	"github.com/giantswarm/workspace-manager/internal/workspace"
 )
 
@@ -47,11 +46,6 @@ import (
 type Workspaces interface {
 	Get(ctx context.Context, name string) (*v1alpha1.Workspace, error)
 	RequestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error)
-}
-
-// Tokens are the people's sign-ins (signin.Store).
-type Tokens interface {
-	Access(ctx context.Context, person, instance string) (signin.Access, error)
 }
 
 // Config is what the check works with.
@@ -64,14 +58,12 @@ type Config struct {
 	Namespace string
 	// Instances are the installation's provider instances.
 	Instances []provider.Instance
-	// Tokens are the people's sign-ins.
-	Tokens Tokens
-	// ConnectURL is the page where a person connects an instance.
-	ConnectURL func(instance string) string
+	// Grants are the person's tokens muster attaches to the call.
+	Grants muster.Grants
 	// Signer signs the grant.
 	Signer *grant.Signer
-	// Broker is the name kagent knows the manager's token endpoint by: every
-	// provider host of a grant names it.
+	// Broker is the token broker the egress gateway fetches the person's
+	// token from: every provider host of a grant names it.
 	Broker string
 	// AgentNamespace is the namespace whose Agents may start a Session with
 	// a grant, which every grant names.
@@ -107,8 +99,8 @@ type Authorizer struct {
 // New validates cfg and builds the Authorizer.
 func New(cfg Config) (*Authorizer, error) {
 	var errs []error
-	if cfg.Workspaces == nil || cfg.Core == nil || cfg.Tokens == nil || cfg.ConnectURL == nil {
-		errs = append(errs, errors.New("authorize: workspaces, Kubernetes, the sign-in store and the connect URL are required"))
+	if cfg.Workspaces == nil || cfg.Core == nil {
+		errs = append(errs, errors.New("authorize: workspaces and Kubernetes are required"))
 	}
 	if cfg.Namespace == "" || cfg.Broker == "" {
 		errs = append(errs, errors.New("authorize: the namespace and the broker name are required"))
@@ -152,18 +144,21 @@ type Outcome string
 const (
 	// Granted: the person reads every repository; Result.Grant is the grant.
 	Granted Outcome = "granted"
-	// ConnectRequired: the person has not connected every provider of the
-	// workspace; Result.Connect has the links.
+	// ConnectRequired: the person has not granted every provider's App in
+	// muster; Result.Connect says how.
 	ConnectRequired Outcome = "connect_required"
 	// Refused: the person cannot read every repository (Result.Unreadable),
 	// or the workspace cannot be started on yet (Result.Reason).
 	Refused Outcome = "refused"
 )
 
-// Connect is a provider the person connects before the workspace is theirs.
+// Connect is a provider whose App the person grants in muster before the
+// workspace is theirs.
 type Connect struct {
 	Provider string `json:"provider"`
-	URL      string `json:"url"`
+	// SignIn says how: muster's core_auth_login for the provider its
+	// registration is pinned to, whose answer is muster's sign-in link.
+	SignIn string `json:"signIn"`
 }
 
 // Result is the check's answer.
@@ -182,7 +177,7 @@ type Result struct {
 	Changed []string `json:"changed,omitempty"`
 	// Unreadable are the repositories the person cannot read.
 	Unreadable []string `json:"unreadable,omitempty"`
-	// Connect are the providers the person has not connected.
+	// Connect are the providers whose App the person has not granted.
 	Connect []Connect `json:"connect,omitempty"`
 	// SyncRequested is true when the check requested a sync of the
 	// workspace, its last one being older than the refresh threshold; the
@@ -190,8 +185,8 @@ type Result struct {
 	SyncRequested bool `json:"syncRequested,omitempty"`
 }
 
-// Authorize checks the caller id against the workspace name: their sign-ins
-// by id.Subject, the grant in their name by id.Email. An error is a failure
+// Authorize checks the caller id against the workspace name: with the tokens
+// muster attached to the call in ctx, the grant in their name by id.Email. An error is a failure
 // to check (the workspace unknown or not the caller's Organization's, a caller
 // without an email, a provider or the API server failing); every answer about
 // the person's access is a Result.
@@ -250,18 +245,14 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 		return refuse("workspace %s: %s", name, reason)
 	}
 
-	// The person's token per provider; every unconnected one is named at once.
+	// The person's token per provider; every one without is named at once.
 	tokens := map[string]string{}
 	for _, p := range providers {
-		access, err := a.cfg.Tokens.Access(ctx, id.Subject, p)
-		switch {
-		case errors.Is(err, signin.ErrNotSignedIn), errors.Is(err, signin.ErrSignInExpired):
-			res.Connect = append(res.Connect, Connect{Provider: p, URL: a.cfg.ConnectURL(p)})
-		case err != nil:
-			return nil, fmt.Errorf("sign-in to %s: %w", p, err)
-		default:
-			tokens[p] = access.Token
+		if tok, ok := a.cfg.Grants.Token(ctx, p); ok {
+			tokens[p] = tok
+			continue
 		}
+		res.Connect = append(res.Connect, a.connect(p))
 	}
 	if len(res.Connect) > 0 {
 		return a.connectRequired(res, name)
@@ -269,7 +260,7 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 
 	// What the person reads, one check per owner, against the manifest, all
 	// of it within the check's bound. A provider refusing the person's own
-	// token (revoked there) is a connect.
+	// token (revoked there) asks for the grant again.
 	checkCtx, cancel := context.WithTimeout(ctx, a.cfg.CheckTimeout)
 	defer cancel()
 	for _, p := range providers {
@@ -283,7 +274,7 @@ func (a *Authorizer) Authorize(ctx context.Context, id *identity.Identity, name 
 			}
 			items, err := kind.Readable(checkCtx, cred, owner, names)
 			if errors.Is(err, provider.ErrCredentialRefused) {
-				res.Connect = append(res.Connect, Connect{Provider: p, URL: a.cfg.ConnectURL(p)})
+				res.Connect = append(res.Connect, a.connect(p))
 				break
 			}
 			if err != nil && ctx.Err() == nil && errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
@@ -370,7 +361,12 @@ func cleanupOnly(t v1alpha1.SyncTrigger) bool {
 	return false
 }
 
-// connectRequired answers with the providers to connect, and nothing about
+// connect is how the person grants provider p's App.
+func (a *Authorizer) connect(p string) Connect {
+	return Connect{Provider: p, SignIn: a.cfg.Grants.SignIn(p)}
+}
+
+// connectRequired answers with the providers to grant, and nothing about
 // what the person reads.
 func (a *Authorizer) connectRequired(res *Result, name string) (*Result, error) {
 	names := make([]string, len(res.Connect))
@@ -378,7 +374,7 @@ func (a *Authorizer) connectRequired(res *Result, name string) (*Result, error) 
 		names[i] = c.Provider
 	}
 	res.Outcome, res.Changed, res.Unreadable = ConnectRequired, nil, nil
-	res.Reason = fmt.Sprintf("connect %s to use workspace %s: the Session works as you there", strings.Join(names, ", "), name)
+	res.Reason = fmt.Sprintf("grant %s in muster to use workspace %s: the Session works as you there", strings.Join(names, ", "), name)
 	return res, nil
 }
 
@@ -404,7 +400,7 @@ func (a *Authorizer) providers(names []string) []grant.Provider {
 	for _, name := range names {
 		hosts := a.instances[name].Hosts()
 		for _, h := range slices.Concat(hosts.Git, hosts.API) {
-			out = append(out, grant.Provider{Hostname: h.Name, PathPrefix: h.PathPrefix, Audience: name, Scheme: string(h.Scheme), Username: h.User, Broker: a.cfg.Broker})
+			out = append(out, grant.Provider{Hostname: h.Name, PathPrefix: h.PathPrefix, Provider: name, Audience: name, Scheme: string(h.Scheme), Username: h.User, Broker: a.cfg.Broker})
 		}
 	}
 	return out

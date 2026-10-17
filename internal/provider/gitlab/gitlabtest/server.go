@@ -34,10 +34,7 @@ const SyncToken = "glpat-stub-sync" //nolint:gosec // G101: the stub's own fake 
 // DefaultPageSize is the stub's page size, small so listings page.
 const DefaultPageSize = 2
 
-var (
-	tokenRef        = provider.SecretRef{Name: "gitlab-sync", Key: "token"}
-	clientSecretRef = provider.SecretRef{Name: "gitlab-oauth", Key: "client-secret"}
-)
+var tokenRef = provider.SecretRef{Name: "gitlab-sync", Key: "token"}
 
 // Limit is a rate-limited answer (429) the stub gives.
 type Limit struct {
@@ -235,7 +232,6 @@ func (s *Server) Values() json.RawMessage {
 	raw, _ := json.Marshal(map[string]any{
 		"url":   s.URL,
 		"token": tokenRef,
-		"oauth": map[string]any{"clientID": "gitlab-stub-app", "clientSecret": clientSecretRef},
 	})
 	return raw
 }
@@ -291,6 +287,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(path, "/")
 	switch {
+	case path == "user":
+		if !person {
+			fail(w, http.StatusUnauthorized, "401 Unauthorized")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"username": "user-" + tok})
 	case len(parts) == 3 && (parts[0] == "groups" || parts[0] == "users") && parts[2] == "projects":
 		owner := parts[1]
 		s.mu.Lock()

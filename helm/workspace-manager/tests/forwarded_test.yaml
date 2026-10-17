@@ -8,6 +8,7 @@ templates:
   - templates/deployment.yaml
   - templates/providers-configmap.yaml
   - templates/oauth-secret.yaml
+  - templates/mcpserver.yaml
 release:
   name: workspace-manager
   namespace: agent-platform
@@ -29,10 +30,10 @@ tests:
           content: --storage-class=efs-rwx
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --signin-keys-secret=workspace-manager-keys
+          content: --muster-provider=github
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --signin-current-key=sign-in-store
+          content: --muster-server=workspace-manager
       - contains:
           path: spec.template.spec.containers[0].args
           content: --grant-signing-key=workspace-manager-keys/grant
@@ -87,6 +88,30 @@ tests:
         encryptionKey: {name: workspace-manager-keys, key: sign-in-store}
     asserts:
       - failedTemplate: {}
+
+  - it: ignores the retired sign-in keys and token exchange a meta chart still forwards
+    template: templates/deployment.yaml
+    set:
+      signin:
+        keys: {secretName: workspace-manager-signin-keys, current: key-1}
+      tokenExchange:
+        clientID: kagent
+        clientSecret: {name: workspace-manager-token-exchange, key: client-secret}
+    asserts:
+      - notFailedTemplate: {}
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[*]
+          pattern: "--signin|--token-exchange"
+
+  - it: pins the registration to the GitHub instance's App
+    template: templates/mcpserver.yaml
+    asserts:
+      - equal:
+          path: spec.auth.authorizationServer.issuer
+          value: https://github.com/apps/example-agents
+      - equal:
+          path: spec.auth.forwardIdentity
+          value: true
 
   - it: refuses a grant signing key without its key
     template: templates/deployment.yaml

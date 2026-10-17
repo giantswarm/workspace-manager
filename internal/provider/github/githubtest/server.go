@@ -39,10 +39,7 @@ const AppID = "4242"
 // DefaultPageSize is the stub's page size, small so listings page.
 const DefaultPageSize = 2
 
-var (
-	privateKeyRef   = provider.SecretRef{Name: "github-app", Key: "private-key"}
-	clientSecretRef = provider.SecretRef{Name: "github-oauth", Key: "client-secret"}
-)
+var privateKeyRef = provider.SecretRef{Name: "github-app", Key: "private-key"}
 
 // Clock is the stub's stopped clock.
 type Clock = providertest.Clock
@@ -179,7 +176,6 @@ func (s *Server) Values() json.RawMessage {
 		"url":    s.URL,
 		"apiURL": s.URL + "/api/v3",
 		"app":    map[string]any{"id": AppID, "privateKey": privateKeyRef},
-		"oauth":  map[string]any{"clientID": "Iv1.stub", "clientSecret": clientSecretRef},
 	}
 	raw, _ := json.Marshal(v)
 	return raw
@@ -277,6 +273,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			reads = nil
 		}
 		s.listRepos(w, r, parts[1], s.items(parts[1], reads))
+	case r.Method == http.MethodGet && path == "user":
+		if _, ok := s.person(r); !ok {
+			fail(w, http.StatusUnauthorized, "Bad credentials")
+			return
+		}
+		tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		writeJSON(w, http.StatusOK, map[string]any{"login": "login-" + tok})
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "repos":
 		reads, ok := s.person(r)
 		if !ok {

@@ -9,8 +9,7 @@
   (`internal/provider/kinds/kinds_test.go`).
 - `make test-envtest`: the tests behind the `envtest` build tag, against a
   real kube-apiserver and etcd that setup-envtest fetches (the `envtest` CI
-  job): the sign-in store's refresh, single-flighted across two replicas
-  (`internal/signin/envtest_test.go`), the chart's Workspace CRD, its CEL
+  job): the chart's Workspace CRD, its CEL
   rules and the Workspace store (`internal/workspace/envtest_test.go`), the
   workspace tools against the CRD
   (`internal/provider/kinds/workspaces_envtest_test.go`) and the controller's
@@ -44,6 +43,10 @@ DEX_CLIENT_SECRET=... go run . serve --enable-oauth \
   --dex-issuer-url=https://dex.example.com --dex-client-id=agent-platform \
   --oauth-trusted-audiences=agent-platform
 ```
+
+Pinned to a provider instance's App as muster connects on the platform, each
+MCP call carries the person's App token as the bearer and the Dex ID token in
+`X-Muster-Id-Token`; add `--providers-config=<file> --muster-provider=<instance>`.
 
 Run a sync against a directory standing in for a workspace's volume, with a
 selection file and a credential directory `<provider>/<owner>` per provider

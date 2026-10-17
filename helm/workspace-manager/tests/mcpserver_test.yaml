@@ -1,6 +1,6 @@
 # The muster registration: off by default, one streamable-http MCPServer at
-# the Service, unpinned (no authorization server, no GitHub App), the auth
-# block only with OAuth, the audiences the MCPServer requires are the same
+# the Service, unpinned unless pinned to a provider instance's App (the
+# person's grant in muster), the auth block only with OAuth, the audiences the MCPServer requires are the same
 # ones the Deployment trusts (deployment_test.yaml), and the display name the
 # portal shows as an annotation.
 #
@@ -178,3 +178,81 @@ tests:
     asserts:
       - notExists:
           path: metadata.annotations["ui.giantswarm.io/display-name"]
+
+  - it: pins a provider instance's App, forwarding the identity beside the person's token
+    set:
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+      muster:
+        mcpServer:
+          auth:
+            provider: github
+            authorizationServer:
+              issuer: https://github.com/apps/example-agents
+              clientCredentialsSecretRef:
+                name: workspace-github-oauth-client
+    asserts:
+      - equal:
+          path: spec.auth
+          value:
+            type: oauth
+            authorizationServer:
+              issuer: https://github.com/apps/example-agents
+              expectedIssuer: https://github.com/login/oauth
+              authorizationEndpoint: https://github.com/login/oauth/authorize
+              tokenEndpoint: https://github.com/login/oauth/access_token
+              clientCredentialsSecretRef:
+                name: workspace-github-oauth-client
+                namespace: agent-platform
+              grantScope: subject
+            forwardIdentity: true
+            requiredAudiences:
+              - dex-k8s-authenticator
+
+  - it: refuses a pin to a provider instance it does not configure
+    set:
+      muster:
+        mcpServer:
+          auth:
+            provider: github
+            authorizationServer:
+              issuer: https://github.com/apps/example-agents
+              clientCredentialsSecretRef:
+                name: workspace-github-oauth-client
+    asserts:
+      - failedTemplate:
+          errorMessage: muster.mcpServer.auth.provider "github" names no provider instance of providers
+
+  - it: refuses a pin without the App's issuer or client
+    set:
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+      muster:
+        mcpServer:
+          auth:
+            provider: github
+    asserts:
+      - failedTemplate:
+          errorMessage: muster.mcpServer.auth.authorizationServer.issuer is required with muster.mcpServer.auth.provider
+
+  - it: refuses a pin without OAuth
+    set:
+      oauth:
+        enabled: false
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+      muster:
+        mcpServer:
+          auth:
+            provider: github
+    asserts:
+      - failedTemplate: {}

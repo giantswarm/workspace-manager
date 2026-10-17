@@ -102,7 +102,7 @@ func TestSignedGrantVerifiesAgainstTheJWKS(t *testing.T) {
 		Volume:         grant.Volume{Driver: "nfs.csi.k8s.io", Handle: "nfs-server#share#pvc-1"},
 		Mounts:         []grant.Mount{{SubPath: grant.SessionDirectory}, {SubPath: grant.Mirrors, ReadOnly: true}},
 		Changed:        []string{"acme/api"},
-		Providers:      []grant.Provider{{Hostname: "github.com", Audience: "github", Scheme: "Basic", Username: "x-access-token", Broker: "workspace-manager"}},
+		Providers:      []grant.Provider{{Hostname: "github.com", Provider: "github", Audience: "github", Scheme: "Basic", Username: "x-access-token", Broker: "workspace-manager"}},
 	}
 	token, expiry, err := signer.Sign(context.Background(), "alice-sub", g)
 	require.NoError(t, err)
@@ -138,6 +138,11 @@ func TestSignedGrantVerifiesAgainstTheJWKS(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(payload, &raw))
 	assert.ElementsMatch(t, []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "agent_namespace", "workspace", "volume", "mounts", "changed", "providers"}, keysOf(raw))
+	// A provider entry names its instance as provider, and keeps audience,
+	// username and broker for a kagent that does not read it yet.
+	entry := raw["providers"].([]any)[0].(map[string]any)
+	assert.ElementsMatch(t, []string{"hostname", "scheme", "provider", "audience", "username", "broker"}, keysOf(entry))
+	assert.Equal(t, "github", entry["provider"])
 	assert.Equal(t, "kagent", raw["agent_namespace"], "kagent's admission compares it with the Session's Agent namespace")
 	assert.Equal(t, []any{map[string]any{"sub_path": "sessions/${SESSION_ID}"}, map[string]any{"sub_path": "mirrors", "read_only": true}}, raw["mounts"])
 }
