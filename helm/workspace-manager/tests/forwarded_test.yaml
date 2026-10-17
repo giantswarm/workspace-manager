@@ -89,15 +89,19 @@ tests:
     asserts:
       - failedTemplate: {}
 
-  - it: refuses the sign-in store and token exchange it no longer has
+  - it: ignores the retired sign-in keys and token exchange a meta chart still forwards
     template: templates/deployment.yaml
     set:
       signin:
-        keys: {secretName: workspace-manager-keys, current: sign-in-store}
+        keys: {secretName: workspace-manager-signin-keys, current: key-1}
       tokenExchange:
         clientID: kagent
+        clientSecret: {name: workspace-manager-token-exchange, key: client-secret}
     asserts:
-      - failedTemplate: {}
+      - notFailedTemplate: {}
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[*]
+          pattern: "--signin|--token-exchange"
 
   - it: pins the registration to the GitHub instance's App
     template: templates/mcpserver.yaml

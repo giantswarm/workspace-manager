@@ -39,6 +39,10 @@ type Values struct {
 	APIURL string `json:"apiURL,omitempty"`
 	// App is the GitHub App the sync authenticates as.
 	App AppValues `json:"app"`
+	// OAuth is the retired OAuth client of the person's sign-in, ignored: the
+	// person's token is muster's grant of the App. Accepted so a deployment
+	// that still configures it starts.
+	OAuth json.RawMessage `json:"oauth,omitempty"`
 }
 
 // AppValues identify the GitHub App.

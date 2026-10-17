@@ -192,6 +192,14 @@ organizations: {}  # @schema additionalProperties: {type: object, additionalProp
 # an OAuth client here.
 providers: []  # @schema item: object ; itemProperties: {name: {type: string}, kind: {type: string, enum: [github, gitlab]}, values: {type: object, additionalProperties: true}}
 
+# -- Retired with the manager's own sign-in, which moved to muster: accepted and
+# ignored, so a parent chart that still forwards its sign-in keys installs.
+# Nothing renders from it.
+signin: {}  # @schema additionalProperties: true
+# -- Retired with the token exchange `POST /token`: the person's provider token
+# is muster's grant. Accepted and ignored; nothing renders from it.
+tokenExchange: {}  # @schema additionalProperties: true
+
 grant:
   # -- The key the workspace grant a Session carries is signed with (the
   # grant `authorize_workspace` returns): `{name, key}` of a Secret in the

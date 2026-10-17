@@ -40,7 +40,7 @@ const SubgroupSeparator = "~"
 // Values are an instance's settings.
 type Values struct {
 	// URL is the web URL: https://gitlab.com (the default) or a self-managed
-	// GitLab's. It is the git host and the OAuth application's issuer.
+	// GitLab's. It is the git host.
 	URL string `json:"url,omitempty"`
 	// APIURL is the REST API's base URL. Empty derives it from URL:
 	// `<url>/api/v4`.
@@ -48,6 +48,10 @@ type Values struct {
 	// Token is the sync credential: a group access token with `read_api` and
 	// `read_repository`.
 	Token provider.SecretRef `json:"token"`
+	// OAuth is the retired OAuth application of the person's sign-in,
+	// ignored: the person's token is muster's grant. Accepted so a deployment
+	// that still configures it starts.
+	OAuth json.RawMessage `json:"oauth,omitempty"`
 }
 
 // Options are an instance's dependencies beyond its Values.

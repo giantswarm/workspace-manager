@@ -347,3 +347,10 @@ func TestReadableEndsWithTheContext(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, time.Since(start), 5*time.Second)
 }
+
+// TestIgnoresRetiredOAuth: an instance that still configures the retired
+// OAuth client of the person's sign-in starts; muster holds the grant.
+func TestIgnoresRetiredOAuth(t *testing.T) {
+	_, err := github.Factory(github.Options{})([]byte(`{"app": {"id": "1", "privateKey": {"name": "gh", "key": "private-key"}}, "oauth": {"clientID": "Iv1.abc", "clientSecret": {"name": "gh", "key": "client-secret"}}}`))
+	require.NoError(t, err)
+}

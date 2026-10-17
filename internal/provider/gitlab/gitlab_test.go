@@ -492,3 +492,10 @@ func TestRefusesInvalidValues(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown field "app"`)
 }
+
+// TestIgnoresRetiredOAuth: an instance that still configures the retired
+// OAuth application of the person's sign-in starts; muster holds the grant.
+func TestIgnoresRetiredOAuth(t *testing.T) {
+	_, err := gitlab.Factory(gitlab.Options{})([]byte(`{"token": {"name": "gl", "key": "token"}, "oauth": {"clientID": "abc", "clientSecret": {"name": "gl", "key": "client-secret"}}}`))
+	require.NoError(t, err)
+}

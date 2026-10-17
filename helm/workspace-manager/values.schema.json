@@ -720,6 +720,11 @@
                 }
             }
         },
+        "signin": {
+            "type": "object",
+            "description": "Retired with the manager's own sign-in, which moved to muster: accepted and ignored, so a parent chart that still forwards its sign-in keys installs. Nothing renders from it.",
+            "additionalProperties": true
+        },
         "storage": {
             "type": "object",
             "additionalProperties": false,
@@ -841,6 +846,11 @@
                     "description": "The refresh threshold, a Go duration: `authorize_workspace` requests a sync of a Workspace whose last sync is older, without the Session waiting for it. The requested sync lists the provider anew, never from the minute-long listing cache, so the value has no floor. Passed to `serve` as its `sync-refresh-after` flag."
                 }
             }
+        },
+        "tokenExchange": {
+            "type": "object",
+            "description": "Retired with the token exchange `POST /token`: the person's provider token is muster's grant. Accepted and ignored; nothing renders from it.",
+            "additionalProperties": true
         },
         "tolerations": {
             "type": "array",

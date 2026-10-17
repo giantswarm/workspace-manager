@@ -129,14 +129,6 @@ providers:
     kind: github
     values: {token: x}
 `, `provider "github" (kind github): values: json: unknown field "token"`},
-		{"the OAuth client moved to muster", `
-providers:
-  - name: github
-    kind: github
-    values:
-      app: {id: "1", privateKey: {name: github-app, key: private-key}}
-      oauth: {clientID: c, clientSecret: {name: s, key: k}}
-`, `provider "github" (kind github): values: json: unknown field "oauth"`},
 		{"unknown instance field", `
 providers:
   - name: github
