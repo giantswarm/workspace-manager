@@ -9,13 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- A provider connect completes for a person who signed in to the portal through one Dex connector and to the manager's `/signin` through another: the callback's sign-in asks Dex for the connector of the state's subject (`connector_id`, decoded from the Dex `sub`), and a browser session from another connector is dropped and signed in again through that one instead of ending on "This sign-in link was made for another person". A link whose state names someone else is still refused after that sign-in, and a Dex that does not keep to the requested connector ends on a sign-in error instead of a loop. ([#104](https://github.com/giantswarm/workspace-manager/issues/104))
-- `serve` refuses to start on a Workspace CRD whose schema drops `status.activeSync` (an older or hand-pruned CRD), naming the CRD and the field, instead of starting a sync Job without end because the controller can never record the running one; it refuses a missing CRD or one that does not serve `v1alpha1` likewise. The chart's ClusterRole lets the manager `get` the Workspace CRD, and nothing else of the CRDs. ([#97](https://github.com/giantswarm/workspace-manager/issues/97))
-- Right after a roll the manager no longer answers before its provider path does: `/readyz` holds a starting replica back until every provider instance answered one request (any status, on its API host or git host), at most `--ready-provider-wait` (2m by default; past it the replica is Ready anyway, so an outage is the tools' answer, never an empty Service), and a stopping replica keeps serving for `--shutdown-drain` (10s by default) with `/readyz` refusing before it closes its listener, so the Service no longer sends a call to a closed port. `authorize_workspace` called the moment a rollout reports done meets neither a connection refused nor a provider timeout. ([#93](https://github.com/giantswarm/workspace-manager/issues/93))
-- A cleanup-only sync cycle records what its Job removed: `Succeeded`, with `removed <n> session directories, dropped <n> mirrors` in `lastSync.message` and the `Synced` condition, when it deleted a session directory or a dropped mirror, and `NoChange` only when it removed nothing. The sync Job writes its removals beside the manifest in its result ConfigMap (`removed.json`). ([#43](https://github.com/giantswarm/workspace-manager/issues/43))
-- A requested sync cycle (`sync_workspace`, a Session's start past `sync.refreshAfter`) lists every owner anew instead of answering from the minute-long listing cache, so a refresh threshold below a minute no longer misses the push the Session's grant named. ([#87](https://github.com/giantswarm/workspace-manager/issues/87))
+## [0.10.0-rc.5] - 2026-10-17
 
 ### Changed
 
@@ -24,78 +18,258 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The provider kinds take no OAuth client: `oauth` in the `github` and `gitlab` values is ignored (still accepted, so a configuration that sets it starts), and the provider contract's sign-in becomes `Person`, whose account a person's token is.
 - The chart's Role in the release namespace is `<fullname>-manager` (was `<fullname>-signin`): `get` on Secrets with providers, and `deletecollection` on Secrets and Leases, which the start-up deletion of the stored sign-ins uses.
 
-- The workspace grant names the namespace whose Agents may start a Session with it, the claim `agent_namespace`, from `--grant-agent-namespace` (the chart's `grant.agentNamespace`, `kagent`); the manager refuses to start with a grant signing key and no such namespace. kagent's Session admission refuses a grant on an Agent of another namespace. ([#108](https://github.com/giantswarm/workspace-manager/issues/108))
-- A session directory's cleanup window defaults to 14 days after its Session's last turn instead of 30: the chart's `sessions.cleanupAfter` is `336h` and `serve`'s `--sessions-cleanup-after` defaults to 336h, kagent's Session idle TTL as the agent-platform chart sets it (kagent deletes an idle Session, and its directory with it, by then, so a longer window never applied). The agent-platform chart already forwards its TTL as `sessions.cleanupAfter`; nothing else changes. ([#106](https://github.com/giantswarm/workspace-manager/issues/106))
-- `serve` refuses to start without a sync Job template (`--sync-job-template`, which the chart renders) or without an image for its `sync` container (`--sync-image` or the template's), naming the flag; it no longer starts a controller whose every sync Job the API server refuses, and no sync Job, input or credentials Secret is made without an image. `--sync-service-account`, the account of the template-less Job, is gone. ([#38](https://github.com/giantswarm/workspace-manager/issues/38))
-
 ### Removed
 
 - The manager's own store of a person's provider sign-ins and everything around it: the sealed sign-in Secrets, their keys (`--signin-keys-secret`, `--signin-current-key`) and refresh Leases; the MCP tools `connect_provider` and `disconnect_provider`; the browser pages `/connect/<instance>`, `/callback/<instance>` and `/signin`; and the token exchange `POST /token` (`--token-exchange-client-id`, `--token-exchange-client-secret`). The chart still accepts `signin` and `tokenExchange` and ignores them, so an agent-platform chart that forwards them installs this release. The manager stores no token and serves none. At every start it deletes the sign-in Secrets and Leases an earlier version kept in its namespace, by their labels, without reading them; people grant the App once more, in muster.
 
-- The workspace sync schedule: `spec.sync` (`schedule`, `weekdays`, `hour`) leaves the CRD, `create_workspace` and `update_workspace` and the workspace view, `nextSync` leaves the status and the view, and no cycle starts with the trigger `schedule`. The mirrors are refreshed at Session start instead (below). A stored Workspace that carries `spec.sync` loads and reconciles with the field dropped, and a tool call still passing `sync` is served with it ignored. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
+## [0.10.0-rc.1] - 2026-10-15
 
 ### Added
 
 - `muster.mcpServer.displayName` (default `Workspace Manager`) is rendered as the MCPServer's `ui.giantswarm.io/display-name` annotation, the name the Dev Portal shows for the server ([backstage#3012](https://github.com/giantswarm/backstage/pull/3012)). Empty renders no annotation. ([#110](https://github.com/giantswarm/workspace-manager/pull/110))
-- `authorize_workspace` requests a sync of a granted workspace whose last sync is older than the refresh threshold (`--sync-refresh-after`, the chart's `sync.refreshAfter`, 1h), without the Session waiting for it, and says so in `syncRequested`. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
-- A live workspace's session directory goes at its own cleanup date in a cleanup-only Job (trigger `cleanup`) that fetches nothing, no longer at the next scheduled cycle; a deleted workspace whose directories have no earlier date is looked after a day after its last cycle. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
 
-- `list_workspaces` names the caller's member Organizations in `organizations`, from the manager's Organizations map, with or without a workspace and whatever the `organization` filter: one call per installation tells a client where the person may read and create workspaces, instead of a call per readable Organization, and a member who may only `get` their Organization sees it before its first workspace. ([#83](https://github.com/giantswarm/workspace-manager/issues/83))
-- `list_workspaces` (and every workspace view) carries `storedBytes`, what the volume stores as measured at the last sync, and `grewFrom`, the provisioned share's size before the last sync grew it, from the new status fields `storedSize` and `grewFrom`; a list shows each workspace's stored size and the grown-share marker without a `get_workspace` per row. A workspace synced before records its stored size from its last manifest at the next reconcile. ([#80](https://github.com/giantswarm/workspace-manager/issues/80))
+## [0.9.0] - 2026-10-15
+
+### Changed
+
+- The workspace grant names the namespace whose Agents may start a Session with it, the claim `agent_namespace`, from `--grant-agent-namespace` (the chart's `grant.agentNamespace`, `kagent`); the manager refuses to start with a grant signing key and no such namespace. kagent's Session admission refuses a grant on an Agent of another namespace. ([#108](https://github.com/giantswarm/workspace-manager/issues/108))
+
+## [0.9.0-rc.1] - 2026-10-15
+
+### Changed
+
+- A session directory's cleanup window defaults to 14 days after its Session's last turn instead of 30: the chart's `sessions.cleanupAfter` is `336h` and `serve`'s `--sessions-cleanup-after` defaults to 336h, kagent's Session idle TTL as the agent-platform chart sets it (kagent deletes an idle Session, and its directory with it, by then, so a longer window never applied). The agent-platform chart already forwards its TTL as `sessions.cleanupAfter`; nothing else changes. ([#106](https://github.com/giantswarm/workspace-manager/issues/106))
+
+## [0.8.3-rc.2] - 2026-10-15
+
+### Fixed
+
+- A provider connect completes for a person who signed in to the portal through one Dex connector and to the manager's `/signin` through another: the callback's sign-in asks Dex for the connector of the state's subject (`connector_id`, decoded from the Dex `sub`), and a browser session from another connector is dropped and signed in again through that one instead of ending on "This sign-in link was made for another person". A link whose state names someone else is still refused after that sign-in, and a Dex that does not keep to the requested connector ends on a sign-in error instead of a loop. ([#104](https://github.com/giantswarm/workspace-manager/issues/104))
+
+## [0.8.2] - 2026-10-15
+
+### Fixed
+
+- `serve` refuses to start on a Workspace CRD whose schema drops `status.activeSync` (an older or hand-pruned CRD), naming the CRD and the field, instead of starting a sync Job without end because the controller can never record the running one; it refuses a missing CRD or one that does not serve `v1alpha1` likewise. The chart's ClusterRole lets the manager `get` the Workspace CRD, and nothing else of the CRDs. ([#97](https://github.com/giantswarm/workspace-manager/issues/97))
+
+## [0.8.2-rc.2] - 2026-10-15
+
+### Fixed
+
+- Right after a roll the manager no longer answers before its provider path does: `/readyz` holds a starting replica back until every provider instance answered one request (any status, on its API host or git host), at most `--ready-provider-wait` (2m by default; past it the replica is Ready anyway, so an outage is the tools' answer, never an empty Service), and a stopping replica keeps serving for `--shutdown-drain` (10s by default) with `/readyz` refusing before it closes its listener, so the Service no longer sends a call to a closed port. `authorize_workspace` called the moment a rollout reports done meets neither a connection refused nor a provider timeout. ([#93](https://github.com/giantswarm/workspace-manager/issues/93))
+
+## [0.8.1] - 2026-10-15
+
+### Fixed
+
+- A cleanup-only sync cycle records what its Job removed: `Succeeded`, with `removed <n> session directories, dropped <n> mirrors` in `lastSync.message` and the `Synced` condition, when it deleted a session directory or a dropped mirror, and `NoChange` only when it removed nothing. The sync Job writes its removals beside the manifest in its result ConfigMap (`removed.json`). ([#43](https://github.com/giantswarm/workspace-manager/issues/43))
+- A requested sync cycle (`sync_workspace`, a Session's start past `sync.refreshAfter`) lists every owner anew instead of answering from the minute-long listing cache, so a refresh threshold below a minute no longer misses the push the Session's grant named. ([#87](https://github.com/giantswarm/workspace-manager/issues/87))
+
+## [0.8.1-rc.3] - 2026-10-15
 
 ### Fixed
 
 - One sync Job per Workspace at a time: no cycle starts while a sync Job of the Workspace has not ended, read live from the Jobs by their workspace label, whether or not the status names it. A burst of triggers (two spec changes 43 ms apart) starts one Job, and its end one more cycle that serves them all. Two Jobs no longer run on the same volume when the status does not name the first: its write was lost after the Job started, or the Workspace CRD predates the manager and prunes `status.activeSync`. The manager warns when it finds such a Job. ([#39](https://github.com/giantswarm/workspace-manager/issues/39))
+
+## [0.8.1-rc.1] - 2026-10-14
+
+### Changed
+
+- `serve` refuses to start without a sync Job template (`--sync-job-template`, which the chart renders) or without an image for its `sync` container (`--sync-image` or the template's), naming the flag; it no longer starts a controller whose every sync Job the API server refuses, and no sync Job, input or credentials Secret is made without an image. `--sync-service-account`, the account of the template-less Job, is gone. ([#38](https://github.com/giantswarm/workspace-manager/issues/38))
+
+## [0.8.0] - 2026-10-14
+
+### Added
+
+- `authorize_workspace` requests a sync of a granted workspace whose last sync is older than the refresh threshold (`--sync-refresh-after`, the chart's `sync.refreshAfter`, 1h), without the Session waiting for it, and says so in `syncRequested`. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
+- A live workspace's session directory goes at its own cleanup date in a cleanup-only Job (trigger `cleanup`) that fetches nothing, no longer at the next scheduled cycle; a deleted workspace whose directories have no earlier date is looked after a day after its last cycle. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
+
+### Removed
+
+- The workspace sync schedule: `spec.sync` (`schedule`, `weekdays`, `hour`) leaves the CRD, `create_workspace` and `update_workspace` and the workspace view, `nextSync` leaves the status and the view, and no cycle starts with the trigger `schedule`. The mirrors are refreshed at Session start instead (below). A stored Workspace that carries `spec.sync` loads and reconciles with the field dropped, and a tool call still passing `sync` is served with it ignored. ([#82](https://github.com/giantswarm/workspace-manager/issues/82))
+
+## [0.8.0-rc.2] - 2026-10-14
+
+### Added
+
+- `list_workspaces` names the caller's member Organizations in `organizations`, from the manager's Organizations map, with or without a workspace and whatever the `organization` filter: one call per installation tells a client where the person may read and create workspaces, instead of a call per readable Organization, and a member who may only `get` their Organization sees it before its first workspace. ([#83](https://github.com/giantswarm/workspace-manager/issues/83))
+
+## [0.8.0-rc.1] - 2026-10-14
+
+### Added
+
+- `list_workspaces` (and every workspace view) carries `storedBytes`, what the volume stores as measured at the last sync, and `grewFrom`, the provisioned share's size before the last sync grew it, from the new status fields `storedSize` and `grewFrom`; a list shows each workspace's stored size and the grown-share marker without a `get_workspace` per row. A workspace synced before records its stored size from its last manifest at the next reconcile. ([#80](https://github.com/giantswarm/workspace-manager/issues/80))
+
+## [0.7.2-rc.4] - 2026-10-14
+
+### Fixed
+
 - `authorize_workspace` on a GitLab workspace answers in what the workspace selects, not in what the group holds: up to 100 selected projects of an owner are each asked for on their own as the person (`GET /projects/<group>%2F<path>`, eight at a time; 404 or 403, an empty project or one found under another path is not readable), so one project of a group with thousands costs one request and its head instead of paging through every project the person sees (20 sequential pages for 2,000, past muster's 30 s tool timeout from afar). More selected projects take the listing, whose pages after the first are now fetched eight at a time by the `Link` header's last page, for the sync's listing too. ([#65](https://github.com/giantswarm/workspace-manager/issues/65))
+
+## [0.7.2-rc.3] - 2026-10-13
+
+### Fixed
 
 - A deleted workspace's session directory whose Session kagent's complete listing does not name (`unknown`) goes in its first deletion cycle instead of after the 30-day window, so the claim, the share and the finalizer go with it; a listed Session's directory keeps its window, and nothing is deleted while kagent cannot be listed. ([#70](https://github.com/giantswarm/workspace-manager/issues/70))
 
+## [0.7.2-rc.1] - 2026-10-13
+
+### Fixed
+
 - A Session's directory owned by another uid than the sync's — the runtime creates it as the Session's user, mode `0770`, and Azure Files over NFS or an NFS server keeps that owner — is measured, cleaned up and deleted with its workspace: the sync records each such owner in the manifest (`owners`), and the next cycle's Job runs a container as each owner (`owner-<uid>-<gid>`, `sync --owner-report`, no root, no capability, no credential) before the sync, which takes its report. `sessions/` becomes mode `2775`, so the pod's fsGroup lets an owner rename its directory aside. A directory neither can measure or delete no longer fails the cycle with `permission denied`: it stays with the size measured before and the reason in `status.sessions[].error`, `get_workspace` and `SessionsCleanedUp` (`DirectoriesLeft`), and a directory the sync cannot read keeps every dropped mirror it might borrow from. ([#75](https://github.com/giantswarm/workspace-manager/issues/75))
 
+## [0.7.1-rc.1] - 2026-10-13
+
+### Fixed
+
 - A deleting workspace's deletion cycle runs now for a `sync_workspace` request or a second `delete_workspace`, instead of at its next scheduled cycle: session directories cleared outside a cycle let its claim, volume and Workspace go at once. `sync_workspace` no longer refuses a workspace being deleted and says `deleting`; `delete_workspace` on one returns `alreadyDeleting`. A directory still there is kept as by any cycle (its window, its cleanup date). ([#71](https://github.com/giantswarm/workspace-manager/issues/71))
-- `authorize_workspace` answers in what the workspace selects, not in what the owner holds: on GitHub an owner's up to 100 selected repositories are each asked for on their own as the person (`GET /repos/<owner>/<name>`, eight at a time; 404 or 403 is still unreadable, by name), so one repository of an organization with thousands costs one request instead of paging through every repository (about 19 sequential pages and 40 s for 1,800, past muster's 30 s tool timeout). More selected repositories take the owner's listing, its pages after the first fetched eight at a time by the `Link` header's last page, as the installation's listing now is too. The check is bounded by `--access-check-timeout` (`WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT`, 20s): one past it is `refused` with a reason saying which provider and owner did not answer in time, instead of muster's timeout. The chart renders the MCPServer's `spec.timeout` from `muster.mcpServer.timeout` (seconds, 1 to 300), unset by default. ([#61](https://github.com/giantswarm/workspace-manager/issues/61))
-- The `gitlab` provider's last change is the committed date of the default branch's head (`/projects/:id/repository/commits/<default_branch>`), no longer `last_activity_at`, which an issue or a merge request comment moves: a comment no longer marks a project changed for the sync or for `authorize_workspace`, a push does, and `lastPush` in `list_repositories` and `preview_workspace` is the head's date. A project's head is read once and again only after its last activity moved; one that cannot be read keeps its last known date (none before the first read), is logged once and is read again by the next listing, which it never fails. ([#57](https://github.com/giantswarm/workspace-manager/issues/57))
-- The MCP endpoint refuses a request body larger than 1 MiB before mcp-go reads it whole (CVE-2026-108859, no fixed mcp-go release yet; the scan ignores it until 2026-11-12). ([#52](https://github.com/giantswarm/workspace-manager/issues/52))
+
+## [0.7.0] - 2026-10-13
 
 ### Added
 
 - The `gitlab` provider kind (gitlab.com or a self-managed GitLab), configured beside `github`: `url` (default `https://gitlab.com`), `apiURL` (default `<url>/api/v4`), `token` (a group access token with `read_api` and `read_repository`, by Secret reference) and `oauth.clientID`, `oauth.clientSecret`. The listing is a top-level group's projects with its sub-groups' (a sub-group project is named by its path below the group with `~` for `/`, `team~api`, and mirrored at `mirrors/<group>/team~api.git`) or a user namespace's, paged, with topics, archived, fork, `last_activity_at` as the last change and the repository size from the project statistics; GitLab's listing carries no language, so each project's primary language (the largest share of `/projects/:id/languages`) is read once and again only after the project's last activity moved. Selection, the listing cache and `Readable` (one listing as the person, a group the person cannot see reads as nothing) are as for GitHub. The sync fetches as `oauth2:<token>`. The person's sign-in is the OAuth application's authorization code with PKCE, scopes `api read_user read_repository write_repository`, revoked by RFC 7009 at `/oauth/revoke`. The run-time hosts are the git host with Basic `oauth2` and the API with Bearer: a separate API host, or on a GitLab serving its API under the git host the API's directory (`/api/`, `<path>/api/` under a relative URL root) as a path prefix of the git host; an `apiURL` on the git host that is not below a directory of its own is refused. The chart's schema accepts `kind: gitlab`.
-- The sync cycle: the controller, leader-elected among the replicas through the Lease `workspace-manager-controller` in the workspaces' namespace (`--leader-election`, on; `--leader-election-identity`, the pod's name), runs each Workspace's cycle for a `sync_workspace` request, a changed spec or first sync, a volume claimed anew, the retry of a failed cycle after `--sync-cycle`, or the schedule come due (`workspace.NextSync`: nightly and weekly at 03:00 UTC, weekly on Sunday, custom on its weekdays at its hour). A cycle lists each owner once, and a selection equal to the last manifest with nothing pushed since is `NoChange` and costs no Job and no origin request; otherwise the controller writes the selection and the credentials (server-side applied, emptied after the Job; it never reads a Secret of the namespace) and starts the sync Job from the chart's template, owned by the Workspace. The Job's end wakes the controller, which records the outcome from the manifest: a Job gone before its end still counts by its manifest, a failed Job's error is read from beside it. The status carries `lastSync` (`trigger`, `job`), `activeSync`, `nextSync` (the controller's own timer) and the `Synced` condition (`Synced`, `NoChange`, `Syncing`, `ListingFailed`, `SyncFailed`, `SizeCeiling`, `VolumeMissing`).
-- `sync_workspace(workspace)`: a member asks for a cycle now, recorded as the annotations `workspace-manager.giantswarm.io/sync-requested` and `-by`, which the controller serves and removes; a request during a running Job is served after it. The views show the request (`syncRequest`), the running Job (`activeSync`) and `nextSync` from the status, the same value the controller's timer is set for.
-- The chart renders the sync Job template (`<fullname>-sync-job`, mounted and passed as `--sync-job-template`: this image as the Job's ServiceAccount `<fullname>-sync`, the pod and container security contexts, `sync.job.resources`, `activeDeadlineSeconds` 7200, `ttlSecondsAfterFinished` 86400, `parallel` 4, `podLabels`, `podAnnotations`), with the pod labelled `app.kubernetes.io/name: <name>-sync` apart from the Deployment's selector; a change of `sync.job` rolls the manager. The manager's Role gains Jobs (`get, list, watch, create`), ConfigMaps (`create, update`), Secrets (`create, patch`, never `get`), claims (`patch`) and Leases (`get, create, update`); its ClusterRole reads StorageClasses. `POD_NAME` names the replica in the election.
-- The volume's sizing rule, where the StorageClass provisions a size and allows expansion (Azure Files, an NFS server on block storage; an elastic class such as EFS or an NFS export gets the nominal 1Gi claim): the need is the measured size of the mirrored repositories, `--sizing-factor` (the chart's `storage.sizing.factor`, 1.5) times the provider's reported size for each repository not yet mirrored, and the session directories; the headroom is the larger of `--sizing-headroom` (`storage.sizing.headroom`, 4Gi), `--sizing-headroom-share` (`storage.sizing.headroomShare`, 0.5) of the need and the Workspace's `spec.sizing.headroom`; the size is the need plus the headroom, at least `spec.sizing.minimum`, rounded up to the GiB, never past `--sizing-max-size` (`storage.sizing.maxSize`, none), which fails the cycle with reason `SizeCeiling`. The claim is grown before a Job that adds repositories and after one that measured more, never shrunk. `preview_workspace` estimates a new volume with the same rule.
-- The workspace tools: `list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace` and `delete_workspace`, each passing the Organization check on the caller's forwarded identity before the manager's ServiceAccount reads or writes the Workspace; a non-member's refusal is `permission denied` and an invalid spec its validation message, with nothing written. The views carry the last and the next sync (nightly and weekly at 03:00 UTC, weekly on Sunday), the volume's CSI driver and handle from its bound PersistentVolume, and on `get_workspace` the last sync's mirrors with their measured sizes, what the volume stores and the Session directories with their sizes and cleanup dates; `delete_workspace` returns the Sessions still having a directory on the volume.
-- `list_repositories`, one owner's repositories for a workspace editor's picker from the provider's cached listing with its sync credential: searched by name, filtered by language, topics, archived and forks, paged, with the owner's languages and topics; and `preview_workspace`, what an existing workspace or a draft selects now, across every provider of its sources, with why each repository is in, what the exclusions and the archived and fork rules left out, and the estimated volume size. Neither writes anything or says anything about the caller's own access.
-- `authorize_workspace(workspace)`, the access check at a Session's start: with the person's own sign-in to each provider of the workspace, one check per owner against the last sync's manifest. `granted` returns a JWT grant signed by the manager (`--grant-ttl`, default 5m) in kagent's JWT admission's claims: the person (`sub`), the workspace, its CSI volume (driver and handle, read from the claim's PersistentVolume), the mounts `sessions/${SESSION_ID}` read-write and `mirrors` read-only, the repositories pushed to since the sync (`changed`) and each provider host with its audience, scheme and token broker (`--grant-broker`); `aud` is `--grant-audience` (`kagent`); no token. `refused` names the repositories the person cannot read, or says the workspace has not synced, its volume is not bound or it is being deleted; `connect_required` lists every provider the person has not connected with its connect link. The provider contract gains `Readable` (on GitHub one listing of the owner's repositories with the person's user-to-server token, a user account's private repository asked for on its own), passed by the GitHub and the fake kind. The chart takes `grant.ttl`, `grant.audience` and `grant.broker`, lets the ServiceAccount read ConfigMaps in the workspaces' namespace and, with a signing key, PersistentVolumes.
 - A provider's run-time hosts may scope an API entry to a path prefix of a git host (`provider.Host.PathPrefix`, a path starting and ending with `/`), and the grant carries it as `pathPrefix` on the provider entry, for the egress to set the scheme per request path. The contract suite checks that a host and path prefix are listed once, that git hosts are whole hosts and that a path prefix narrows a git host. ([#51](https://github.com/giantswarm/workspace-manager/issues/51))
-- A GitHub Enterprise Server's host, which serves git and the API, is one run-time host with the git Basic credential: kagent's egress refuses two credentials for one host.
-- `GET /.well-known/jwks.json` publishes the grant's verification keys: the signing key's and every other PEM private key in its Secret, re-read every 30 seconds, so a key rotates with both published.
-- The session directories' cleanup, run by the sync Job: the controller lists kagent's Sessions (`SessionService/ListSessions` over every creator, `--kagent-address`, the chart's `kagent.address`, with a projected token for `kagent.tokenAudience` and egress to `kagent.namespace`/`kagent.port`) and hands the Job those on the workspace's volume; a directory goes `--sessions-cleanup-after` (`sessions.cleanupAfter`, 720h) after its Session's last turn, at once when kagent no longer lists a Session it listed, and after the window from when a sync first found it for a Session kagent does not know. Without kagent, or while its listing fails, nothing is deleted (condition `SessionsCleanedUp`). A cycle with nothing to fetch still runs the Job while session directories or a dropped mirror are on the volume (`activeSync.cleanupOnly`).
-- A dropped mirror is deleted once no session directory borrows from it; the manifest names the borrowers of one that stays (`borrowedBy`).
-- The status lists each session directory with its Session's name, creator and last turn, its size and its cleanup date, and `get_workspace` shows them.
-- A deleted Workspace keeps its volume until its last session directory is gone: the finalizer `workspace-manager.giantswarm.io/volume`, cleanup-only cycles (trigger `deletion`), then the claim deleted and the finalizer removed. The manager's Role may delete claims.
-- A provider refusing the person's own sign-in (revoked or expired there) is `connect_required` with the connect link, not an error: the provider contract's `Readable` wraps `provider.ErrCredentialRefused` (GitHub's 401), and `authorize_workspace` asks for the connect again.
 
-### Changed
+## [0.6.1] - 2026-10-13
 
-- The chart lets the manager's ServiceAccount read PersistentVolumes whether or not it signs grants: the workspace tools show each volume's CSI driver and handle.
-- `grant.signingKey` (`--grant-signing-key`) names a PEM private key (EC P-256 or P-384, or RSA of at least 2048 bits) instead of 32 random bytes: the grant is verified by kagent against the published public keys.
+### Fixed
 
-- The chart takes every key the agent-platform meta chart forwards, each declared in `values.yaml` so the strict schema carries it, each passed to `serve` as a flag the start validates: `grant.signingKey` (`{name, key}` of a Secret holding at least 32 bytes, read at start with providers and OAuth: `--grant-signing-key`), `sync.cycle` (how often the controller reconciles every Workspace and how long after a failed cycle it tries again, `--sync-cycle`, default 10m), `sessions.cleanupAfter` (a Session directory's cleanup window, `--sessions-cleanup-after`, default 720h) and `storage.sizing.factor`, `.headroom`, `.headroomShare` and `.maxSize` (the sizing rule above). The sign-in store's key stays `signin.keys`. A chart test renders the meta chart's forwarded block against the schema.
-- The workspace's volume: the controller (part of `serve`) watches the Workspaces and claims each one's read-write-many volume (`workspace-<name>`, owned by the Workspace) from the StorageClass `--storage-class` names, the chart's `storage.storageClassName`, requesting the sizing rule's size where the class provisions one, else a nominal 1Gi; the status names the claim and the `VolumeClaimed` condition is `True`. Without a class nothing is claimed, never the cluster's default class: the condition is `False` with reason `StorageClassMissing`, naming the flag and the chart value. The chart grants the ServiceAccount `get`, `create` and `patch` on PersistentVolumeClaims in the workspaces' namespace, never `delete`: a claim goes with its Workspace.
-- The controller reads a queued Workspace live, never from the informer's cache: a key queued again while its cycle writes the status cannot start the cycle twice.
-- Token exchange: `POST /token` (RFC 8693) answers the installation's kagent client (`client_secret_basic` or `client_secret_post`) with the person's access token for a provider instance (`audience`), the caller's Dex token (`subject_token`) validated like the MCP bearer; refreshed ahead of expiry, never a refresh token; a missing or revoked sign-in gets `invalid_target` with the instance's `/connect/<instance>` as `error_uri`. Every exchange is logged and counted without the token. The chart takes `tokenExchange.clientID` and `tokenExchange.clientSecret`.
-- Provider sign-ins: the MCP tools `list_providers`, `connect_provider` and `disconnect_provider`; OAuth 2.0 authorization code with PKCE per provider instance, its `state` sealed with the sign-in keys and binding the person, the instance and the verifier for ten minutes; the browser pages `/connect/<instance>`, `/callback/<instance>` (which stores the encrypted sign-in only for the person its state was made for, proven by a Dex sign-in at `/signin`) and the disconnect that revokes the grant at the provider (a GitHub App's grant, RFC 7009 elsewhere) and forgets it. The chart takes `signin.keys.secretName` and `signin.keys.current` and grants the ServiceAccount its sign-in Secrets and refresh Leases in the release namespace; Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
-- `sync`: the Job that keeps a workspace's repositories on its volume as bare mirrors under `mirrors/<owner>/<name>.git`: it clones added repositories, fetches only those pushed to since the manifest, marks the mirrors of repositories that left the selection and writes the manifest (head commits, push times, measured sizes) to the volume and, with `--result-configmap`, as the Job's result. While a session directory's clone borrows a mirror's objects, the sync's repack keeps every object (`gc.pruneExpire=never`, `--keep-unreachable`); the credential reaches git through the binary's own credential helper from a projected file, never through a URL, the volume or a log.
-- The image carries git for the sync Job; the chart renders the Job's ServiceAccount and Role in the workspaces' namespace, allowed to write its result ConfigMap.
-- The chart registers the server with muster through its own `MCPServer` (`muster.mcpServer.enabled`; its `name` sets the tool prefix `x_workspace-manager_<tool>`): `streamable-http` at the Service, the chart's labels plus `muster.giantswarm.io/type: workspace-manager` and `agent-platform.giantswarm.io/tool-group: agent-platform`, and with `oauth.enabled` the unpinned `auth` block (`forwardToken`, `requiredAudiences`) -- no authorization server and no GitHub App, since a provider sign-in is the workspace-manager's own business. The required audiences count as trusted bearer audiences next to `oauth.trustedAudiences`.
+- `authorize_workspace` answers in what the workspace selects, not in what the owner holds: on GitHub an owner's up to 100 selected repositories are each asked for on their own as the person (`GET /repos/<owner>/<name>`, eight at a time; 404 or 403 is still unreadable, by name), so one repository of an organization with thousands costs one request instead of paging through every repository (about 19 sequential pages and 40 s for 1,800, past muster's 30 s tool timeout). More selected repositories take the owner's listing, its pages after the first fetched eight at a time by the `Link` header's last page, as the installation's listing now is too. The check is bounded by `--access-check-timeout` (`WORKSPACE_MANAGER_ACCESS_CHECK_TIMEOUT`, 20s): one past it is `refused` with a reason saying which provider and owner did not answer in time, instead of muster's timeout. The chart renders the MCPServer's `spec.timeout` from `muster.mcpServer.timeout` (seconds, 1 to 300), unset by default. ([#61](https://github.com/giantswarm/workspace-manager/issues/61))
+
+## [0.5.1] - 2026-10-12
+
+### Fixed
+
+- The `gitlab` provider's last change is the committed date of the default branch's head (`/projects/:id/repository/commits/<default_branch>`), no longer `last_activity_at`, which an issue or a merge request comment moves: a comment no longer marks a project changed for the sync or for `authorize_workspace`, a push does, and `lastPush` in `list_repositories` and `preview_workspace` is the head's date. A project's head is read once and again only after its last activity moved; one that cannot be read keeps its last known date (none before the first read), is logged once and is read again by the next listing, which it never fails. ([#57](https://github.com/giantswarm/workspace-manager/issues/57))
+
+## [0.4.2-rc.1] - 2026-10-12
+
+### Fixed
+
+- The MCP endpoint refuses a request body larger than 1 MiB before mcp-go reads it whole (CVE-2026-108859, no fixed mcp-go release yet; the scan ignores it until 2026-11-12). ([#52](https://github.com/giantswarm/workspace-manager/issues/52))
+
+## [0.4.1] - 2026-10-12
 
 ### Fixed
 
 - The sync reads an owner's credential from `<provider>/<owner>/{username,token}` under `--credentials-dir`, where the sync Job's Secret projects it: a private repository syncs again instead of failing with `credential: open <dir>/<provider>/username: no such file or directory`, and several owners of one provider instance each fetch with their own credential.
+
+## [0.4.0-rc.1] - 2026-10-12
+
+### Added
+
+- The session directories' cleanup, run by the sync Job: the controller lists kagent's Sessions (`SessionService/ListSessions` over every creator, `--kagent-address`, the chart's `kagent.address`, with a projected token for `kagent.tokenAudience` and egress to `kagent.namespace`/`kagent.port`) and hands the Job those on the workspace's volume; a directory goes `--sessions-cleanup-after` (`sessions.cleanupAfter`, 720h) after its Session's last turn, at once when kagent no longer lists a Session it listed, and after the window from when a sync first found it for a Session kagent does not know. Without kagent, or while its listing fails, nothing is deleted (condition `SessionsCleanedUp`). A cycle with nothing to fetch still runs the Job while session directories or a dropped mirror are on the volume (`activeSync.cleanupOnly`).
+- A dropped mirror is deleted once no session directory borrows from it; the manifest names the borrowers of one that stays (`borrowedBy`).
+- The status lists each session directory with its Session's name, creator and last turn, its size and its cleanup date, and `get_workspace` shows them.
+- A deleted Workspace keeps its volume until its last session directory is gone: the finalizer `workspace-manager.giantswarm.io/volume`, cleanup-only cycles (trigger `deletion`), then the claim deleted and the finalizer removed. The manager's Role may delete claims.
+
+## [0.3.0] - 2026-10-11
+
+### Fixed
+
 - `authorize_workspace` signs the grant's `sub` as the caller's email, the identity kagent's trusted-proxy authenticator gives a Session's creator (the Agent Platform's user-id claim is `email`, the claim the edge sets `x-user-id` from), where it signed the Dex subject and kagent refused every grant as naming another person. The sign-ins and the token exchange stay keyed by the Dex subject. A caller whose identity carries no email gets an error instead of a grant.
+
+## [0.3.0-rc.1] - 2026-10-11
+
+### Added
+
+- The sync cycle: the controller, leader-elected among the replicas through the Lease `workspace-manager-controller` in the workspaces' namespace (`--leader-election`, on; `--leader-election-identity`, the pod's name), runs each Workspace's cycle for a `sync_workspace` request, a changed spec or first sync, a volume claimed anew, the retry of a failed cycle after `--sync-cycle`, or the schedule come due (`workspace.NextSync`: nightly and weekly at 03:00 UTC, weekly on Sunday, custom on its weekdays at its hour). A cycle lists each owner once, and a selection equal to the last manifest with nothing pushed since is `NoChange` and costs no Job and no origin request; otherwise the controller writes the selection and the credentials (server-side applied, emptied after the Job; it never reads a Secret of the namespace) and starts the sync Job from the chart's template, owned by the Workspace. The Job's end wakes the controller, which records the outcome from the manifest: a Job gone before its end still counts by its manifest, a failed Job's error is read from beside it. The status carries `lastSync` (`trigger`, `job`), `activeSync`, `nextSync` (the controller's own timer) and the `Synced` condition (`Synced`, `NoChange`, `Syncing`, `ListingFailed`, `SyncFailed`, `SizeCeiling`, `VolumeMissing`).
+- `sync_workspace(workspace)`: a member asks for a cycle now, recorded as the annotations `workspace-manager.giantswarm.io/sync-requested` and `-by`, which the controller serves and removes; a request during a running Job is served after it. The views show the request (`syncRequest`), the running Job (`activeSync`) and `nextSync` from the status, the same value the controller's timer is set for.
+- The chart renders the sync Job template (`<fullname>-sync-job`, mounted and passed as `--sync-job-template`: this image as the Job's ServiceAccount `<fullname>-sync`, the pod and container security contexts, `sync.job.resources`, `activeDeadlineSeconds` 7200, `ttlSecondsAfterFinished` 86400, `parallel` 4, `podLabels`, `podAnnotations`), with the pod labelled `app.kubernetes.io/name: <name>-sync` apart from the Deployment's selector; a change of `sync.job` rolls the manager. The manager's Role gains Jobs (`get, list, watch, create`), ConfigMaps (`create, update`), Secrets (`create, patch`, never `get`), claims (`patch`) and Leases (`get, create, update`); its ClusterRole reads StorageClasses. `POD_NAME` names the replica in the election.
+- The volume's sizing rule, where the StorageClass provisions a size and allows expansion (Azure Files, an NFS server on block storage; an elastic class such as EFS or an NFS export gets the nominal 1Gi claim): the need is the measured size of the mirrored repositories, `--sizing-factor` (the chart's `storage.sizing.factor`, 1.5) times the provider's reported size for each repository not yet mirrored, and the session directories; the headroom is the larger of `--sizing-headroom` (`storage.sizing.headroom`, 4Gi), `--sizing-headroom-share` (`storage.sizing.headroomShare`, 0.5) of the need and the Workspace's `spec.sizing.headroom`; the size is the need plus the headroom, at least `spec.sizing.minimum`, rounded up to the GiB, never past `--sizing-max-size` (`storage.sizing.maxSize`, none), which fails the cycle with reason `SizeCeiling`. The claim is grown before a Job that adds repositories and after one that measured more, never shrunk. `preview_workspace` estimates a new volume with the same rule.
+
+### Changed
+
+- The chart takes every key the agent-platform meta chart forwards, each declared in `values.yaml` so the strict schema carries it, each passed to `serve` as a flag the start validates: `grant.signingKey` (`{name, key}` of a Secret holding at least 32 bytes, read at start with providers and OAuth: `--grant-signing-key`), `sync.cycle` (how often the controller reconciles every Workspace and how long after a failed cycle it tries again, `--sync-cycle`, default 10m), `sessions.cleanupAfter` (a Session directory's cleanup window, `--sessions-cleanup-after`, default 720h) and `storage.sizing.factor`, `.headroom`, `.headroomShare` and `.maxSize` (the sizing rule above). The sign-in store's key stays `signin.keys`. A chart test renders the meta chart's forwarded block against the schema.
+- The workspace's volume: the controller (part of `serve`) watches the Workspaces and claims each one's read-write-many volume (`workspace-<name>`, owned by the Workspace) from the StorageClass `--storage-class` names, the chart's `storage.storageClassName`, requesting the sizing rule's size where the class provisions one, else a nominal 1Gi; the status names the claim and the `VolumeClaimed` condition is `True`. Without a class nothing is claimed, never the cluster's default class: the condition is `False` with reason `StorageClassMissing`, naming the flag and the chart value. The chart grants the ServiceAccount `get`, `create` and `patch` on PersistentVolumeClaims in the workspaces' namespace, never `delete`: a claim goes with its Workspace.
+- The controller reads a queued Workspace live, never from the informer's cache: a key queued again while its cycle writes the status cannot start the cycle twice.
+
+## [0.2.0] - 2026-10-11
+
+### Added
+
+- The workspace tools: `list_workspaces`, `get_workspace`, `create_workspace`, `update_workspace` and `delete_workspace`, each passing the Organization check on the caller's forwarded identity before the manager's ServiceAccount reads or writes the Workspace; a non-member's refusal is `permission denied` and an invalid spec its validation message, with nothing written. The views carry the last and the next sync (nightly and weekly at 03:00 UTC, weekly on Sunday), the volume's CSI driver and handle from its bound PersistentVolume, and on `get_workspace` the last sync's mirrors with their measured sizes, what the volume stores and the Session directories with their sizes and cleanup dates; `delete_workspace` returns the Sessions still having a directory on the volume.
+- `list_repositories`, one owner's repositories for a workspace editor's picker from the provider's cached listing with its sync credential: searched by name, filtered by language, topics, archived and forks, paged, with the owner's languages and topics; and `preview_workspace`, what an existing workspace or a draft selects now, across every provider of its sources, with why each repository is in, what the exclusions and the archived and fork rules left out, and the estimated volume size. Neither writes anything or says anything about the caller's own access.
+
+### Changed
+
+- The chart lets the manager's ServiceAccount read PersistentVolumes whether or not it signs grants: the workspace tools show each volume's CSI driver and handle.
+
+## [0.2.0-rc.1] - 2026-10-11
+
+### Added
+
+- `authorize_workspace(workspace)`, the access check at a Session's start: with the person's own sign-in to each provider of the workspace, one check per owner against the last sync's manifest. `granted` returns a JWT grant signed by the manager (`--grant-ttl`, default 5m) in kagent's JWT admission's claims: the person (`sub`), the workspace, its CSI volume (driver and handle, read from the claim's PersistentVolume), the mounts `sessions/${SESSION_ID}` read-write and `mirrors` read-only, the repositories pushed to since the sync (`changed`) and each provider host with its audience, scheme and token broker (`--grant-broker`); `aud` is `--grant-audience` (`kagent`); no token. `refused` names the repositories the person cannot read, or says the workspace has not synced, its volume is not bound or it is being deleted; `connect_required` lists every provider the person has not connected with its connect link. The provider contract gains `Readable` (on GitHub one listing of the owner's repositories with the person's user-to-server token, a user account's private repository asked for on its own), passed by the GitHub and the fake kind. The chart takes `grant.ttl`, `grant.audience` and `grant.broker`, lets the ServiceAccount read ConfigMaps in the workspaces' namespace and, with a signing key, PersistentVolumes.
+- A GitHub Enterprise Server's host, which serves git and the API, is one run-time host with the git Basic credential: kagent's egress refuses two credentials for one host.
+- `GET /.well-known/jwks.json` publishes the grant's verification keys: the signing key's and every other PEM private key in its Secret, re-read every 30 seconds, so a key rotates with both published.
+- A provider refusing the person's own sign-in (revoked or expired there) is `connect_required` with the connect link, not an error: the provider contract's `Readable` wraps `provider.ErrCredentialRefused` (GitHub's 401), and `authorize_workspace` asks for the connect again.
+
+### Changed
+
+- `grant.signingKey` (`--grant-signing-key`) names a PEM private key (EC P-256 or P-384, or RSA of at least 2048 bits) instead of 32 random bytes: the grant is verified by kagent against the published public keys.
+
+## [0.1.3-rc.1] - 2026-10-11
+
+### Fixed
+
 - The chart grants the ServiceAccount `update` on `workspaces/finalizers` in the workspaces' namespace: a volume claim's owner reference blocks its Workspace's deletion (`blockOwnerDeletion`), which a cluster enforcing owner-reference permissions (`OwnerReferencesPermissionEnforcement`) admits only with that right, refusing the claim otherwise.
 
+## [0.1.0-rc.11] - 2026-10-10
 
+### Changed
 
-[Unreleased]: https://github.com/giantswarm/workspace-manager/tree/main
+- Token exchange: `POST /token` (RFC 8693) answers the installation's kagent client (`client_secret_basic` or `client_secret_post`) with the person's access token for a provider instance (`audience`), the caller's Dex token (`subject_token`) validated like the MCP bearer; refreshed ahead of expiry, never a refresh token; a missing or revoked sign-in gets `invalid_target` with the instance's `/connect/<instance>` as `error_uri`. Every exchange is logged and counted without the token. The chart takes `tokenExchange.clientID` and `tokenExchange.clientSecret`.
+
+## [0.1.0-rc.10] - 2026-10-10
+
+### Changed
+
+- Provider sign-ins: the MCP tools `list_providers`, `connect_provider` and `disconnect_provider`; OAuth 2.0 authorization code with PKCE per provider instance, its `state` sealed with the sign-in keys and binding the person, the instance and the verifier for ten minutes; the browser pages `/connect/<instance>`, `/callback/<instance>` (which stores the encrypted sign-in only for the person its state was made for, proven by a Dex sign-in at `/signin`) and the disconnect that revokes the grant at the provider (a GitHub App's grant, RFC 7009 elsewhere) and forgets it. The chart takes `signin.keys.secretName` and `signin.keys.current` and grants the ServiceAccount its sign-in Secrets and refresh Leases in the release namespace; Dex must list `<base URL>/signin` as a redirect URI of the manager's client.
+
+## [0.1.0-rc.7] - 2026-10-10
+
+### Changed
+
+- The chart registers the server with muster through its own `MCPServer` (`muster.mcpServer.enabled`; its `name` sets the tool prefix `x_workspace-manager_<tool>`): `streamable-http` at the Service, the chart's labels plus `muster.giantswarm.io/type: workspace-manager` and `agent-platform.giantswarm.io/tool-group: agent-platform`, and with `oauth.enabled` the unpinned `auth` block (`forwardToken`, `requiredAudiences`) -- no authorization server and no GitHub App, since a provider sign-in is the workspace-manager's own business. The required audiences count as trusted bearer audiences next to `oauth.trustedAudiences`.
+
+## [0.1.0-rc.4] - 2026-10-09
+
+### Changed
+
+- `sync`: the Job that keeps a workspace's repositories on its volume as bare mirrors under `mirrors/<owner>/<name>.git`: it clones added repositories, fetches only those pushed to since the manifest, marks the mirrors of repositories that left the selection and writes the manifest (head commits, push times, measured sizes) to the volume and, with `--result-configmap`, as the Job's result. While a session directory's clone borrows a mirror's objects, the sync's repack keeps every object (`gc.pruneExpire=never`, `--keep-unreachable`); the credential reaches git through the binary's own credential helper from a projected file, never through a URL, the volume or a log.
+- The image carries git for the sync Job; the chart renders the Job's ServiceAccount and Role in the workspaces' namespace, allowed to write its result ConfigMap.
+
+[Unreleased]: https://github.com/giantswarm/workspace-manager/compare/v0.10.0-rc.5...HEAD
+[0.10.0-rc.5]: https://github.com/giantswarm/workspace-manager/compare/v0.10.0-rc.1...v0.10.0-rc.5
+[0.10.0-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.9.0...v0.10.0-rc.1
+[0.9.0]: https://github.com/giantswarm/workspace-manager/compare/v0.9.0-rc.1...v0.9.0
+[0.9.0-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.8.3-rc.2...v0.9.0-rc.1
+[0.8.3-rc.2]: https://github.com/giantswarm/workspace-manager/compare/v0.8.2...v0.8.3-rc.2
+[0.8.2]: https://github.com/giantswarm/workspace-manager/compare/v0.8.2-rc.2...v0.8.2
+[0.8.2-rc.2]: https://github.com/giantswarm/workspace-manager/compare/v0.8.1...v0.8.2-rc.2
+[0.8.1]: https://github.com/giantswarm/workspace-manager/compare/v0.8.1-rc.3...v0.8.1
+[0.8.1-rc.3]: https://github.com/giantswarm/workspace-manager/compare/v0.8.1-rc.1...v0.8.1-rc.3
+[0.8.1-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.8.0...v0.8.1-rc.1
+[0.8.0]: https://github.com/giantswarm/workspace-manager/compare/v0.8.0-rc.2...v0.8.0
+[0.8.0-rc.2]: https://github.com/giantswarm/workspace-manager/compare/v0.8.0-rc.1...v0.8.0-rc.2
+[0.8.0-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.7.2-rc.4...v0.8.0-rc.1
+[0.7.2-rc.4]: https://github.com/giantswarm/workspace-manager/compare/v0.7.2-rc.3...v0.7.2-rc.4
+[0.7.2-rc.3]: https://github.com/giantswarm/workspace-manager/compare/v0.7.2-rc.1...v0.7.2-rc.3
+[0.7.2-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.7.1-rc.1...v0.7.2-rc.1
+[0.7.1-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.7.0...v0.7.1-rc.1
+[0.7.0]: https://github.com/giantswarm/workspace-manager/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/giantswarm/workspace-manager/compare/v0.5.1...v0.6.1
+[0.5.1]: https://github.com/giantswarm/workspace-manager/compare/v0.4.2-rc.1...v0.5.1
+[0.4.2-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.4.1...v0.4.2-rc.1
+[0.4.1]: https://github.com/giantswarm/workspace-manager/compare/v0.4.0-rc.1...v0.4.1
+[0.4.0-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.3.0...v0.4.0-rc.1
+[0.3.0]: https://github.com/giantswarm/workspace-manager/compare/v0.3.0-rc.1...v0.3.0
+[0.3.0-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.2.0...v0.3.0-rc.1
+[0.2.0]: https://github.com/giantswarm/workspace-manager/compare/v0.2.0-rc.1...v0.2.0
+[0.2.0-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.1.3-rc.1...v0.2.0-rc.1
+[0.1.3-rc.1]: https://github.com/giantswarm/workspace-manager/compare/v0.1.0-rc.11...v0.1.3-rc.1
+[0.1.0-rc.11]: https://github.com/giantswarm/workspace-manager/compare/v0.1.0-rc.10...v0.1.0-rc.11
+[0.1.0-rc.10]: https://github.com/giantswarm/workspace-manager/compare/v0.1.0-rc.7...v0.1.0-rc.10
+[0.1.0-rc.7]: https://github.com/giantswarm/workspace-manager/compare/v0.1.0-rc.4...v0.1.0-rc.7
+[0.1.0-rc.4]: https://github.com/giantswarm/workspace-manager/releases/tag/v0.1.0-rc.4
