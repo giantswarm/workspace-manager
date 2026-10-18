@@ -10,6 +10,10 @@ build-linux-amd64: ## Build the linux/amd64 binary the Dockerfile expects; versi
 docker-build: build-linux-amd64 ## Build a local dev image (TAG=workspace-manager:dev).
 	docker build --build-arg TARGETOS=linux --build-arg TARGETARCH=amd64 -t $(or $(TAG),workspace-manager:dev) .
 
+.PHONY: tools-doc
+tools-doc: ## Regenerate docs/tools.md from the registered tools (the test TestToolsDocIsCurrent keeps it current).
+	TOOLS_DOC_UPDATE=1 go test -count=1 -run TestToolsDocIsCurrent ./internal/api
+
 ##@ Lint
 
 # One golangci-lint for CI and every local run. The version is read from the

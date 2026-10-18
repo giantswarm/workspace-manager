@@ -61,6 +61,16 @@ func genAIToolName(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 	}
 }
 
+// readOnly annotates a tool that changes nothing; mcp-go defaults every tool
+// to destructive and not idempotent.
+func readOnly() mcp.ToolOption {
+	return func(t *mcp.Tool) {
+		mcp.WithReadOnlyHintAnnotation(true)(t)
+		mcp.WithDestructiveHintAnnotation(false)(t)
+		mcp.WithIdempotentHintAnnotation(true)(t)
+	}
+}
+
 // NewMCPServer builds the MCP server with its tracing and metrics middleware.
 func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
 	s := mcpserver.NewMCPServer("workspace-manager", version,
