@@ -16,10 +16,11 @@ import (
 // addAuthorizeTool registers authorize_workspace.
 func addAuthorizeTool(s *mcpserver.MCPServer, a *authorize.Authorizer) {
 	s.AddTool(mcp.NewTool("authorize_workspace",
-		tooldesc.Describe("Check that you can read every repository of a workspace before starting a Session on it: a grant, or why not.",
+		tooldesc.Describe("Check that you can read every repository of a workspace before you start a Session on it: a grant, or why not.",
 			"Granted: a short-lived grant to pass to start_session, naming the repositories pushed to since the last sync. "+
 				"Refused: the repositories you cannot read, or why the workspace cannot be started on yet. "+
-				"connect_required: the providers whose App to grant in muster first, and how."),
+				"connect_required: the providers whose App to grant in muster first, and how. "+
+				"A granted check past the refresh threshold also requests a sync (syncRequested)."),
 		mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name")),
 		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(true),

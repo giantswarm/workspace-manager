@@ -128,8 +128,9 @@ type selectionTools struct {
 
 func addSelectionTools(s *mcpserver.MCPServer, t *selectionTools) {
 	s.AddTool(mcp.NewTool("list_repositories",
-		tooldesc.Describe("List one owner's repositories on a provider instance for a workspace's picker: searched, filtered and paged.",
-			"Each with language, topics, last push and size, from the provider's cached listing; it says nothing about your own access to them."),
+		tooldesc.Describe("List one owner's repositories on a provider instance for a workspace's picker: searched by name, filtered and paged.",
+			"Filtered by language, topics, archived and forks; each with language, topics, last push and size, from the provider's cached listing; "+
+				"it says nothing about your own access to them."),
 		mcp.WithInputSchema[RepositoriesInput](),
 		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(true),

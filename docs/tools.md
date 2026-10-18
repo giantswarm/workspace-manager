@@ -18,9 +18,9 @@ Generated from the registered tools (`make tools-doc`), with every tool register
 ## `authorize_workspace`
 
 ```text
-Check that you can read every repository of a workspace before starting a Session on it: a grant, or why not.
+Check that you can read every repository of a workspace before you start a Session on it: a grant, or why not.
 
-Granted: a short-lived grant to pass to start_session, naming the repositories pushed to since the last sync. Refused: the repositories you cannot read, or why the workspace cannot be started on yet. connect_required: the providers whose App to grant in muster first, and how.
+Granted: a short-lived grant to pass to start_session, naming the repositories pushed to since the last sync. Refused: the repositories you cannot read, or why the workspace cannot be started on yet. connect_required: the providers whose App to grant in muster first, and how. A granted check past the refresh threshold also requests a sync (syncRequested).
 ```
 
 ```json
@@ -201,7 +201,7 @@ Returns the Sessions that still have a directory on its volume. On a workspace a
 ## `get_workspace`
 
 ```text
-Get a workspace of your Organization: sources, syncs, mirrored repositories, volume storage and Session directories.
+Get a workspace: its sources, last and running sync, mirrored repositories, volume storage and Session directories.
 
 Mirror sizes are measured at the last sync; each Session directory comes with its size and cleanup date.
 ```
@@ -240,9 +240,9 @@ muster is the one place your provider sign-in lives.
 ## `list_repositories`
 
 ```text
-List one owner's repositories on a provider instance for a workspace's picker: searched, filtered and paged.
+List one owner's repositories on a provider instance for a workspace's picker: searched by name, filtered and paged.
 
-Each with language, topics, last push and size, from the provider's cached listing; it says nothing about your own access to them.
+Filtered by language, topics, archived and forks; each with language, topics, last push and size, from the provider's cached listing; it says nothing about your own access to them.
 ```
 
 ```json
@@ -316,7 +316,7 @@ Each with language, topics, last push and size, from the provider's cached listi
 ## `list_workspaces`
 
 ```text
-List the workspaces of your Organizations: sources, sync state, repository count, volume and Session directories.
+List the workspaces of your Organizations: sources, last sync, repository count, volume and Session directories.
 
 volume carries its CSI handle; storedBytes is what the volume stored at the last sync, grewFrom the size a provisioned share grew from then. organizations names every Organization you are a member of, with or without a workspace: where you may create one.
 ```
@@ -477,9 +477,9 @@ Paged, each repository with language, topics, last push and why it is in; also w
 ## `sync_workspace`
 
 ```text
-Sync a workspace now: fetch what changed in its sources and grow its volume where its StorageClass provisions a size.
+Request a sync of a workspace now: the controller fetches what changed in its sources and grows its volume.
 
-Nothing changed costs no fetch; a request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome.
+The volume grows where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome.
 ```
 
 ```json

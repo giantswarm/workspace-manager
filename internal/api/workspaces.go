@@ -227,7 +227,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	nameArg := mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name"))
 
 	s.AddTool(mcp.NewTool("list_workspaces",
-		tooldesc.Describe("List the workspaces of your Organizations: sources, sync state, repository count, volume and Session directories.",
+		tooldesc.Describe("List the workspaces of your Organizations: sources, last sync, repository count, volume and Session directories.",
 			"volume carries its CSI handle; storedBytes is what the volume stored at the last sync, grewFrom the size a provisioned share grew from then. "+
 				"organizations names every Organization you are a member of, with or without a workspace: where you may create one."),
 		mcp.WithString("organization", mcp.Description("Only this Organization's workspaces; you must be a member")),
@@ -261,7 +261,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("get_workspace",
-		tooldesc.Describe("Get a workspace of your Organization: sources, syncs, mirrored repositories, volume storage and Session directories.",
+		tooldesc.Describe("Get a workspace: its sources, last and running sync, mirrored repositories, volume storage and Session directories.",
 			"Mirror sizes are measured at the last sync; each Session directory comes with its size and cleanup date."),
 		nameArg,
 		readOnly(),
@@ -390,8 +390,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("sync_workspace",
-		tooldesc.Describe("Sync a workspace now: fetch what changed in its sources and grow its volume where its StorageClass provisions a size.",
-			"Nothing changed costs no fetch; a request made while a sync runs is served after it. "+
+		tooldesc.Describe("Request a sync of a workspace now: the controller fetches what changed in its sources and grows its volume.",
+			"The volume grows where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. "+
 				"On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. "+
 				"get_workspace shows the request, the running sync Job and the outcome."),
 		nameArg,

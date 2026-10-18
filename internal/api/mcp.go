@@ -61,8 +61,8 @@ func genAIToolName(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 	}
 }
 
-// readOnly annotates a tool that changes nothing; mcp-go defaults every tool
-// to destructive and not idempotent.
+// readOnly annotates a tool that changes nothing the caller asked for; mcp-go
+// defaults every tool to destructive and not idempotent.
 func readOnly() mcp.ToolOption {
 	return func(t *mcp.Tool) {
 		mcp.WithReadOnlyHintAnnotation(true)(t)
