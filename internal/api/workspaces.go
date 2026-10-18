@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-toolkit/tooldesc"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -226,9 +227,11 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	nameArg := mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name"))
 
 	s.AddTool(mcp.NewTool("list_workspaces",
-		mcp.WithDescription("List the workspaces of your Organizations: sources, last and next sync, repository count, the volume's CSI handle, what the volume stores (storedBytes), the size a provisioned share grew from at the last sync (grewFrom), and the Sessions with a directory on it. organizations names every Organization you are a member of, with or without a workspace: where you may create one."),
+		tooldesc.Describe("List the workspaces of your Organizations: sources, sync state, repository count, volume and Session directories.",
+			"volume carries its CSI handle; storedBytes is what the volume stored at the last sync, grewFrom the size a provisioned share grew from then. "+
+				"organizations names every Organization you are a member of, with or without a workspace: where you may create one."),
 		mcp.WithString("organization", mcp.Description("Only this Organization's workspaces; you must be a member")),
-		mcp.WithReadOnlyHintAnnotation(true),
+		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithOutputSchema[WorkspacesResult](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -258,9 +261,10 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("get_workspace",
-		mcp.WithDescription("Get a workspace of your Organization: its selection, its last and running sync, the last sync's repositories with their measured mirror sizes, what its volume stores, and the Sessions with a directory on it, with sizes and cleanup dates."),
+		tooldesc.Describe("Get a workspace of your Organization: sources, syncs, mirrored repositories, volume storage and Session directories.",
+			"Mirror sizes are measured at the last sync; each Session directory comes with its size and cleanup date."),
 		nameArg,
-		mcp.WithReadOnlyHintAnnotation(true),
+		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithOutputSchema[WorkspaceDetail](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -281,7 +285,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("create_workspace",
-		mcp.WithDescription("Create a workspace of an Organization you are a member of. It syncs after the save, and again when a Session starts on it and its last sync is older than the refresh threshold. An invalid spec is refused with the reason and nothing is written."),
+		tooldesc.Describe("Create a workspace of an Organization you are a member of; it syncs after the save.",
+			"It syncs again when a Session starts on it and its last sync is older than the refresh threshold."),
 		mcp.WithInputSchema[CreateInput](),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithOpenWorldHintAnnotation(false),
@@ -312,7 +317,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("update_workspace",
-		mcp.WithDescription("Change a workspace of your Organization: its sources, and its sizing when given. Its Organization never changes. It syncs after the save."),
+		tooldesc.Describe("Change a workspace's sources, and its sizing when given; its Organization never changes. It syncs after the save.", ""),
 		mcp.WithInputSchema[UpdateInput](),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -350,7 +355,9 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("delete_workspace",
-		mcp.WithDescription("Delete a workspace of your Organization: its sync stops and no new Session starts on it. Returns the Sessions that still have a directory on its volume. On a workspace already being deleted, it runs the deletion cycle now: session directories found gone let the workspace and its volume go without waiting for the next cleanup date."),
+		tooldesc.Describe("Delete a workspace of your Organization: its sync stops and no new Session starts on it.",
+			"Returns the Sessions that still have a directory on its volume. "+
+				"On a workspace already being deleted, it runs the deletion cycle now: session directories found gone let the workspace and its volume go without waiting for the next cleanup date."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(false),
@@ -383,7 +390,10 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("sync_workspace",
-		mcp.WithDescription("Sync a workspace of your Organization now: the controller lists its sources, fetches what changed since the last sync and grows its volume where its StorageClass provisions a size; nothing changed costs no fetch. A request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome."),
+		tooldesc.Describe("Sync a workspace now: fetch what changed in its sources and grow its volume where its StorageClass provisions a size.",
+			"Nothing changed costs no fetch; a request made while a sync runs is served after it. "+
+				"On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. "+
+				"get_workspace shows the request, the running sync Job and the outcome."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),

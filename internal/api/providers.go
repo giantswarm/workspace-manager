@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/giantswarm/mcp-toolkit/tooldesc"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -31,8 +32,9 @@ type ProvidersResult struct {
 // addProviderTools registers list_providers.
 func addProviderTools(s *mcpserver.MCPServer, instances []provider.Instance, grants muster.Grants) {
 	s.AddTool(mcp.NewTool("list_providers",
-		mcp.WithDescription("List the installation's workspace providers, each with its kind and whether you granted its App in muster, the one place your provider sign-in lives."),
-		mcp.WithReadOnlyHintAnnotation(true),
+		tooldesc.Describe("List the installation's workspace providers, each with its kind and whether you granted its App in muster.",
+			"muster is the one place your provider sign-in lives."),
+		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithOutputSchema[ProvidersResult](),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {

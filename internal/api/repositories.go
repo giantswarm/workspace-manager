@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-toolkit/tooldesc"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -127,9 +128,10 @@ type selectionTools struct {
 
 func addSelectionTools(s *mcpserver.MCPServer, t *selectionTools) {
 	s.AddTool(mcp.NewTool("list_repositories",
-		mcp.WithDescription("List one owner's repositories on a provider instance for a workspace's picker: searched by name, filtered by language, topics, archived and forks, and paged, with language, topics, last push and size. From the provider's cached listing; it says nothing about your own access to them."),
+		tooldesc.Describe("List one owner's repositories on a provider instance for a workspace's picker: searched, filtered and paged.",
+			"Each with language, topics, last push and size, from the provider's cached listing; it says nothing about your own access to them."),
 		mcp.WithInputSchema[RepositoriesInput](),
-		mcp.WithReadOnlyHintAnnotation(true),
+		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithOutputSchema[RepositoriesResult](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -153,9 +155,11 @@ func addSelectionTools(s *mcpserver.MCPServer, t *selectionTools) {
 	})
 
 	s.AddTool(mcp.NewTool("preview_workspace",
-		mcp.WithDescription("Preview what a workspace selects now, an existing one by name or a draft (organization and sources): the repositories with language, topics, last push and why each is in, paged, what the exclusions and the archived and fork rules left out, and the estimated volume size. Writes nothing and says nothing about your own access to the repositories."),
+		tooldesc.Describe("Preview the repositories a workspace selects now, an existing one or a draft, and its estimated volume size.",
+			"Paged, each repository with language, topics, last push and why it is in; "+
+				"also what the exclusions and the archived and fork rules left out. Writes nothing and says nothing about your own access to the repositories."),
 		mcp.WithInputSchema[PreviewInput](),
-		mcp.WithReadOnlyHintAnnotation(true),
+		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithOutputSchema[PreviewResult](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

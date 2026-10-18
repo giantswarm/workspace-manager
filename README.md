@@ -178,6 +178,9 @@ configured has no members.
 
 ## The workspace tools
 
+[docs/tools.md](docs/tools.md) lists every tool's description and input schema
+as a model reads them (`make tools-doc` regenerates it).
+
 Every tool acts for the caller muster forwards. A Workspace read or write first
 passes the Organization check on that identity; the manager's ServiceAccount
 then writes the object. A refusal is the tool's answer (`isError`), never a
