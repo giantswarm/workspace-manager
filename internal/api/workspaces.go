@@ -227,7 +227,7 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	nameArg := mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name"))
 
 	s.AddTool(mcp.NewTool("list_workspaces",
-		tooldesc.Describe("List the workspaces of your Organizations: sources, last sync, repository count, volume and Session directories.",
+		tooldesc.Describe("List the workspaces of your Organizations: sources, last sync, repository count, volume and Session count.",
 			"volume carries its CSI handle; storedBytes is what the volume stored at the last sync, grewFrom the size a provisioned share grew from then. "+
 				"organizations names every Organization you are a member of, with or without a workspace: where you may create one."),
 		mcp.WithString("organization", mcp.Description("Only this Organization's workspaces; you must be a member")),
@@ -261,8 +261,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("get_workspace",
-		tooldesc.Describe("Get a workspace: its sources, last and running sync, mirrored repositories, volume storage and Session directories.",
-			"Mirror sizes are measured at the last sync; each Session directory comes with its size and cleanup date."),
+		tooldesc.Describe("Get a workspace of your Organization: sources, last and running sync, mirrors, volume storage and Session directories.",
+			"The mirrors are the last sync's repositories with their sizes measured then; each Session directory comes with its size and cleanup date."),
 		nameArg,
 		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(false),
@@ -317,7 +317,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("update_workspace",
-		tooldesc.Describe("Change a workspace's sources, and its sizing when given; its Organization never changes. It syncs after the save.", ""),
+		tooldesc.Describe("Change a workspace of your Organization: its sources, and its sizing when given.",
+			"Its Organization never changes. It syncs after the save, and again when a Session starts on it and its last sync is older than the refresh threshold."),
 		mcp.WithInputSchema[UpdateInput](),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -390,8 +391,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 	})
 
 	s.AddTool(mcp.NewTool("sync_workspace",
-		tooldesc.Describe("Request a sync of a workspace now: the controller fetches what changed in its sources and grows its volume.",
-			"The volume grows where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. "+
+		tooldesc.Describe("Request a sync of a workspace of your Organization now: the controller fetches what changed in its sources.",
+			"It grows the volume where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. "+
 				"On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. "+
 				"get_workspace shows the request, the running sync Job and the outcome."),
 		nameArg,

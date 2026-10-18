@@ -201,9 +201,9 @@ Returns the Sessions that still have a directory on its volume. On a workspace a
 ## `get_workspace`
 
 ```text
-Get a workspace: its sources, last and running sync, mirrored repositories, volume storage and Session directories.
+Get a workspace of your Organization: sources, last and running sync, mirrors, volume storage and Session directories.
 
-Mirror sizes are measured at the last sync; each Session directory comes with its size and cleanup date.
+The mirrors are the last sync's repositories with their sizes measured then; each Session directory comes with its size and cleanup date.
 ```
 
 ```json
@@ -316,7 +316,7 @@ Filtered by language, topics, archived and forks; each with language, topics, la
 ## `list_workspaces`
 
 ```text
-List the workspaces of your Organizations: sources, last sync, repository count, volume and Session directories.
+List the workspaces of your Organizations: sources, last sync, repository count, volume and Session count.
 
 volume carries its CSI handle; storedBytes is what the volume stored at the last sync, grewFrom the size a provisioned share grew from then. organizations names every Organization you are a member of, with or without a workspace: where you may create one.
 ```
@@ -477,9 +477,9 @@ Paged, each repository with language, topics, last push and why it is in; also w
 ## `sync_workspace`
 
 ```text
-Request a sync of a workspace now: the controller fetches what changed in its sources and grows its volume.
+Request a sync of a workspace of your Organization now: the controller fetches what changed in its sources.
 
-The volume grows where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome.
+It grows the volume where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome.
 ```
 
 ```json
@@ -500,7 +500,9 @@ The volume grows where its StorageClass provisions a size. Nothing changed costs
 ## `update_workspace`
 
 ```text
-Change a workspace's sources, and its sizing when given; its Organization never changes. It syncs after the save.
+Change a workspace of your Organization: its sources, and its sizing when given.
+
+Its Organization never changes. It syncs after the save, and again when a Session starts on it and its last sync is older than the refresh threshold.
 ```
 
 ```json

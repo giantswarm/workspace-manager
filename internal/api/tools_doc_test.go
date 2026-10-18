@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/giantswarm/mcp-toolkit/tooldesc"
@@ -34,14 +35,14 @@ func (noSecrets) Value(context.Context, provider.SecretRef) ([]byte, error) { re
 
 // docsServer registers every tool; the descriptions need none of the
 // clients.
-func docsServer() *mcpserver.MCPServer {
+var docsServer = sync.OnceValue(func() *mcpserver.MCPServer {
 	return NewMCPServer(Config{
 		Kube:       fakeKube{},
 		Providers:  []provider.Instance{{Name: "github", KindName: "github"}},
 		Secrets:    noSecrets{},
 		Authorizer: &authorize.Authorizer{},
 	}, "docs")
-}
+})
 
 // TestToolsDocIsCurrent keeps docs/tools.md — every tool's description and
 // input schema as a model reads them — equal to the registered tools.
