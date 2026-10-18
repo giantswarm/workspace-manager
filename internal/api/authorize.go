@@ -22,7 +22,9 @@ func addAuthorizeTool(s *mcpserver.MCPServer, a *authorize.Authorizer) {
 				"connect_required: the providers whose App to grant in muster first, and how. "+
 				"A granted check past the refresh threshold also requests a sync (syncRequested)."),
 		mcp.WithString("workspace", mcp.Required(), mcp.Description("The workspace's name")),
-		readOnly(),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithOutputSchema[authorize.Result](),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

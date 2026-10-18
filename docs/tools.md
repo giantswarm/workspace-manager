@@ -4,7 +4,7 @@ Generated from the registered tools (`make tools-doc`), with every tool register
 
 | Tool | Kind |
 |---|---|
-| `authorize_workspace` | read-only |
+| `authorize_workspace` | write |
 | `create_workspace` | write |
 | `delete_workspace` | write, destructive |
 | `get_workspace` | read-only |
