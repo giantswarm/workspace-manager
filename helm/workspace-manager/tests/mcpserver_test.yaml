@@ -212,6 +212,41 @@ tests:
             requiredAudiences:
               - dex-k8s-authenticator
 
+  - it: pins a GitLab instance's application with its revocation endpoint
+    set:
+      providers:
+        - name: gitlab
+          kind: gitlab
+          values:
+            url: https://gitlab.example.com
+            token: {name: workspace-gitlab, key: token}
+      muster:
+        mcpServer:
+          auth:
+            provider: gitlab
+            authorizationServer:
+              issuer: https://gitlab.example.com
+              expectedIssuer: ""
+              authorizationEndpoint: https://gitlab.example.com/oauth/authorize
+              tokenEndpoint: https://gitlab.example.com/oauth/token
+              revocationEndpoint: https://gitlab.example.com/oauth/revoke
+              scopes: api read_user read_repository write_repository
+              clientCredentialsSecretRef:
+                name: workspace-gitlab
+    asserts:
+      - equal:
+          path: spec.auth.authorizationServer
+          value:
+            issuer: https://gitlab.example.com
+            authorizationEndpoint: https://gitlab.example.com/oauth/authorize
+            tokenEndpoint: https://gitlab.example.com/oauth/token
+            revocationEndpoint: https://gitlab.example.com/oauth/revoke
+            scopes: api read_user read_repository write_repository
+            clientCredentialsSecretRef:
+              name: workspace-gitlab
+              namespace: agent-platform
+            grantScope: subject
+
   - it: refuses a pin to a provider instance it does not configure
     set:
       muster:
