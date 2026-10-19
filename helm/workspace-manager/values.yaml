@@ -342,6 +342,13 @@ muster:
         authorizationEndpoint: https://github.com/login/oauth/authorize
         # -- The provider's token endpoint.
         tokenEndpoint: https://github.com/login/oauth/access_token
+        # -- The provider's RFC 7009 revocation endpoint: a person's
+        # disconnect in muster (`core_auth_logout`) revokes their grant there,
+        # so the provider stops honouring the tokens and the next sign-in asks
+        # for consent again (`https://<gitlab>/oauth/revoke` on GitLab; muster
+        # 5.47.0 or newer). Empty omits the field: GitHub has no RFC 7009
+        # endpoint, and the grant stays valid there until it expires.
+        revocationEndpoint: ""
         # -- The OAuth `scope` parameter, only for an authorization server
         # that needs one; empty for a GitHub App, whose permissions are the
         # App's. Empty omits the field.
