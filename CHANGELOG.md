@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `list_owners`: the owners a person reaches on a provider instance, fetched with their own token: on GitHub the accounts of the App's installations they can access, on GitLab their user namespace and top-level groups; without a grant, or with one the provider refuses, `grant_required` with the sign-in. ([#138](https://github.com/giantswarm/workspace-manager/issues/138))
+- `list_providers` names the account the person is signed in as (`login`) and the instance's git host (`host`); a grant the provider refuses shows as not connected. ([#138](https://github.com/giantswarm/workspace-manager/issues/138))
+- `list_repositories` counts the owner's repositories per language and per topic (`languageCounts`, `topicCounts`, most used first) and those with any topic (`withTopics`). ([#138](https://github.com/giantswarm/workspace-manager/issues/138))
+
 ### Fixed
 
 - A provider connect completes for a person who signed in to the portal through one Dex connector and to the manager's `/signin` through another: the callback's sign-in asks Dex for the connector of the state's subject (`connector_id`, decoded from the Dex `sub`), and a browser session from another connector is dropped and signed in again through that one instead of ending on "This sign-in link was made for another person". A link whose state names someone else is still refused after that sign-in, and a Dex that does not keep to the requested connector ends on a sign-in error instead of a loop. ([#104](https://github.com/giantswarm/workspace-manager/issues/104))
