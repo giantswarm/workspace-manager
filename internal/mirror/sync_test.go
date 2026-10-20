@@ -334,6 +334,33 @@ func TestSyncRecordsAMirrorTheManifestNeverSaw(t *testing.T) {
 	require.Positive(t, e.SizeBytes)
 }
 
+// TestSyncRewritesTheOriginOnlyWhenItMoved: a fetch leaves the mirror's
+// config as it is while its origin is the repository's clone URL, so a
+// Session's setup reading it never meets the rename of a rewrite, and sets
+// an origin that differs.
+func TestSyncRewritesTheOriginOnlyWhenItMoved(t *testing.T) {
+	h := newHarness(t)
+	h.upstream.create("acme", "alpha")
+	h.upstream.commit("acme", "alpha", "README.md", "alpha")
+	h.sync(h.repo("acme", "alpha", t0))
+	config := filepath.Join(h.mirror("acme", "alpha"), "config")
+	before, err := os.Stat(config)
+	require.NoError(t, err)
+
+	moved := h.upstream.commit("acme", "alpha", "README.md", "moved")
+	res := h.sync(h.repo("acme", "alpha", t1))
+	require.Equal(t, []string{"acme/alpha"}, res.Fetched)
+	require.Equal(t, moved, h.manifest().Entry("acme", "alpha").Head)
+	after, err := os.Stat(config)
+	require.NoError(t, err)
+	require.True(t, os.SameFile(before, after), "the config was rewritten")
+
+	runGit(t, h.mirror("acme", "alpha"), "remote", "set-url", "origin", "http://stale.invalid/acme/alpha")
+	h.upstream.commit("acme", "alpha", "README.md", "again")
+	h.sync(h.repo("acme", "alpha", t2))
+	require.Equal(t, h.upstream.url("acme", "alpha"), runGit(t, h.mirror("acme", "alpha"), "config", "--get", "remote.origin.url"))
+}
+
 func TestSyncRefusesACredentialInTheURL(t *testing.T) {
 	h := newHarness(t)
 	r := h.repo("acme", "alpha", t0)

@@ -298,9 +298,13 @@ func (s *Syncer) fetch(ctx context.Context, g *git, r Repository, dir, relPath s
 	if err != nil {
 		return err
 	}
-	// The provider may have moved the repository since the clone.
-	if _, err := g.run(ctx, dir, "remote", "set-url", "origin", r.CloneURL); err != nil {
-		return err
+	// The provider may have moved the repository since the clone. The config
+	// is rewritten only then: git replaces it by lock and rename, and a
+	// Session's setup that reads the mirror's origin meanwhile fails.
+	if current, err := g.run(ctx, dir, "config", "--get", "remote.origin.url"); err != nil || strings.TrimSpace(current) != r.CloneURL {
+		if _, err := g.run(ctx, dir, "remote", "set-url", "origin", r.CloneURL); err != nil {
+			return err
+		}
 	}
 	if _, err := g.run(ctx, dir, append(cred, "fetch", "--quiet", "--prune", "origin")...); err != nil {
 		return err
