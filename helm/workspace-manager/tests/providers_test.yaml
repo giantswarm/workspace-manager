@@ -91,3 +91,26 @@ tests:
           content: --providers-config=/etc/workspace-manager/providers/providers.yaml
       - notExists:
           path: spec.template.metadata.annotations.checksum/providers
+
+  - it: names the provider instances whose App tokens muster attaches
+    template: templates/deployment.yaml
+    set:
+      oauth:
+        enabled: true
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+          existingSecret: platform-oauth
+      muster:
+        mcpServer:
+          auth:
+            providerApps: [github, ghes]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --muster-provider-apps=github,ghes
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --muster-server=workspace-manager

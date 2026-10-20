@@ -110,6 +110,10 @@ spec:
             - --allow-public-client-registration=true
             {{- end }}
             {{- if .Values.providers }}
+            {{- with .Values.muster.mcpServer.auth.providerApps }}
+            {{- /* The person's provider tokens: muster's grants of these instances' Apps. */}}
+            - --muster-provider-apps={{ join "," . }}
+            {{- end }}
             {{- with .Values.muster.mcpServer.auth.provider }}
             {{- /* The person's provider token: muster's grant of this instance's App. */}}
             - --muster-provider={{ . }}

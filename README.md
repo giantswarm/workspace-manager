@@ -5,9 +5,9 @@ as one MCP server behind muster.
 
 The chart registers it with muster like every other manager, through its own
 `MCPServer` (`muster.mcpServer.enabled`; the tools appear as
-`x_workspace-manager_<tool>`): muster forwards the person's Dex id_token,
-unpinned with `forwardToken` or beside the person's App token when pinned to
-a provider's App (below), which workspace-manager validates as an OAuth 2.1
+`x_workspace-manager_<tool>`): muster forwards the person's Dex id_token
+(`forwardToken`, beside the person's provider App tokens, below), which
+workspace-manager validates as an OAuth 2.1
 resource server ([mcp-oauth](https://github.com/giantswarm/mcp-oauth)).
 The caller's identity and Dex token travel with every request, and a request
 without one is refused with 401. The manager checks the caller's Organization
@@ -23,33 +23,44 @@ from that identity and writes with its own ServiceAccount.
 | `GET /.well-known/jwks.json` | The workspace grant's verification keys, unauthenticated, with providers, `--enable-oauth` and `--grant-signing-key` (below) |
 | `:9464/metrics` | Prometheus metrics (`OTEL_METRICS_EXPORTER=prometheus`) |
 
-## The person's provider token: muster's grant
+## The person's provider tokens: muster's grants
 
 A person's provider sign-in lives in muster, the platform's one store of a
-person's grants, never in the manager. The person grants the provider's App
-once in muster (one grant per App per person), which keeps the grant, refreshes
-it and attaches the person's App token to every call of this server's
-`MCPServer`, pinned to that App (`auth.authorizationServer` with `grantScope:
-subject`, and `auth.forwardIdentity`, which puts the person's Dex ID token in
-`X-Muster-Id-Token` beside it). `--muster-provider` names the provider instance
-whose App that is (the chart's `muster.mcpServer.auth.provider`) and
-`--muster-server` the registration's name in muster.
+person's grants, never in the manager. muster keeps one OAuth **App** per
+provider instance with person sign-in (muster's `aggregator.providerApps`, each
+App named after its instance). The person grants each App once in muster (one
+grant per App per person, `core_auth_login app=<instance>`), which keeps the
+grant, refreshes it and attaches it to every call of this server's
+`MCPServer`, which names the Apps whose grants it receives
+(`auth.providerApps`, with `auth.forwardToken`). `--muster-provider-apps`
+names those instances (the chart's `muster.mcpServer.auth.providerApps`).
+GitHub and GitLab work side by side for one person.
 
-- Every MCP call carries the App token as its bearer. The manager asks the
-  provider whose it is (`GET /user`, trusted for five minutes per token) and
-  hands it to the tools for that instance only; the Dex ID token is then
-  validated as an unpinned registration's bearer is (below) and names the
-  caller.
-- A call without a bearer, or with one the provider refuses, is a `401`;
-  muster answers it with its own sign-in link for the App, so a person who has
-  not granted the App gets muster's link instead of a tool's answer.
+- Every MCP call carries the person's Dex ID token as its bearer, which names
+  the caller, and the token of each App the person granted in
+  `X-Muster-Grant-<instance>`; an App not granted sends no header. The
+  manager asks each token's provider whose it is (trusted for five minutes per
+  token) and hands it to the tools for its instance; a token the provider
+  refuses counts as not granted. No grant header reaches the tools.
 - `list_providers` names every instance with whether the person granted its
-  App: the pinned instance is connected exactly when muster attached its token
-  to the call. muster holds no grant of any other instance, so another
-  instance is never connected, and `authorize_workspace` asks to grant it.
+  App. `authorize_workspace` needs the token of every provider of the
+  workspace on one call: a missing one is answered `connect_required` with
+  `"status": "grant_required"` and `"apps"` naming exactly those Apps, which
+  muster answers `auth_required` with each App's sign-in link.
 - The manager stores no token, serves no credential and is on no git
   request's path: the egress gateway fetches the person's token from muster
-  for a Session's sandbox. Disconnecting is muster's.
+  for a Session's sandbox. Disconnecting is muster's
+  (`core_auth_logout app=<instance>`).
+
+The registration's single-provider predecessor still works: pinned to one
+instance's App (`auth.authorizationServer` with `grantScope: subject` and
+`auth.forwardIdentity`, the chart's `muster.mcpServer.auth.provider`,
+`--muster-provider` and `--muster-server`), every call carries that App's token
+as its bearer, a call without one or with one the provider refuses is a `401`
+that muster answers with its sign-in link, and the Dex ID token arrives in
+`X-Muster-Id-Token`. A registration may carry both while an installation moves
+to provider Apps; an App with the pin's issuer finds the people's existing
+grants.
 
 Sign-ins earlier versions kept in the manager's namespace (a sealed Secret and
 a refresh Lease per person and provider instance) are deleted at every start,

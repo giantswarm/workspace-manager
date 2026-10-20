@@ -28,12 +28,12 @@ func callTool(t *testing.T, ctx context.Context, cfg Config, name string, args m
 }
 
 // TestListProviders: every instance, connected exactly when muster attached
-// the person's App token to the call, the pinned one alone; the person's
+// the person's App token to the call, each App's on its own; the person's
 // sign-in tools are gone.
 func TestListProviders(t *testing.T) {
 	cfg := Config{
 		Providers: []provider.Instance{{Name: "github", KindName: "github"}, {Name: "gitlab", KindName: "gitlab"}},
-		Grants:    muster.Grants{Instance: "github", Server: "workspace-manager"},
+		Grants:    muster.Grants{Apps: []string{"github", "gitlab"}, Server: "workspace-manager"},
 	}
 	alice := identity.ContextWith(context.Background(), &identity.Identity{Subject: "alice-sub", Email: "alice@example.com"})
 
@@ -56,18 +56,27 @@ func TestListProviders(t *testing.T) {
 		return res.StructuredContent.(ProvidersResult).Providers
 	}
 
-	t.Run("granted in muster", func(t *testing.T) {
+	t.Run("both granted in muster", func(t *testing.T) {
+		got := list(identity.ContextWithProviderToken(identity.ContextWithProviderToken(alice, "github", "ghu_alice"), "gitlab", "glpat_alice"))
+		assert.Equal(t, []ProviderStatus{{Name: "github", Kind: "github", Connected: true}, {Name: "gitlab", Kind: "gitlab", Connected: true}}, got)
+	})
+
+	t.Run("one granted in muster", func(t *testing.T) {
 		got := list(identity.ContextWithProviderToken(alice, "github", "ghu_alice"))
 		require.Len(t, got, 2)
 		assert.Equal(t, ProviderStatus{Name: "github", Kind: "github", Connected: true}, got[0])
 		assert.False(t, got[1].Connected)
-		assert.Contains(t, got[1].SignIn, "muster holds no grant for provider gitlab")
+		assert.Equal(t, "grant the App of provider gitlab once in muster: core_auth_login app=gitlab", got[1].SignIn)
 	})
 
-	t.Run("no token on the call", func(t *testing.T) {
-		got := list(alice)
+	t.Run("pinned registration", func(t *testing.T) {
+		pinned := cfg
+		pinned.Grants = muster.Grants{Instance: "github", Server: "workspace-manager"}
+		res := callTool(t, alice, pinned, "list_providers", nil)
+		require.False(t, res.IsError)
+		got := res.StructuredContent.(ProvidersResult).Providers
 		require.Len(t, got, 2)
-		assert.False(t, got[0].Connected)
 		assert.Contains(t, got[0].SignIn, "core_auth_login server=workspace-manager")
+		assert.Contains(t, got[1].SignIn, "muster holds no grant for provider gitlab")
 	})
 }

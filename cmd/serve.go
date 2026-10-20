@@ -92,6 +92,7 @@ type serveOptions struct {
 
 	managerNamespace    string
 	musterProvider      string
+	musterProviderApps  string
 	musterServer        string
 	grantSigningKey     string
 	grantTTL            time.Duration
@@ -151,7 +152,8 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.leaderIdentity, "leader-election-identity", envOr("POD_NAME", ""), "This replica's name in the election; empty takes the host name, the pod's (POD_NAME)")
 	f.StringVar(&o.providersConfig, "providers-config", envOr("WORKSPACE_MANAGER_PROVIDERS_CONFIG", ""), "Provider instances file (YAML, the chart's `providers`); empty configures none (WORKSPACE_MANAGER_PROVIDERS_CONFIG)")
 	f.StringVar(&o.managerNamespace, "manager-namespace", envOr("POD_NAMESPACE", ""), "The manager's own namespace, where the provider Secrets and the grant's signing key live; the provider sign-ins earlier versions kept there are deleted at start (POD_NAMESPACE)")
-	f.StringVar(&o.musterProvider, "muster-provider", envOr("WORKSPACE_MANAGER_MUSTER_PROVIDER", ""), "The provider instance whose App muster pins this server's MCPServer to (auth.authorizationServer, grantScope subject, forwardIdentity): the bearer of every MCP call is the person's App token, muster's grant, verified with the provider, and the person's Dex ID token arrives in "+server.ForwardedIdentityHeader+". It is the person's token for that provider in authorize_workspace and list_providers; muster holds no grant of any other instance. Empty: no person's provider token, and authorize_workspace asks to grant every provider. Needs --enable-oauth (WORKSPACE_MANAGER_MUSTER_PROVIDER)")
+	f.StringVar(&o.musterProvider, "muster-provider", envOr("WORKSPACE_MANAGER_MUSTER_PROVIDER", ""), "The provider instance whose App muster pins this server's MCPServer to (auth.authorizationServer, grantScope subject, forwardIdentity): the bearer of every MCP call is the person's App token, muster's grant, verified with the provider, and the person's Dex ID token arrives in "+server.ForwardedIdentityHeader+". It is the person's token for that provider in authorize_workspace and list_providers; --muster-provider-apps, its successor, takes every instance's App and may name this one beside it. Empty: no pin. Needs --enable-oauth (WORKSPACE_MANAGER_MUSTER_PROVIDER)")
+	f.StringVar(&o.musterProviderApps, "muster-provider-apps", envOr("WORKSPACE_MANAGER_MUSTER_PROVIDER_APPS", ""), "Comma-separated provider instances whose App muster keeps (aggregator.providerApps, each App named after its instance) and this server's MCPServer names in auth.providerApps: muster attaches the person's token of each App they granted in "+muster.GrantHeaderPrefix+"<instance>, verified with the provider, and answers a tool result naming an App not granted with its sign-in link. Needs --enable-oauth (WORKSPACE_MANAGER_MUSTER_PROVIDER_APPS)")
 	f.StringVar(&o.musterServer, "muster-server", envOr("WORKSPACE_MANAGER_MUSTER_SERVER", "workspace-manager"), "This server's MCPServer name in muster, which the refusals name for core_auth_login (WORKSPACE_MANAGER_MUSTER_SERVER)")
 	f.StringVar(&o.grantSigningKey, "grant-signing-key", envOr("WORKSPACE_MANAGER_GRANT_SIGNING_KEY", ""), "The key the workspace grant a Session carries is signed with, as `<secret>/<key>` of a Secret in the manager's namespace: a PEM private key, EC P-256 or P-384 or RSA of at least 2048 bits. Every other entry of the Secret holding such a key is published beside it at "+grant.JWKSPath+", so a key rotates by adding the next one, switching to it and removing the old one. Empty serves no authorize_workspace. Needs providers, OAuth and --manager-namespace (WORKSPACE_MANAGER_GRANT_SIGNING_KEY)")
 	f.DurationVar(&o.grantTTL, "grant-ttl", envDuration("WORKSPACE_MANAGER_GRANT_TTL", grant.DefaultTTL), "How long a workspace grant is valid, a Go duration (WORKSPACE_MANAGER_GRANT_TTL)")
@@ -286,13 +288,16 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	} else if len(providers) > 0 {
 		log.Warn("list_repositories and preview_workspace are off: they read the providers' Secrets in --manager-namespace (POD_NAMESPACE)")
 	}
-	grants, pin, err := musterGrants(o, providers)
+	grants, pin, apps, err := musterGrants(o, providers)
 	if err != nil {
 		return err
 	}
-	apiCfg.Grants, srvCfg.Pin = grants, pin
+	apiCfg.Grants, srvCfg.Pin, srvCfg.Grants = grants, pin, apps
 	if pin != nil && srvCfg.OAuth == nil {
 		return fmt.Errorf("--muster-provider needs --enable-oauth, which validates the forwarded Dex ID token")
+	}
+	if apps != nil && srvCfg.OAuth == nil {
+		return fmt.Errorf("--muster-provider-apps needs --enable-oauth, which validates the forwarded Dex ID token")
 	}
 	if o.grantSigningKey != "" {
 		if len(providers) == 0 || srvCfg.OAuth == nil || o.managerNamespace == "" {
@@ -321,24 +326,38 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	return g.Wait()
 }
 
-// musterGrants are the person's provider tokens as muster attaches them, and
-// the pin of this server's registration to --muster-provider's App; no pin
-// without it. A pinned instance the installation does not configure fails the
-// start.
-func musterGrants(o *serveOptions, providers []provider.Instance) (muster.Grants, *server.Pin, error) {
-	grants := muster.Grants{Instance: o.musterProvider, Server: o.musterServer}
+// musterGrants are the person's provider tokens as muster attaches them: the
+// Apps of --muster-provider-apps, and the pin of this server's registration
+// to --muster-provider's App; neither without them. An instance the
+// installation does not configure fails the start.
+func musterGrants(o *serveOptions, providers []provider.Instance) (muster.Grants, *server.Pin, *server.Grants, error) {
+	grants := muster.Grants{Apps: splitList(o.musterProviderApps), Instance: o.musterProvider, Server: o.musterServer}
+	configured := make(map[string]provider.Instance, len(providers))
+	for _, p := range providers {
+		configured[p.Name] = p
+	}
+	var apps *server.Grants
+	for _, name := range grants.Apps {
+		in, ok := configured[name]
+		if !ok {
+			return grants, nil, nil, fmt.Errorf("--muster-provider-apps names %q, no configured provider instance", name)
+		}
+		if apps == nil {
+			apps = &server.Grants{}
+		}
+		apps.Apps = append(apps.Apps, in)
+	}
 	if o.musterProvider == "" {
-		return grants, nil, nil
+		return grants, nil, apps, nil
 	}
 	if o.musterServer == "" {
-		return grants, nil, errors.New("--muster-server must name this server's MCPServer in muster")
+		return grants, nil, nil, errors.New("--muster-server must name this server's MCPServer in muster")
 	}
-	for _, p := range providers {
-		if p.Name == o.musterProvider {
-			return grants, &server.Pin{Grants: grants, Kind: p.Kind}, nil
-		}
+	in, ok := configured[o.musterProvider]
+	if !ok {
+		return grants, nil, nil, fmt.Errorf("--muster-provider %q names no configured provider instance", o.musterProvider)
 	}
-	return grants, nil, fmt.Errorf("--muster-provider %q names no configured provider instance", o.musterProvider)
+	return grants, &server.Pin{Grants: grants, Kind: in.Kind}, apps, nil
 }
 
 // controllerConfig is the controller's configuration from the flags, the

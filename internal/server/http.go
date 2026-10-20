@@ -1,6 +1,7 @@
 // Package server assembles the single HTTP listener: health endpoints and the
-// MCP streamable-HTTP endpoint behind the OAuth guard when configured, and
-// behind muster's App pin before it when pinned (Pin). Without
+// MCP streamable-HTTP endpoint behind the OAuth guard when configured, with
+// the person's provider App tokens muster attaches (Grants) and behind
+// muster's App pin before it when pinned (Pin). Without
 // OAuth there is no authentication and no caller: only a server nothing but a
 // trusted proxy can reach runs that way, and every tool that needs the
 // caller's Organization refuses.
@@ -34,6 +35,10 @@ type Config struct {
 	// muster's grant, and the Dex ID token arrives in
 	// ForwardedIdentityHeader. It needs OAuth, which validates that token.
 	Pin *Pin
+	// Grants, when set, reads the person's token of each provider instance's
+	// App muster attaches to the call (muster.GrantHeader). It needs OAuth,
+	// which validates the person's Dex ID token.
+	Grants *Grants
 	// JWKS, when set, publishes the workspace grant's verification keys at
 	// grant.JWKSPath.
 	JWKS http.Handler
@@ -51,6 +56,7 @@ type Server struct {
 	http     *http.Server
 	oauth    *oauthRuntime
 	pin      *pinGuard
+	grants   *grantGuard
 	ready    func() bool
 	drain    time.Duration
 	draining atomic.Bool
@@ -82,6 +88,16 @@ func New(cfg Config, mcpSrv *mcpserver.MCPServer, log *slog.Logger) (*Server, er
 			return nil, err
 		}
 		s.pin = p
+	}
+	if cfg.Grants != nil {
+		if s.oauth == nil {
+			return nil, errors.New("muster grants: need OAuth, which validates the person's Dex ID token")
+		}
+		g, err := newGrantGuard(*cfg.Grants, log)
+		if err != nil {
+			return nil, err
+		}
+		s.grants = g
 	}
 	mux := http.NewServeMux()
 	s.routes(mux, cfg, mcpSrv)
@@ -134,16 +150,23 @@ func traced(mux *http.ServeMux) http.Handler {
 	)
 }
 
-// guard requires an authenticated caller when OAuth is on, and the person's
-// App token muster attaches when pinned.
+// guard requires an authenticated caller when OAuth is on, then reads the
+// person's App tokens muster attaches, so no provider is asked about a token
+// of a call nobody authenticated; when pinned, the pinned App's token comes
+// first.
 func (s *Server) guard(next http.Handler) http.Handler {
 	if s.oauth == nil {
 		return next
 	}
-	if s.pin != nil {
-		return s.pin.protect(s.oauth.protect(next))
+	h := next
+	if s.grants != nil {
+		h = s.grants.protect(h)
 	}
-	return s.oauth.protect(next)
+	h = s.oauth.protect(h)
+	if s.pin != nil {
+		h = s.pin.protect(h)
+	}
+	return h
 }
 
 // Handler exposes the mux (tests).
