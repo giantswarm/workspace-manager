@@ -338,7 +338,7 @@ func validateHTTPS(baseURL string) error {
 
 // identityOf is the request identity of a validated mcp-oauth user.
 func identityOf(info *providers.UserInfo) *identity.Identity {
-	id := &identity.Identity{Subject: info.ID, Email: info.Email, Name: info.Name, Groups: info.Groups, Source: identity.SourceOAuth}
+	id := &identity.Identity{Subject: info.ID, Email: info.Email, EmailVerified: info.EmailVerified, Name: info.Name, Groups: info.Groups, Source: identity.SourceOAuth}
 	if info.IsSSO() {
 		id.Source = identity.SourceSSO
 	}

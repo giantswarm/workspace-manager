@@ -1,6 +1,6 @@
 // Package identity carries the authenticated caller through a request: who
 // the OAuth layer validated (subject, email, groups, from which the caller's
-// Organization is checked) and the caller's own Dex token. workspace-manager
+// Organization membership is checked) and the caller's own Dex token. workspace-manager
 // does nothing without a caller, so a context without an identity only exists
 // in tests and in a server that runs without OAuth.
 package identity
@@ -28,6 +28,9 @@ type Identity struct {
 	Subject string
 	// Email is the caller's email when the IdP provided one.
 	Email string
+	// EmailVerified is the IdP's word that Email is the caller's
+	// (`email_verified`); only a verified email counts for membership.
+	EmailVerified bool
 	// Name is the display name when the IdP provided one.
 	Name string
 	// Groups are the IdP group claims (Dex `groups`).

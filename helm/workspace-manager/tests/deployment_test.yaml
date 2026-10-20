@@ -101,6 +101,40 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --organization=umbrella=umbrella-devs
 
+  - it: passes each Organization's member emails and domains beside its groups
+    set:
+      organizations:
+        acme:
+          memberGroups: [acme-devs]
+          memberDomains: [acme.example]
+        solo:
+          memberEmails: [jane@solo.example, bob@solo.example]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --organization=acme=acme-devs
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --organization-domains=acme=acme.example
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --organization-emails=solo=jane@solo.example,bob@solo.example
+
+  - it: refuses an Organization without members
+    set:
+      organizations:
+        acme: {}
+    asserts:
+      - failedTemplate: {}
+
+  - it: refuses a member domain written as an email
+    set:
+      organizations:
+        acme:
+          memberDomains: ["@acme.example"]
+    asserts:
+      - failedTemplate: {}
+
   # The default arguments above carry no --storage-class: the controller then
   # claims no volume and names the value in every Workspace's condition,
   # never the cluster's default class.

@@ -476,14 +476,26 @@
         },
         "organizations": {
             "type": "object",
-            "description": "The Organizations whose members manage workspaces, each with its member groups: a caller whose forwarded identity carries any of an Organization's groups reads and writes its workspaces, nobody else does. An Organization not listed has no members. Members are bound to nothing in `workspaces.namespace`; the manager writes as its ServiceAccount. For example `{giantswarm: {memberGroups: [giantswarm-ad:developers]}}`.",
+            "description": "The Organizations whose members manage workspaces, each with its members: a caller whose forwarded identity carries any of an Organization's `memberGroups`, or whose verified email (the identity provider's `email_verified`) is one of its `memberEmails` or ends in `@` one of its `memberDomains` (no subdomain), reads and writes its workspaces, nobody else does. An identity provider that sends no groups claim (Google) admits by email or domain only. Each Organization names at least one member of any kind; one not listed has no members. Members are bound to nothing in `workspaces.namespace`; the manager writes as its ServiceAccount. For example `{giantswarm: {memberGroups: [giantswarm-ad:developers], memberDomains: [giantswarm.io]}}`.",
             "additionalProperties": {
-                "type": "object",
-                "required": [
-                    "memberGroups"
-                ],
                 "additionalProperties": false,
                 "properties": {
+                    "memberDomains": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^[^@\\s]+\\.[^@\\s]+$"
+                        },
+                        "minItems": 1
+                    },
+                    "memberEmails": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+                        },
+                        "minItems": 1
+                    },
                     "memberGroups": {
                         "type": "array",
                         "items": {
@@ -492,7 +504,27 @@
                         },
                         "minItems": 1
                     }
-                }
+                },
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "required": [
+                            "memberGroups"
+                        ]
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "memberEmails"
+                        ]
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "memberDomains"
+                        ]
+                    }
+                ]
             }
         },
         "podAnnotations": {
