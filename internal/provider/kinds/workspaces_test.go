@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -505,7 +506,8 @@ func TestListOwners(t *testing.T) {
 
 	providers := ok[api.ProvidersResult](t, f.call(t, identity.ContextWithProviderToken(member, "code", "fake-revoked"), "list_providers", nil)).Providers
 	require.Len(t, providers, 2)
-	assert.Equal(t, api.ProviderStatus{Name: "github", Kind: "github", Connected: true, Login: "login-" + ghTok}, providers[0], "signed in as")
+	assert.Equal(t, api.ProviderStatus{Name: "github", Kind: "github", Host: strings.TrimPrefix(f.gh.URL, "http://"), Connected: true, Login: "login-" + ghTok}, providers[0], "signed in as")
+	assert.Equal(t, "code.fake.test", providers[1].Host)
 	assert.False(t, providers[1].Connected, "a grant the provider refuses is not connected")
 	assert.Contains(t, providers[1].SignIn, "core_auth_login app=code")
 }

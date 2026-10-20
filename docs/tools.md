@@ -256,7 +256,7 @@ The organizations, groups and user account, fetched with your own sign-in and so
 ```text
 List the installation's workspace providers, each with its kind and whether you granted its App in muster.
 
-With the account you are signed in as on each connected one. muster is the one place your provider sign-in lives; a sign-in the provider refuses shows as not connected.
+With its host and the account you are signed in as on each connected one. muster is the one place your provider sign-in lives; a sign-in the provider refuses shows as not connected.
 ```
 
 ```json

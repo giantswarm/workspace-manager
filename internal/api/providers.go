@@ -23,8 +23,10 @@ import (
 // ProviderStatus is one provider instance and whether the person granted its
 // App in muster.
 type ProviderStatus struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Host is the provider's git host, as github.com.
+	Host      string `json:"host,omitempty"`
 	Connected bool   `json:"connected"`
 	// Login is the account the person is signed in as on a connected
 	// instance, as the provider answers for their token.
@@ -42,7 +44,7 @@ type ProvidersResult struct {
 func addProviderTools(s *mcpserver.MCPServer, instances []provider.Instance, grants muster.Grants) {
 	s.AddTool(mcp.NewTool("list_providers",
 		tooldesc.Describe("List the installation's workspace providers, each with its kind and whether you granted its App in muster.",
-			"With the account you are signed in as on each connected one. muster is the one place your provider sign-in lives; a sign-in the provider refuses shows as not connected."),
+			"With its host and the account you are signed in as on each connected one. muster is the one place your provider sign-in lives; a sign-in the provider refuses shows as not connected."),
 		readOnly(),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithOutputSchema[ProvidersResult](),
@@ -54,6 +56,11 @@ func addProviderTools(s *mcpserver.MCPServer, instances []provider.Instance, gra
 		var wg sync.WaitGroup
 		for i, in := range instances {
 			list[i] = ProviderStatus{Name: in.Name, Kind: in.KindName}
+			if in.Kind != nil {
+				if git := in.Hosts().Git; len(git) > 0 {
+					list[i].Host = git[0].Name
+				}
+			}
 			token, ok := grants.Token(ctx, in.Name)
 			if !ok {
 				list[i].SignIn = grants.SignIn(in.Name)
