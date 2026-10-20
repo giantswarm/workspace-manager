@@ -140,7 +140,7 @@ func authSetup(t *testing.T) *authFixture {
 	}
 	f.workspaces = authWorkspaces{"otter": authWorkspace("otter", authReady), "fresh": authWorkspace("fresh", unsynced), "pending": authWorkspace("pending", unbound)}
 	f.authorizer, err = authorize.New(authorize.Config{
-		Workspaces: f.workspaces,
+		Workspaces:     f.workspaces,
 		Core:           cs,
 		Namespace:      authNamespace,
 		Instances:      f.instances,
