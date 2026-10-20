@@ -231,6 +231,31 @@ func Run(t *testing.T, newBackend func(t *testing.T) (provider.Factory, Backend)
 		}
 	})
 
+	t.Run("owners", func(t *testing.T) {
+		k, b, _ := setup(t)
+		ctx := context.Background()
+		person := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: b.Person(Owner+"/api", Other+"/theirs")})
+		owners, err := k.Owners(ctx, person)
+		require.NoError(t, err)
+		kinds := map[string]provider.OwnerKind{}
+		for _, o := range owners {
+			assert.NotEmpty(t, o.Name)
+			kinds[o.Name] = o.Kind
+		}
+		for _, o := range []string{Owner, Other} {
+			assert.Contains(t, []provider.OwnerKind{provider.OwnerOrganization, provider.OwnerGroup}, kinds[o], "%s, an owner the person reads in, is reached as an organization or group", o)
+		}
+
+		owners, err = k.Owners(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: b.Person()}))
+		require.NoError(t, err)
+		for _, o := range owners {
+			assert.Equal(t, provider.OwnerUser, o.Kind, "a person reading nothing reaches no owner but their own account, got %s", o.Name)
+		}
+
+		_, err = k.Owners(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "revoked"}))
+		assert.ErrorIs(t, err, provider.ErrCredentialRefused, "a token the provider does not know is refused")
+	})
+
 	t.Run("person", func(t *testing.T) {
 		k, b, _ := setup(t)
 		ctx := context.Background()
