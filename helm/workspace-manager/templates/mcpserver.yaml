@@ -8,15 +8,30 @@
 {{- fail (printf "muster.mcpServer.auth.provider %q names no provider instance of providers" .) }}
 {{- end }}
 {{- end }}
+{{- with .Values.muster.mcpServer.auth.providerApps }}
+{{- if not $.Values.oauth.enabled }}
+{{- fail "muster.mcpServer.auth.providerApps has muster attach the person's App tokens beside the forwarded Dex ID token, which the server validates as an OAuth resource server: set oauth.enabled" }}
+{{- end }}
+{{- $names := list }}
+{{- range $.Values.providers }}{{ $names = append $names .name }}{{ end }}
+{{- range . }}
+{{- if not (has . $names) }}
+{{- fail (printf "muster.mcpServer.auth.providerApps %q names no provider instance of providers" .) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if .Values.muster.mcpServer.enabled }}
 {{- /*
 Registers this server with muster. Tools appear as x_<name>_<tool>. With
 oauth.enabled the CR carries the auth block: muster forwards the session's Dex
 id_token (forwardToken), which this server validates against its trusted
 audiences (oauth.trustedAudiences plus the requiredAudiences below), and
-requests the requiredAudiences at login. Without OAuth muster connects
+requests the requiredAudiences at login. muster.mcpServer.auth.providerApps
+names the provider instances whose App muster keeps (its
+aggregator.providerApps): muster attaches the person's token of each App they
+granted in X-Muster-Grant-<instance>. Without OAuth muster connects
 anonymously. With muster.mcpServer.auth.provider the auth pins that
-provider's App instead: the person grants it once in muster, the bearer is
+provider's App, the single-provider predecessor of providerApps: the person grants it once in muster, the bearer is
 the person's App token, and forwardIdentity puts the Dex ID token in
 X-Muster-Id-Token beside it. No person's token is the workspace-manager's.
 */}}
@@ -72,6 +87,10 @@ spec:
         namespace: {{ .clientCredentialsSecretRef.namespace | default $.Release.Namespace | quote }}
       grantScope: {{ .grantScope | quote }}
     forwardIdentity: true
+    {{- with $.Values.muster.mcpServer.auth.providerApps }}
+    providerApps:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     {{- with $.Values.muster.mcpServer.auth.requiredAudiences }}
     requiredAudiences:
       {{- toYaml . | nindent 6 }}
@@ -80,7 +99,13 @@ spec:
   {{- else if .Values.oauth.enabled }}
   auth:
     type: oauth
+    {{- with .Values.muster.mcpServer.auth.providerApps }}
+    forwardToken: true
+    providerApps:
+      {{- toYaml . | nindent 6 }}
+    {{- else }}
     forwardToken: {{ .Values.muster.mcpServer.auth.forwardToken }}
+    {{- end }}
     {{- with .Values.muster.mcpServer.auth.requiredAudiences }}
     requiredAudiences:
       {{- toYaml . | nindent 6 }}

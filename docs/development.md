@@ -44,9 +44,10 @@ DEX_CLIENT_SECRET=... go run . serve --enable-oauth \
   --oauth-trusted-audiences=agent-platform
 ```
 
-Pinned to a provider instance's App as muster connects on the platform, each
-MCP call carries the person's App token as the bearer and the Dex ID token in
-`X-Muster-Id-Token`; add `--providers-config=<file> --muster-provider=<instance>`.
+As muster connects on the platform, each MCP call carries the Dex ID token as
+the bearer and the person's token of each provider instance's App in
+`X-Muster-Grant-<instance>`; add
+`--providers-config=<file> --muster-provider-apps=<instance>,<instance>`.
 
 Run a sync against a directory standing in for a workspace's volume, with a
 selection file and a credential directory `<provider>/<owner>` per provider

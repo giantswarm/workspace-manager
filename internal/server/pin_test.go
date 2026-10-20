@@ -133,12 +133,12 @@ func TestPinCachesAVerifiedToken(t *testing.T) {
 	require.NoError(t, err)
 
 	tok := "ghu_alice"
-	require.NoError(t, g.verify(context.Background(), tok))
-	require.NoError(t, g.verify(context.Background(), tok))
+	require.NoError(t, g.verifier.verify(context.Background(), counting, tok))
+	require.NoError(t, g.verifier.verify(context.Background(), counting, tok))
 	assert.Equal(t, 1, counting.asked, "asked once within the cache's time")
 
-	require.ErrorIs(t, g.verify(context.Background(), "revoked"), provider.ErrCredentialRefused)
-	require.ErrorIs(t, g.verify(context.Background(), "revoked"), provider.ErrCredentialRefused)
+	require.ErrorIs(t, g.verifier.verify(context.Background(), counting, "revoked"), provider.ErrCredentialRefused)
+	require.ErrorIs(t, g.verifier.verify(context.Background(), counting, "revoked"), provider.ErrCredentialRefused)
 	assert.Equal(t, 3, counting.asked, "a refused token is asked about every time")
 
 	_, err = newPinGuard(Pin{Kind: kind}, quiet())
