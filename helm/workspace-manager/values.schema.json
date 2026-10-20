@@ -264,16 +264,16 @@
                                 "forwardToken": {
                                     "type": "boolean"
                                 },
+                                "provider": {
+                                    "type": "string",
+                                    "description": "The provider instance (a `providers` name) whose App muster pins this registration to: the person grants that App once in muster (one grant per App per person), and muster attaches the person's App token to every call, with `forwardIdentity` the Dex ID token beside it in `X-Muster-Id-Token`. It is the person's token for that provider in `authorize_workspace` and `list_providers`; a person who has not granted it gets muster's sign-in link instead of a tool's answer. The single-provider predecessor of `providerApps`. Empty: the registration is unpinned (`forwardToken`). Needs `oauth.enabled` and `authorizationServer`."
+                                },
                                 "providerApps": {
                                     "type": "array",
                                     "description": "The provider instances (`providers` names) whose App muster keeps (muster's `aggregator.providerApps`, each App named after its instance) and this registration receives the grants of: the person grants each App once in muster (`core_auth_login app=<instance>`), and muster attaches the token of every App they granted to every call in `X-Muster-Grant-<instance>`, beside the forwarded Dex ID token (`forwardToken`). They are the person's tokens in `authorize_workspace` and `list_providers`, GitHub and GitLab side by side; a missing one is answered with its App's sign-in link. Needs `oauth.enabled`; replaces `provider`, beside which it may stand while an installation moves to Apps.",
                                     "items": {
                                         "type": "string"
                                     }
-                                },
-                                "provider": {
-                                    "type": "string",
-                                    "description": "The provider instance (a `providers` name) whose App muster pins this registration to: the person grants that App once in muster (one grant per App per person), and muster attaches the person's App token to every call, with `forwardIdentity` the Dex ID token beside it in `X-Muster-Id-Token`. It is the person's token for that provider in `authorize_workspace` and `list_providers`; a person who has not granted it gets muster's sign-in link instead of a tool's answer. The single-provider predecessor of `providerApps`. Empty: the registration is unpinned (`forwardToken`). Needs `oauth.enabled` and `authorizationServer`."
                                 },
                                 "requiredAudiences": {
                                     "type": "array"
@@ -405,7 +405,7 @@
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Make workspace-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint requires a bearer token Dex issued, and every call carries the caller's identity and Dex token, from which the caller's Organization is checked. muster forwards the session's Dex id_token (its MCPServer registration with `auth.forwardToken`, or in `X-Muster-Id-Token` beside the person's App token when pinned to a provider's App, `muster.mcpServer.auth.provider`); it is validated against Dex's JWKS when its audience is in `trustedAudiences`. Off: no caller, so nothing that needs an Organization works; only for a server nothing but a trusted proxy can reach."
+                    "description": "Make workspace-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint requires a bearer token Dex issued, and every call carries the caller's identity and Dex token, from which the caller's Organization is checked. muster forwards the session's Dex id_token (its MCPServer registration with `auth.forwardToken`, beside the person's App tokens of `muster.mcpServer.auth.providerApps`, or in `X-Muster-Id-Token` beside the person's App token when pinned to a provider's App, `muster.mcpServer.auth.provider`); it is validated against Dex's JWKS when its audience is in `trustedAudiences`. Off: no caller, so nothing that needs an Organization works; only for a server nothing but a trusted proxy can reach."
                 },
                 "existingSecret": {
                     "type": "string",
