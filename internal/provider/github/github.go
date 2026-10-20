@@ -156,6 +156,35 @@ func (k *Kind) Person(ctx context.Context, cred oauth2.TokenSource) (string, err
 	return user.Login, nil
 }
 
+// Owners implements provider.Kind: the accounts of the App's installations
+// the person's user-to-server token can access (GET /user/installations),
+// which are the owners the App's installation token lists.
+func (k *Kind) Owners(ctx context.Context, cred oauth2.TokenSource) ([]provider.Owner, error) {
+	type page struct {
+		Installations []struct {
+			Account struct {
+				Login string `json:"login"`
+				Type  string `json:"type"`
+			} `json:"account"`
+		} `json:"installations"`
+	}
+	pages, err := getPages[page](ctx, k, cred, k.api.String()+"/user/installations?per_page="+strconv.Itoa(perPage))
+	if err != nil {
+		return nil, fmt.Errorf("listing the owners: %w", err)
+	}
+	var owners []provider.Owner
+	for _, p := range pages {
+		for _, in := range p.Installations {
+			kind := provider.OwnerOrganization
+			if in.Account.Type == "User" {
+				kind = provider.OwnerUser
+			}
+			owners = append(owners, provider.Owner{Name: in.Account.Login, Kind: kind})
+		}
+	}
+	return owners, nil
+}
+
 // Hosts implements provider.Kind. git takes a token as the password of any
 // user; `x-access-token` is the name GitHub documents for App tokens.
 func (k *Kind) Hosts() provider.Hosts {

@@ -1,5 +1,5 @@
 // Package api is workspace-manager's MCP surface: the person's provider
-// sign-ins (providers.go), the access check at a Session's start
+// sign-ins and the owners they reach (providers.go), the access check at a Session's start
 // (authorize.go), the workspaces' tools (workspaces.go) and the selection's
 // (repositories.go), each reading and writing through a workspace.Store,
 // which checks the caller's Organization and writes with Config.Kube, the
@@ -46,7 +46,7 @@ type Config struct {
 	// estimates a selection's volume with.
 	Sizing controller.Sizing
 	// Grants are the person's provider tokens muster attaches to the call:
-	// with Providers, they serve list_providers.
+	// with Providers, they serve list_providers and, with Kube, list_owners.
 	Grants muster.Grants
 	// Authorizer, when set, serves authorize_workspace.
 	Authorizer *authorize.Authorizer
@@ -89,6 +89,9 @@ func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
 		}
 		store := workspace.NewStore(cfg.Kube.Dynamic(), cfg.Namespace, cfg.Organizations, names)
 		addWorkspaceTools(s, &workspaceTools{store: store, core: cfg.Kube.Typed(), namespace: cfg.Namespace, now: time.Now})
+		if len(cfg.Providers) > 0 {
+			addOwnersTool(s, store, cfg.Providers, cfg.Grants)
+		}
 		if len(cfg.Providers) > 0 && cfg.Secrets != nil {
 			sizing := cfg.Sizing
 			if sizing == (controller.Sizing{}) {

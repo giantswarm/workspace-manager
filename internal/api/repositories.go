@@ -70,6 +70,18 @@ type RepositoriesResult struct {
 	// for the picker's filters.
 	Languages []string `json:"languages"`
 	Topics    []string `json:"topics"`
+	// LanguageCounts and TopicCounts are those values with the number of
+	// the owner's repositories carrying each, most used first; WithTopics
+	// is how many of the owner's repositories carry any topic.
+	LanguageCounts []FacetCount `json:"languageCounts"`
+	TopicCounts    []FacetCount `json:"topicCounts"`
+	WithTopics     int          `json:"withTopics"`
+}
+
+// FacetCount is one filter value and the number of repositories carrying it.
+type FacetCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
 }
 
 // PreviewInput is preview_workspace's input: an existing workspace by its
@@ -130,6 +142,7 @@ func addSelectionTools(s *mcpserver.MCPServer, t *selectionTools) {
 	s.AddTool(mcp.NewTool("list_repositories",
 		tooldesc.Describe("List one owner's repositories on a provider instance for a workspace's picker: searched by name, filtered and paged.",
 			"Filtered by language, topics, archived and forks; each with language, topics, last push and size, from the provider's cached listing; "+
+				"with how many of the owner's repositories carry each language and topic, and any topic at all; "+
 				"it says nothing about your own access to them."),
 		mcp.WithInputSchema[RepositoriesInput](),
 		readOnly(),
@@ -238,16 +251,19 @@ func (t *selectionTools) preview(sel *workspace.Selection, ws *v1alpha1.Workspac
 // listRepositories filters, sorts by name and pages an owner's listing.
 func listRepositories(items []provider.Item, in RepositoriesInput) RepositoriesResult {
 	res := RepositoriesResult{Provider: in.Provider, Owner: in.Owner, OwnerTotal: len(items), Repositories: []Repository{}}
-	langs, topics := map[string]bool{}, map[string]bool{}
+	langs, topics := map[string]int{}, map[string]int{}
 	wantLangs, wantTopics := lowerSet(in.Languages), lowerSet(in.Topics)
 	search := strings.ToLower(in.Search)
 	var matching []Repository
 	for _, it := range items {
 		if it.Language != "" {
-			langs[it.Language] = true
+			langs[it.Language]++
+		}
+		if len(it.Topics) > 0 {
+			res.WithTopics++
 		}
 		for _, tp := range it.Topics {
-			topics[tp] = true
+			topics[tp]++
 		}
 		switch {
 		case search != "" && !strings.Contains(strings.ToLower(it.Name), search),
@@ -266,7 +282,23 @@ func listRepositories(items []provider.Item, in RepositoriesInput) RepositoriesR
 	page, res.Page, res.PageSize = paginate(matching, in.Page)
 	res.Repositories = append(res.Repositories, page...)
 	res.Languages, res.Topics = sortedKeys(langs), sortedKeys(topics)
+	res.LanguageCounts, res.TopicCounts = byCount(langs), byCount(topics)
 	return res
+}
+
+// byCount are the counts, most first, then by name.
+func byCount(m map[string]int) []FacetCount {
+	out := make([]FacetCount, 0, len(m))
+	for name, n := range m {
+		out = append(out, FacetCount{Name: name, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // paginate is one page of all, with the page and size it used.
@@ -291,7 +323,7 @@ func lowerSet(ss []string) map[string]bool {
 	return m
 }
 
-func sortedKeys(m map[string]bool) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

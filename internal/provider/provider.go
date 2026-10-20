@@ -51,6 +51,12 @@ type Kind interface {
 	// refuses is an error wrapping ErrCredentialRefused.
 	Person(ctx context.Context, cred oauth2.TokenSource) (string, error)
 
+	// Owners are the owners the person whose own token cred is can reach on
+	// the provider, each one whose items List can resolve: the picker's
+	// owners. It never answers from a cache; a credential the provider
+	// refuses is an error wrapping ErrCredentialRefused.
+	Owners(ctx context.Context, cred oauth2.TokenSource) ([]Owner, error)
+
 	// Hosts are where the person's token is set at run time, and the CLI the
 	// Harness images carry for the provider.
 	Hosts() Hosts
@@ -117,6 +123,24 @@ type Item struct {
 	CloneURL string
 	// DefaultBranch is the branch a mirror's HEAD points at.
 	DefaultBranch string
+}
+
+// OwnerKind is what an owner is at its provider.
+type OwnerKind string
+
+const (
+	// OwnerOrganization is a GitHub organization.
+	OwnerOrganization OwnerKind = "organization"
+	// OwnerGroup is a GitLab top-level group.
+	OwnerGroup OwnerKind = "group"
+	// OwnerUser is a user account or namespace.
+	OwnerUser OwnerKind = "user"
+)
+
+// Owner is an account items are listed under.
+type Owner struct {
+	Name string
+	Kind OwnerKind
 }
 
 // Key identifies an item across owners: `<owner>/<name>`, also its mirror's

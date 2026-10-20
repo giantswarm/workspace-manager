@@ -50,7 +50,7 @@ var docsServer = sync.OnceValue(func() *mcpserver.MCPServer {
 func TestToolsDocIsCurrent(t *testing.T) {
 	tooldesctest.AssertServerDoc(t, docsServer(),
 		"# The tools\n\nGenerated from the registered tools (`make tools-doc`), with every tool registered; through muster every tool is `x_<server>_<name>`. "+
-			"`list_providers` is registered only with provider instances, `list_repositories` and `preview_workspace` only with provider instances and their Secrets, "+
+			"`list_providers` is registered only with provider instances, `list_owners` only with provider instances and the kube clients, `list_repositories` and `preview_workspace` only with provider instances and their Secrets, "+
 			"`authorize_workspace` only with a grant signing key.",
 		"../../docs/tools.md")
 }
