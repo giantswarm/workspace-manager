@@ -156,8 +156,8 @@ const (
 // workspace is theirs.
 type Connect struct {
 	Provider string `json:"provider"`
-	// SignIn says how: muster's core_auth_login for the provider its
-	// registration is pinned to, whose answer is muster's sign-in link.
+	// SignIn says how: muster's core_auth_login for the provider's App,
+	// whose answer is muster's sign-in link.
 	SignIn string `json:"signIn"`
 }
 
@@ -179,6 +179,12 @@ type Result struct {
 	Unreadable []string `json:"unreadable,omitempty"`
 	// Connect are the providers whose App the person has not granted.
 	Connect []Connect `json:"connect,omitempty"`
+	// Status is muster.StatusGrantRequired with ConnectRequired when muster
+	// keeps the App of a provider to grant: muster answers the result
+	// auth_required with the sign-in link of each App in Apps.
+	Status string `json:"status,omitempty"`
+	// Apps are the providers to grant whose App muster keeps, with Status.
+	Apps []string `json:"apps,omitempty"`
 	// SyncRequested is true when the check requested a sync of the
 	// workspace, its last one being older than the refresh threshold; the
 	// Session does not wait for it.
@@ -372,6 +378,12 @@ func (a *Authorizer) connectRequired(res *Result, name string) (*Result, error) 
 	names := make([]string, len(res.Connect))
 	for i, c := range res.Connect {
 		names[i] = c.Provider
+		if a.cfg.Grants.App(c.Provider) {
+			res.Apps = append(res.Apps, c.Provider)
+		}
+	}
+	if len(res.Apps) > 0 {
+		res.Status = muster.StatusGrantRequired
 	}
 	res.Outcome, res.Changed, res.Unreadable = ConnectRequired, nil, nil
 	res.Reason = fmt.Sprintf("grant %s in muster to use workspace %s: the Session works as you there", strings.Join(names, ", "), name)

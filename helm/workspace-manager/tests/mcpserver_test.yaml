@@ -1,6 +1,6 @@
 # The muster registration: off by default, one streamable-http MCPServer at
-# the Service, unpinned unless pinned to a provider instance's App (the
-# person's grant in muster), the auth block only with OAuth, the audiences the MCPServer requires are the same
+# the Service, receiving the grants of the provider instances' Apps or pinned
+# to one instance's App (the person's grant in muster), the auth block only with OAuth, the audiences the MCPServer requires are the same
 # ones the Deployment trusts (deployment_test.yaml), and the display name the
 # portal shows as an annotation.
 #
@@ -289,5 +289,94 @@ tests:
         mcpServer:
           auth:
             provider: github
+    asserts:
+      - failedTemplate: {}
+
+  - it: receives the grants of each provider instance's App, GitHub and GitLab side by side
+    set:
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+        - name: gitlab
+          kind: gitlab
+          values:
+            url: https://gitlab.example.com
+            token: {name: workspace-gitlab, key: token}
+      muster:
+        mcpServer:
+          auth:
+            providerApps: [github, gitlab]
+    asserts:
+      - equal:
+          path: spec.auth
+          value:
+            type: oauth
+            forwardToken: true
+            providerApps: [github, gitlab]
+            requiredAudiences:
+              - dex-k8s-authenticator
+
+  - it: receives the Apps' grants beside a pin while an installation moves to Apps
+    set:
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+        - name: gitlab
+          kind: gitlab
+          values:
+            url: https://gitlab.example.com
+            token: {name: workspace-gitlab, key: token}
+      muster:
+        mcpServer:
+          auth:
+            providerApps: [gitlab]
+            provider: github
+            authorizationServer:
+              issuer: https://github.com/apps/example-agents
+              clientCredentialsSecretRef:
+                name: workspace-github-oauth-client
+    asserts:
+      - equal:
+          path: spec.auth.forwardIdentity
+          value: true
+      - equal:
+          path: spec.auth.providerApps
+          value: [gitlab]
+      - equal:
+          path: spec.auth.authorizationServer.issuer
+          value: https://github.com/apps/example-agents
+
+  - it: refuses an App of a provider instance it does not configure
+    set:
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+      muster:
+        mcpServer:
+          auth:
+            providerApps: [github, gitlab]
+    asserts:
+      - failedTemplate:
+          errorMessage: muster.mcpServer.auth.providerApps "gitlab" names no provider instance of providers
+
+  - it: refuses provider Apps without OAuth
+    set:
+      oauth:
+        enabled: false
+      providers:
+        - name: github
+          kind: github
+          values:
+            app: {id: "1", privateKey: {name: app, key: private-key}}
+      muster:
+        mcpServer:
+          auth:
+            providerApps: [github]
     asserts:
       - failedTemplate: {}

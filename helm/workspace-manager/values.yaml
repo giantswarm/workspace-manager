@@ -188,7 +188,7 @@ organizations: {}  # @schema additionalProperties: {type: object, additionalProp
 # sync's); a source's owner is a top-level group, its sub-groups' projects
 # included and named by their path below it with `~` for `/` (`team~api`), or
 # a user. A person's token for a provider is muster's grant of its App
-# (`muster.mcpServer.auth.provider`), never the manager's: no provider takes
+# (`muster.mcpServer.auth.providerApps`), never the manager's: no provider takes
 # an OAuth client here.
 providers: []  # @schema item: object ; itemProperties: {name: {type: string}, kind: {type: string, enum: [github, gitlab]}, values: {type: object, additionalProperties: true}}
 
@@ -236,7 +236,8 @@ oauth:
   # MCP endpoint requires a bearer token Dex issued, and every call carries the
   # caller's identity and Dex token, from which the caller's Organization is
   # checked. muster forwards the session's Dex id_token (its MCPServer
-  # registration with `auth.forwardToken`, or in `X-Muster-Id-Token` beside
+  # registration with `auth.forwardToken`, beside the person's App tokens of
+  # `muster.mcpServer.auth.providerApps`, or in `X-Muster-Id-Token` beside
   # the person's App token when pinned to a provider's App,
   # `muster.mcpServer.auth.provider`); it is validated against Dex's JWKS when
   # its audience is in `trustedAudiences`. Off: no caller, so nothing that needs an Organization
@@ -316,6 +317,18 @@ muster:
     auth:
       forwardToken: true
       requiredAudiences: []
+      # -- The provider instances (`providers` names) whose App muster keeps
+      # (muster's `aggregator.providerApps`, each App named after its
+      # instance) and this registration receives the grants of: the person
+      # grants each App once in muster (`core_auth_login app=<instance>`),
+      # and muster attaches the token of every App they granted to every
+      # call in `X-Muster-Grant-<instance>`, beside the forwarded Dex ID token
+      # (`forwardToken`). They are the person's tokens in
+      # `authorize_workspace` and `list_providers`, GitHub and GitLab side by
+      # side; a missing one is answered with its App's sign-in link. Needs
+      # `oauth.enabled`; replaces `provider`, beside which it may stand while
+      # an installation moves to Apps.
+      providerApps: []  # @schema item: string
       # -- The provider instance (a `providers` name) whose App muster pins
       # this registration to: the person grants that App once in muster
       # (one grant per App per person), and muster attaches the person's App
@@ -323,9 +336,9 @@ muster:
       # it in `X-Muster-Id-Token`. It is the person's token for that
       # provider in `authorize_workspace` and `list_providers`; a person who
       # has not granted it gets muster's sign-in link instead of a tool's
-      # answer. muster holds no grant of any other instance. Empty: the
-      # registration is unpinned (`forwardToken`), and no person has a
-      # provider token. Needs `oauth.enabled` and `authorizationServer`.
+      # answer. The single-provider predecessor of `providerApps`. Empty: the
+      # registration is unpinned (`forwardToken`). Needs `oauth.enabled` and
+      # `authorizationServer`.
       provider: ""
       authorizationServer:
         # -- The issuer identity the person's grant is filed under: the

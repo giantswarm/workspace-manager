@@ -78,8 +78,8 @@ func (t authTokens) as(person string) context.Context {
 	return ctx
 }
 
-// grants are the test's muster registration, pinned to the GitHub instance.
-var grants = muster.Grants{Instance: "github", Server: "workspace-manager"}
+// grants are the test's muster registration, receiving both instances' Apps.
+var grants = muster.Grants{Apps: []string{"github", "code"}, Server: "workspace-manager"}
 
 // person is a caller: the Dex subject, and the email the grant names them
 // by.
@@ -89,6 +89,8 @@ func person(subject string) *identity.Identity {
 
 type authFixture struct {
 	authorizer *authorize.Authorizer
+	core       *k8sfake.Clientset
+	instances  []provider.Instance
 	workspaces authWorkspaces
 	keys       *grant.KeySource
 	tokens     authTokens
@@ -125,6 +127,11 @@ func authSetup(t *testing.T) *authFixture {
 	f := &authFixture{
 		keys: keys,
 		code: fkKind,
+		core: cs,
+		instances: []provider.Instance{
+			{Name: "github", KindName: github.KindName, Kind: ghKind},
+			{Name: "code", KindName: fake.KindName, Kind: fkKind},
+		},
 		tokens: authTokens{
 			"alice": {"github": gh.Person("acme/api", "acme/web", "acme/other"), "code": backend.Person("umbrella/theirs")},
 			"bob":   {"github": gh.Person("acme/api"), "code": backend.Person("umbrella/theirs")},
@@ -133,13 +140,10 @@ func authSetup(t *testing.T) *authFixture {
 	}
 	f.workspaces = authWorkspaces{"otter": authWorkspace("otter", authReady), "fresh": authWorkspace("fresh", unsynced), "pending": authWorkspace("pending", unbound)}
 	f.authorizer, err = authorize.New(authorize.Config{
-		Workspaces: f.workspaces,
-		Core:       cs,
-		Namespace:  authNamespace,
-		Instances: []provider.Instance{
-			{Name: "github", KindName: github.KindName, Kind: ghKind},
-			{Name: "code", KindName: fake.KindName, Kind: fkKind},
-		},
+		Workspaces:     f.workspaces,
+		Core:           cs,
+		Namespace:      authNamespace,
+		Instances:      f.instances,
 		Grants:         grants,
 		Signer:         &grant.Signer{Keys: f.keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
 		Broker:         "workspace-manager",
@@ -345,8 +349,9 @@ func TestAPersonWithoutAGrantIsToldToGrantInMuster(t *testing.T) {
 	res, err := f.authorizer.Authorize(f.tokens.as("carol"), person("carol"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
-	assert.Equal(t, []authorize.Connect{{Provider: "code", SignIn: grants.SignIn("code")}}, res.Connect)
-	assert.Contains(t, res.Connect[0].SignIn, "muster holds no grant for provider code")
+	assert.Equal(t, []authorize.Connect{{Provider: "code", SignIn: "grant the App of provider code once in muster: core_auth_login app=code"}}, res.Connect)
+	assert.Equal(t, muster.StatusGrantRequired, res.Status, "muster answers it with the App's sign-in link")
+	assert.Equal(t, []string{"code"}, res.Apps, "only the App not granted")
 	assert.Contains(t, res.Reason, "grant code in muster")
 	assert.Empty(t, res.Grant)
 
@@ -354,6 +359,30 @@ func TestAPersonWithoutAGrantIsToldToGrantInMuster(t *testing.T) {
 	res, err = f.authorizer.Authorize(f.tokens.as("dave"), person("dave"), "otter")
 	require.NoError(t, err)
 	assert.Len(t, res.Connect, 2, "every provider the person has not granted, at once")
+	assert.Equal(t, []string{"code", "github"}, res.Apps)
+}
+
+// A registration pinned to one instance's App names how to grant it, and
+// that muster holds no grant of the other; no grant_required, which only
+// Apps muster keeps answer.
+func TestAPinnedRegistrationNamesItsOneApp(t *testing.T) {
+	f := authSetup(t)
+	pinned := muster.Grants{Instance: "github", Server: "workspace-manager"}
+	a, err := authorize.New(authorize.Config{
+		Workspaces: f.workspaces, Core: f.core, Namespace: authNamespace, Instances: f.instances, Grants: pinned,
+		Signer: &grant.Signer{Keys: f.keys, Issuer: "https://wm.example.com", Audience: "kagent", TTL: 2 * time.Minute},
+		Broker: "workspace-manager", AgentNamespace: agentNamespace,
+	})
+	require.NoError(t, err)
+	res, err := a.Authorize(f.tokens.as("dave"), person("dave"), "otter")
+	require.NoError(t, err)
+	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
+	assert.Equal(t, []authorize.Connect{
+		{Provider: "code", SignIn: "muster holds no grant for provider code: the workspace-manager's registration in muster names no App of it"},
+		{Provider: "github", SignIn: "grant the App of provider github once in muster: core_auth_login server=workspace-manager"},
+	}, res.Connect)
+	assert.Empty(t, res.Status)
+	assert.Empty(t, res.Apps)
 }
 
 func TestAWorkspaceNotSyncedYetIsRefused(t *testing.T) {
@@ -382,7 +411,8 @@ func TestATokenTheProviderRefusesAsksToGrantAgain(t *testing.T) {
 	res, err := f.authorizer.Authorize(f.tokens.as("alice"), person("alice"), "otter")
 	require.NoError(t, err)
 	assert.Equal(t, authorize.ConnectRequired, res.Outcome)
-	assert.Equal(t, []authorize.Connect{{Provider: "github", SignIn: "grant the App of provider github once in muster: core_auth_login server=workspace-manager"}}, res.Connect)
+	assert.Equal(t, []authorize.Connect{{Provider: "github", SignIn: "grant the App of provider github once in muster: core_auth_login app=github"}}, res.Connect)
+	assert.Equal(t, []string{"github"}, res.Apps)
 	assert.Empty(t, res.Grant)
 	assert.Empty(t, res.Changed)
 }

@@ -246,30 +246,52 @@ func TestWorkspaceGrantsFailTheStart(t *testing.T) {
 	assert.ErrorContains(t, grants("workspace-manager-keys/grant", func(o *serveOptions) { o.grantAgentNamespace = "Not/A-Namespace" }), "no namespace name")
 }
 
-// TestMusterGrants: --muster-provider pins the registration to a configured
-// instance's App; none pins nothing; an unknown instance fails the start.
+// TestMusterGrants: --muster-provider-apps names the configured instances
+// whose App muster attaches the person's token of; --muster-provider pins the
+// registration to one instance's App, beside them or alone; none of either
+// reads no token; an unknown instance fails the start.
 func TestMusterGrants(t *testing.T) {
 	providers := []provider.Instance{{Name: "github", KindName: "github"}, {Name: "gitlab", KindName: "gitlab"}}
 	o := &serveOptions{musterServer: "workspace-manager"}
 
-	grants, pin, err := musterGrants(o, providers)
+	grants, pin, apps, err := musterGrants(o, providers)
 	require.NoError(t, err)
 	assert.Nil(t, pin, "no provider named, no pin")
+	assert.Nil(t, apps, "no Apps named, no grant headers read")
 	assert.Empty(t, grants.Instance)
 
-	o.musterProvider = "github"
-	grants, pin, err = musterGrants(o, providers)
+	o.musterProviderApps = "github, gitlab"
+	grants, pin, apps, err = musterGrants(o, providers)
 	require.NoError(t, err)
-	require.NotNil(t, pin)
-	assert.Equal(t, muster.Grants{Instance: "github", Server: "workspace-manager"}, grants)
+	assert.Nil(t, pin)
+	require.NotNil(t, apps)
+	assert.Equal(t, providers, apps.Apps)
+	assert.Equal(t, muster.Grants{Apps: []string{"github", "gitlab"}, Server: "workspace-manager"}, grants)
+
+	o.musterProvider = "github"
+	grants, pin, apps, err = musterGrants(o, providers)
+	require.NoError(t, err)
+	require.NotNil(t, pin, "the pin beside the Apps")
+	require.NotNil(t, apps)
 	assert.Equal(t, grants, pin.Grants)
 
-	o.musterProvider = "bitbucket"
-	_, _, err = musterGrants(o, providers)
+	o.musterProviderApps = ""
+	grants, pin, apps, err = musterGrants(o, providers)
+	require.NoError(t, err)
+	require.NotNil(t, pin)
+	assert.Nil(t, apps)
+	assert.Equal(t, muster.Grants{Instance: "github", Server: "workspace-manager"}, grants)
+
+	o.musterProviderApps = "github,bitbucket"
+	_, _, _, err = musterGrants(o, providers)
+	assert.ErrorContains(t, err, `--muster-provider-apps names "bitbucket", no configured provider instance`)
+
+	o.musterProviderApps, o.musterProvider = "", "bitbucket"
+	_, _, _, err = musterGrants(o, providers)
 	assert.ErrorContains(t, err, `--muster-provider "bitbucket" names no configured provider instance`)
 
 	o.musterProvider, o.musterServer = "github", ""
-	_, _, err = musterGrants(o, providers)
+	_, _, _, err = musterGrants(o, providers)
 	assert.ErrorContains(t, err, "--muster-server")
 }
 
@@ -278,6 +300,7 @@ func TestMusterGrants(t *testing.T) {
 func TestServeMusterFlags(t *testing.T) {
 	f := newServeCmd().Flags()
 	assert.Empty(t, f.Lookup("muster-provider").DefValue)
+	assert.Empty(t, f.Lookup("muster-provider-apps").DefValue)
 	assert.Equal(t, "workspace-manager", f.Lookup("muster-server").DefValue)
 	for _, gone := range []string{"signin-keys-secret", "signin-current-key", "token-exchange-client-id", "token-exchange-client-secret"} {
 		assert.Nil(t, f.Lookup(gone), gone)
