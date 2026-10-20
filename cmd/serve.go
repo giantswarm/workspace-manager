@@ -63,9 +63,11 @@ type serveOptions struct {
 
 	kube kubeFlags
 
-	namespace     string
-	organizations []string
-	storageClass  string
+	namespace           string
+	organizations       []string
+	organizationEmails  []string
+	organizationDomains []string
+	storageClass        string
 
 	syncCycle           time.Duration
 	sessionCleanupAfter time.Duration
@@ -130,6 +132,8 @@ environment variable named next to it; flags win over the environment.`,
 	o.kube.add(f)
 	f.StringVar(&o.namespace, "namespace", envOr("WORKSPACE_MANAGER_NAMESPACE", "kagent"), "Namespace the workspaces and everything they own live in (WORKSPACE_MANAGER_NAMESPACE)")
 	f.StringArrayVar(&o.organizations, "organization", nil, "An Organization and its member groups, `<organization>=<group>[,<group>...]`, once per Organization: a caller carrying any of the groups reads and writes the Organization's workspaces; an Organization not given has no members")
+	f.StringArrayVar(&o.organizationEmails, "organization-emails", nil, "An Organization and its member emails, `<organization>=<email>[,<email>...]`, once per Organization: a caller whose verified email is one of them is a member, for an identity provider that sends no groups")
+	f.StringArrayVar(&o.organizationDomains, "organization-domains", nil, "An Organization and its member email domains, `<organization>=<domain>[,<domain>...]`, once per Organization: a caller whose verified email ends in `@<domain>` is a member, no subdomain, for an identity provider that sends no groups")
 	f.StringVar(&o.storageClass, "storage-class", envOr("WORKSPACE_MANAGER_STORAGE_CLASS", ""), "The read-write-many StorageClass every workspace's volume is claimed from; empty claims none: each Workspace's VolumeClaimed condition names the missing value, and the cluster's default class is never used in its place (WORKSPACE_MANAGER_STORAGE_CLASS)")
 	f.DurationVar(&o.syncCycle, "sync-cycle", envDuration("WORKSPACE_MANAGER_SYNC_CYCLE", controller.DefaultResync), "How often the controller reconciles every Workspace without an event, and how long after a failed sync cycle it tries again, a Go duration (WORKSPACE_MANAGER_SYNC_CYCLE)")
 	f.DurationVar(&o.sessionCleanupAfter, "sessions-cleanup-after", envDuration("WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER", controller.DefaultSessionCleanupAfter), "How long a Session's directory outlives the Session's last turn, a Go duration; a directory whose Session kagent does not know outlives the sync that first found it as long (WORKSPACE_MANAGER_SESSIONS_CLEANUP_AFTER)")
@@ -198,7 +202,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	for _, p := range providers {
 		log.Info("provider configured", "name", p.Name, "kind", p.KindName)
 	}
-	orgs, err := workspace.ParseOrganizations(o.organizations)
+	orgs, err := workspace.ParseOrganizations(o.organizations, o.organizationEmails, o.organizationDomains)
 	if err != nil {
 		return err
 	}

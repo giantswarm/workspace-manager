@@ -98,7 +98,7 @@ func newToolsFixture(t *testing.T, kube kubeClients) *toolsFixture {
 		cfg: api.Config{
 			Kube:          kube,
 			Namespace:     wsNamespace,
-			Organizations: workspace.Organizations{"acme": {"acme-devs"}, "umbrella": {"umbrella-devs"}},
+			Organizations: workspace.Organizations{"acme": {Groups: []string{"acme-devs"}}, "umbrella": {Groups: []string{"umbrella-devs"}}},
 			Providers: []provider.Instance{
 				{Name: "github", KindName: github.KindName, Kind: ghKind},
 				{Name: "code", KindName: fake.KindName, Kind: fkKind},

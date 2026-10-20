@@ -76,7 +76,15 @@ spec:
             - --sync-job-template=/etc/workspace-manager/sync-job/job.yaml
             - --mcp-path={{ .Values.mcp.path }}
             {{- range $org, $o := .Values.organizations }}
-            - --organization={{ $org }}={{ join "," $o.memberGroups }}
+            {{- with $o.memberGroups }}
+            - --organization={{ $org }}={{ join "," . }}
+            {{- end }}
+            {{- with $o.memberEmails }}
+            - --organization-emails={{ $org }}={{ join "," . }}
+            {{- end }}
+            {{- with $o.memberDomains }}
+            - --organization-domains={{ $org }}={{ join "," . }}
+            {{- end }}
             {{- end }}
             {{- if .Values.providers }}
             - --providers-config=/etc/workspace-manager/providers/providers.yaml

@@ -182,10 +182,15 @@ person or group is bound to anything; the chart binds only the manager's
 ServiceAccount, which writes the Workspaces (and their volume and Jobs). The
 manager checks membership on every read and write (`internal/workspace`): the
 caller's forwarded identity must carry one of the Organization's member
-groups, configured per Organization (`--organization
-<organization>=<group>[,<group>...]`, the chart's `organizations`). A listing
-shows only the caller's Organizations' Workspaces; an Organization not
-configured has no members.
+groups (`--organization <organization>=<group>[,<group>...]`), or its email,
+verified by the identity provider (`email_verified`), must be one of the
+Organization's member emails (`--organization-emails
+<organization>=<email>[,...]`) or end in `@` one of its member domains
+(`--organization-domains <organization>=<domain>[,...]`, no subdomain): the
+chart's `organizations.<organization>.memberGroups`, `memberEmails` and
+`memberDomains`. An identity provider that sends no groups claim, Google among
+them, admits by email or domain only. A listing shows only the caller's
+Organizations' Workspaces; an Organization not configured has no members.
 
 ## The workspace tools
 

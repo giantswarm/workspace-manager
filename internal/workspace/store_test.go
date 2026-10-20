@@ -17,7 +17,7 @@ import (
 
 const testNamespace = "kagent"
 
-var testOrgs = Organizations{"acme": {"acme-devs"}, "umbrella": {"umbrella-devs"}}
+var testOrgs = Organizations{"acme": {Groups: []string{"acme-devs"}}, "umbrella": {Groups: []string{"umbrella-devs"}}}
 
 func newTestStore(t *testing.T, objs ...*v1alpha1.Workspace) *Store {
 	t.Helper()
