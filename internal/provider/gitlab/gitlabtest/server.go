@@ -293,6 +293,32 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"username": "user-" + tok})
+	case path == "groups":
+		if !person {
+			fail(w, http.StatusUnauthorized, "401 Unauthorized")
+			return
+		}
+		if r.URL.Query().Get("top_level_only") != "true" {
+			fail(w, http.StatusBadRequest, "the kind lists top-level groups")
+			return
+		}
+		// The person is a member of the groups they read a project of.
+		s.mu.Lock()
+		groups := []map[string]any{}
+		for owner, ps := range s.projects {
+			if s.users[owner] {
+				continue
+			}
+			for _, p := range ps {
+				if reads[p.Key()] {
+					groups = append(groups, map[string]any{"full_path": owner, "path": owner})
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+		sort.Slice(groups, func(i, j int) bool { return groups[i]["full_path"].(string) < groups[j]["full_path"].(string) })
+		writeJSON(w, http.StatusOK, groups)
 	case len(parts) == 3 && (parts[0] == "groups" || parts[0] == "users") && parts[2] == "projects":
 		owner := parts[1]
 		s.mu.Lock()

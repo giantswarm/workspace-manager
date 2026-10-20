@@ -109,6 +109,10 @@ func (k personKind) Person(_ context.Context, cred oauth2.TokenSource) (string, 
 	return "", provider.ErrCredentialRefused
 }
 
+func (k personKind) Owners(context.Context, oauth2.TokenSource) ([]provider.Owner, error) {
+	return nil, nil
+}
+
 func (k personKind) Hosts() provider.Hosts { return provider.Hosts{} }
 
 func (k personKind) SecretRefs() []provider.SecretRef { return nil }

@@ -273,6 +273,31 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			reads = nil
 		}
 		s.listRepos(w, r, parts[1], s.items(parts[1], reads))
+	case r.Method == http.MethodGet && path == "user/installations":
+		reads, ok := s.person(r)
+		if !ok {
+			fail(w, http.StatusUnauthorized, "Bad credentials")
+			return
+		}
+		// The App is installed on every owner; the person accesses those
+		// they read a repository of.
+		s.mu.Lock()
+		var installations []map[string]any
+		for owner, repos := range s.repos {
+			for name := range repos {
+				if reads[owner+"/"+name] {
+					typ := "Organization"
+					if s.users[owner] {
+						typ = "User"
+					}
+					installations = append(installations, map[string]any{"id": installationID(owner), "account": map[string]any{"login": owner, "type": typ}})
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+		sort.Slice(installations, func(i, j int) bool { return installations[i]["id"].(int64) < installations[j]["id"].(int64) })
+		writeJSON(w, http.StatusOK, map[string]any{"total_count": len(installations), "installations": installations})
 	case r.Method == http.MethodGet && path == "user":
 		if _, ok := s.person(r); !ok {
 			fail(w, http.StatusUnauthorized, "Bad credentials")

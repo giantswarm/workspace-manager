@@ -162,6 +162,31 @@ func (k *Kind) Person(_ context.Context, cred oauth2.TokenSource) (string, error
 	return tok.AccessToken, nil
 }
 
+// Owners implements provider.Kind: the owners of the items the person's
+// token reads; any token the store did not issue is refused.
+func (k *Kind) Owners(_ context.Context, cred oauth2.TokenSource) ([]provider.Owner, error) {
+	tok, err := cred.Token()
+	if err != nil {
+		return nil, err
+	}
+	k.store.mu.Lock()
+	defer k.store.mu.Unlock()
+	reads, ok := k.store.persons[tok.AccessToken]
+	if !ok {
+		return nil, fmt.Errorf("fake: %w", provider.ErrCredentialRefused)
+	}
+	var owners []provider.Owner
+	for owner, items := range k.store.items {
+		for name := range items {
+			if reads[owner+"/"+name] {
+				owners = append(owners, provider.Owner{Name: owner, Kind: provider.OwnerOrganization})
+				break
+			}
+		}
+	}
+	return owners, nil
+}
+
 // Hosts implements provider.Kind: git and, under `/api/`, an API taking
 // another scheme on one host, as a GitLab serves them.
 func (k *Kind) Hosts() provider.Hosts {

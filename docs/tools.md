@@ -1,6 +1,6 @@
 # The tools
 
-Generated from the registered tools (`make tools-doc`), with every tool registered; through muster every tool is `x_<server>_<name>`. `list_providers` is registered only with provider instances, `list_repositories` and `preview_workspace` only with provider instances and their Secrets, `authorize_workspace` only with a grant signing key.
+Generated from the registered tools (`make tools-doc`), with every tool registered; through muster every tool is `x_<server>_<name>`. `list_providers` is registered only with provider instances, `list_owners` only with provider instances and the kube clients, `list_repositories` and `preview_workspace` only with provider instances and their Secrets, `authorize_workspace` only with a grant signing key.
 
 | Tool | Kind |
 |---|---|
@@ -8,6 +8,7 @@ Generated from the registered tools (`make tools-doc`), with every tool register
 | `create_workspace` | write |
 | `delete_workspace` | write, destructive |
 | `get_workspace` | read-only |
+| `list_owners` | read-only |
 | `list_providers` | read-only |
 | `list_repositories` | read-only |
 | `list_workspaces` | read-only |
@@ -221,12 +222,41 @@ The mirrors are the last sync's repositories with their sizes measured then; eac
 }
 ```
 
+## `list_owners`
+
+```text
+List the owners you reach on a provider instance, which a workspace's source picks repositories from.
+
+The organizations, groups and user account, fetched with your own sign-in and sorted by name; without your grant of the provider's App, how to grant it.
+```
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "organization": {
+      "type": "string",
+      "description": "The Organization whose workspace you edit; you must be a member"
+    },
+    "provider": {
+      "type": "string",
+      "description": "The provider instance's name, as list_providers shows it"
+    }
+  },
+  "required": [
+    "organization",
+    "provider"
+  ],
+  "additionalProperties": false
+}
+```
+
 ## `list_providers`
 
 ```text
 List the installation's workspace providers, each with its kind and whether you granted its App in muster.
 
-muster is the one place your provider sign-in lives.
+With its host and the account you are signed in as on each connected one. muster is the one place your provider sign-in lives; a sign-in the provider refuses shows as not connected.
 ```
 
 ```json
@@ -242,7 +272,7 @@ muster is the one place your provider sign-in lives.
 ```text
 List one owner's repositories on a provider instance for a workspace's picker: searched by name, filtered and paged.
 
-Filtered by language, topics, archived and forks; each with language, topics, last push and size, from the provider's cached listing; it says nothing about your own access to them.
+Filtered by language, topics, archived and forks; each with language, topics, last push and size, from the provider's cached listing; with how many of the owner's repositories carry each language and topic, and any topic at all; it says nothing about your own access to them.
 ```
 
 ```json

@@ -69,6 +69,10 @@ func (stubKind) Person(context.Context, oauth2.TokenSource) (string, error) {
 	return "", errors.New("not used")
 }
 
+func (stubKind) Owners(context.Context, oauth2.TokenSource) ([]provider.Owner, error) {
+	return nil, errors.New("not used")
+}
+
 func (stubKind) Hosts() provider.Hosts {
 	return provider.Hosts{Git: []provider.Host{{Name: "code.test", Scheme: provider.SchemeBasic, User: "x-access-token"}}}
 }

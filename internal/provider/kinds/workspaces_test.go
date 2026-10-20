@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/giantswarm/workspace-manager/internal/api"
 	"github.com/giantswarm/workspace-manager/internal/identity"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
+	"github.com/giantswarm/workspace-manager/internal/muster"
 	"github.com/giantswarm/workspace-manager/internal/provider"
 	"github.com/giantswarm/workspace-manager/internal/provider/fake"
 	"github.com/giantswarm/workspace-manager/internal/provider/github"
@@ -379,6 +381,9 @@ func TestListRepositories(t *testing.T) {
 	assert.Equal(t, "repo-000", first.Repositories[0].Name)
 	assert.Equal(t, []string{"Go", "TypeScript"}, first.Languages)
 	assert.Equal(t, []string{"mcp"}, first.Topics)
+	assert.Equal(t, []api.FacetCount{{Name: "Go", Count: 250}, {Name: "TypeScript", Count: 250}}, first.LanguageCounts, "a tie by name")
+	assert.Equal(t, []api.FacetCount{{Name: "mcp", Count: 50}}, first.TopicCounts)
+	assert.Equal(t, 50, first.WithTopics, "50 of 500 repositories have topics")
 	listed := f.gh.Listed()
 	assert.Equal(t, 5, listed, "one listing of 100 a page")
 
@@ -390,6 +395,8 @@ func TestListRepositories(t *testing.T) {
 
 	search := list(map[string]any{"search": "REPO-12"})
 	assert.Equal(t, 10, search.Total)
+	assert.Equal(t, first.LanguageCounts, search.LanguageCounts, "the counts are the owner's, whatever the search")
+	assert.Equal(t, 50, search.WithTopics)
 	assert.Equal(t, 250, list(map[string]any{"languages": []string{"go"}}).Total)
 	assert.Equal(t, 50, list(map[string]any{"topics": []string{"mcp"}}).Total)
 	assert.Equal(t, 10, list(map[string]any{"archived": true}).Total)
@@ -463,4 +470,44 @@ func syncedObjects(t *testing.T) []runtime.Object {
 			Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{
 				CSI: &corev1.CSIPersistentVolumeSource{Driver: "efs.csi.aws.com", VolumeHandle: "fs-1::fsap-1"}}}},
 	}
+}
+
+// TestListOwners: the owners the person's own token reaches on each kind,
+// sorted; without a grant, or with one the provider refuses, how to grant
+// the App.
+func TestListOwners(t *testing.T) {
+	scheme := runtime.NewScheme()
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{v1alpha1.WorkspaceResource: "WorkspaceList"})
+	f := newToolsFixture(t, kubeClients{dyn: dyn, core: k8sfake.NewClientset()})
+	f.cfg.Grants = muster.Grants{Apps: []string{"github", "code"}, Server: "workspace-manager"}
+	f.gh.Put(provider.Item{Owner: "alice", Name: "dotfiles", LastChange: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)})
+	f.gh.User("alice")
+	ghTok := f.gh.Person("acme/repo-001", "alice/dotfiles")
+	member := identity.ContextWithProviderToken(f.member, "github", ghTok)
+	owners := func(ctx context.Context, instance string) api.OwnersResult {
+		return ok[api.OwnersResult](t, f.call(t, ctx, "list_owners", map[string]any{"organization": "acme", "provider": instance}))
+	}
+
+	got := owners(member, "github")
+	assert.Equal(t, []api.Owner{{Name: "acme", Kind: "organization"}, {Name: "alice", Kind: "user"}}, got.Owners)
+	assert.Empty(t, got.Status)
+
+	ungranted := owners(f.member, "github")
+	assert.Empty(t, ungranted.Owners)
+	assert.Equal(t, muster.StatusGrantRequired, ungranted.Status)
+	assert.Equal(t, []string{"github"}, ungranted.Apps)
+	assert.Contains(t, ungranted.SignIn, "core_auth_login app=github")
+
+	refusedGrant := owners(identity.ContextWithProviderToken(f.member, "github", "ghu_revoked"), "github")
+	assert.Equal(t, muster.StatusGrantRequired, refusedGrant.Status, "a token the provider refuses is granted again")
+
+	refused(t, f.call(t, f.other, "list_owners", map[string]any{"organization": "acme", "provider": "github"}), "permission denied")
+	refused(t, f.call(t, member, "list_owners", map[string]any{"organization": "acme", "provider": "gitlab"}), `unknown provider "gitlab"`)
+
+	providers := ok[api.ProvidersResult](t, f.call(t, identity.ContextWithProviderToken(member, "code", "fake-revoked"), "list_providers", nil)).Providers
+	require.Len(t, providers, 2)
+	assert.Equal(t, api.ProviderStatus{Name: "github", Kind: "github", Host: strings.TrimPrefix(f.gh.URL, "http://"), Connected: true, Login: "login-" + ghTok}, providers[0], "signed in as")
+	assert.Equal(t, "code.fake.test", providers[1].Host)
+	assert.False(t, providers[1].Connected, "a grant the provider refuses is not connected")
+	assert.Contains(t, providers[1].SignIn, "core_auth_login app=code")
 }

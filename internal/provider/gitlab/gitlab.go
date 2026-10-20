@@ -167,6 +167,31 @@ func (k *Kind) Person(ctx context.Context, cred oauth2.TokenSource) (string, err
 	return user.Username, nil
 }
 
+// Owners implements provider.Kind: the person's user namespace and the
+// top-level groups they are a member of, as their OAuth token sees them.
+func (k *Kind) Owners(ctx context.Context, cred oauth2.TokenSource) ([]provider.Owner, error) {
+	user, err := k.Person(ctx, cred)
+	if err != nil {
+		return nil, err
+	}
+	owners := []provider.Owner{{Name: user, Kind: provider.OwnerUser}}
+	q := url.Values{"top_level_only": {"true"}, "min_access_level": {"10"}, "per_page": {strconv.Itoa(perPage)}, "order_by": {"path"}}
+	for next := k.api.String() + "/groups?" + q.Encode(); next != ""; {
+		var groups []struct {
+			FullPath string `json:"full_path"`
+		}
+		header, err := k.getPage(ctx, cred, next, &groups)
+		if err != nil {
+			return nil, fmt.Errorf("listing the owners: %w", err)
+		}
+		for _, g := range groups {
+			owners = append(owners, provider.Owner{Name: g.FullPath, Kind: provider.OwnerGroup})
+		}
+		next = link(header.Get("Link"), "next")
+	}
+	return owners, nil
+}
+
 // Hosts implements provider.Kind. GitLab takes an OAuth token over git as
 // the password of the user `oauth2`, and on its API as a Bearer token, never
 // as Basic. A GitLab serving its API under the git host lists the API's
