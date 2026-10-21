@@ -217,6 +217,13 @@ spec:
                   job:
                     description: Job is the sync Job's name, in the workspace's namespace.
                     type: string
+                  requests:
+                    description: Requests are the identifiers of the sync requests
+                      the cycle serves.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   startedAt:
                     description: StartedAt is when the controller started it.
                     format: date-time
@@ -319,6 +326,14 @@ spec:
                   message:
                     description: Message says why a cycle failed.
                     type: string
+                  requests:
+                    description: |-
+                      Requests are the identifiers of the sync requests the cycle served,
+                      ascending: those pending when it started.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   result:
                     description: Result of the cycle.
                     enum:

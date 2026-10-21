@@ -269,6 +269,11 @@ type LastSync struct {
 	// Job is the sync Job the cycle ran, empty for a cycle that ran none.
 	// +optional
 	Job string `json:"job,omitempty"`
+	// Requests are the identifiers of the sync requests the cycle served,
+	// ascending: those pending when it started.
+	// +listType=atomic
+	// +optional
+	Requests []string `json:"requests,omitempty"`
 	// Message says why a cycle failed.
 	// +optional
 	Message string `json:"message,omitempty"`
@@ -287,6 +292,10 @@ type ActiveSync struct {
 	// change, and it runs to clean up the session directories.
 	// +optional
 	CleanupOnly bool `json:"cleanupOnly,omitempty"`
+	// Requests are the identifiers of the sync requests the cycle serves.
+	// +listType=atomic
+	// +optional
+	Requests []string `json:"requests,omitempty"`
 }
 
 // VolumeRef is the volume as its CSI driver knows it.

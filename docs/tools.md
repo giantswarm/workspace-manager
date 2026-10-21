@@ -509,7 +509,7 @@ Paged, each repository with language, topics, last push and why it is in; also w
 ```text
 Request a sync of a workspace of your Organization now: the controller fetches what changed in its sources.
 
-It grows the volume where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. get_workspace shows the request, the running sync Job and the outcome.
+It grows the volume where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. It returns a requestId; get_workspace names it in syncRequest, then activeSync, then lastSync, the requestIds of the cycle that served it. Identifiers ascend, so one in neither syncRequest nor activeSync was served.
 ```
 
 ```json

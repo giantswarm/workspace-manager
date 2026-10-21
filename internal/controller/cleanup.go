@@ -293,11 +293,11 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 			return at.Sub(now), nil
 		}
 	}
+	var requests []string
 	if requested {
-		log = log.With("requestedAt", ws.Annotations[v1alpha1.AnnotationSyncRequested], "requestedBy", ws.Annotations[v1alpha1.AnnotationSyncRequestedBy])
-		if err := c.clearRequest(ctx, ws); err != nil {
-			return 0, err
-		}
+		requests = v1alpha1.SyncRequestIDs(ws)
+		log = log.With("requestedAt", ws.Annotations[v1alpha1.AnnotationSyncRequested], "requestedBy", ws.Annotations[v1alpha1.AnnotationSyncRequestedBy],
+			"requests", requests)
 	}
 
 	log.Info("deletion cycle starting", "sessionDirectories", len(ws.Status.Sessions))
@@ -317,13 +317,16 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 		return 0, err
 	}
 	log.Info("sync job started for the session directories", "job", job.Name)
-	return 0, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
-		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerDeletion, CleanupOnly: true}
+	if err := c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
+		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: v1alpha1.TriggerDeletion, CleanupOnly: true, Requests: requests}
 		meta.SetStatusCondition(&w.Status.Conditions, cond)
 		meta.SetStatusCondition(&w.Status.Conditions, synced(ws, metav1.ConditionFalse, v1alpha1.ReasonDeleting,
 			fmt.Sprintf("the workspace is deleted: its sync stopped, and sync job %s cleans up its %d session directories", job.Name, len(ws.Status.Sessions))))
 		return true
-	})
+	}); err != nil || !requested {
+		return 0, err
+	}
+	return 0, c.clearRequest(ctx, ws, requests)
 }
 
 // nextDeletionCycle is when a deleted workspace's next cleanup runs: at the

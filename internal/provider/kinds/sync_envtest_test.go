@@ -261,7 +261,11 @@ func TestSyncCycleEnvtest(t *testing.T) {
 		assert.Nil(t, res.ActiveSync)
 
 		ws := running(v1alpha1.TriggerRequest)
-		assert.Empty(t, ws.Annotations[v1alpha1.AnnotationSyncRequested], "the request is served")
+		assert.Equal(t, []string{res.RequestID}, ws.Status.ActiveSync.Requests, "the Job serves the request")
+		require.Eventually(t, func() bool {
+			ws = get()
+			return ws.Annotations[v1alpha1.AnnotationSyncRequested] == ""
+		}, 30*time.Second, 200*time.Millisecond, "the request is taken once the status names it")
 		assert.Len(t, jobs(), 2)
 		sel := selection()
 		assert.Equal(t, later, sel["acme/repo-001"], "the push")
@@ -270,6 +274,7 @@ func TestSyncCycleEnvtest(t *testing.T) {
 
 		got := complete(ws, clock.Now(), mirrored("repo-001", 2<<30, later), mirrored("repo-002", 3<<30, pushed.Add(2*time.Minute)))
 		assert.Equal(t, v1alpha1.TriggerRequest, got.Status.LastSync.Trigger)
+		assert.Equal(t, []string{res.RequestID}, got.Status.LastSync.Requests, "the cycle names the request it served")
 		assert.Equal(t, v1alpha1.SyncSucceeded, got.Status.LastSync.Result)
 		assert.Equal(t, "9Gi", got.Status.VolumeSize.String(), "the same need: nothing to grow")
 	})

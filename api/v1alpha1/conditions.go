@@ -93,4 +93,7 @@ const (
 	AnnotationSyncRequested = "workspace-manager.giantswarm.io/sync-requested"
 	// AnnotationSyncRequestedBy is who requested it.
 	AnnotationSyncRequestedBy = "workspace-manager.giantswarm.io/sync-requested-by"
+	// AnnotationSyncRequestIDs are the identifiers of the requests no cycle
+	// has served yet, comma-separated and ascending (SyncRequestIDs).
+	AnnotationSyncRequestIDs = "workspace-manager.giantswarm.io/sync-request-ids"
 )

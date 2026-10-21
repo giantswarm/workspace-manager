@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sync_workspace` returns the request's `requestId`; `get_workspace` names it in `syncRequest.requestIds` until its cycle starts, in `activeSync.requestIds` while it runs and in `lastSync.requestIds` once it ended. Identifiers ascend in the order of a workspace's requests, so a client decides from the response alone whether its request was served. A request made as a cycle starts is no longer cleared with it, and a cycle that ends in an API server error leaves its requests pending. ([#144](https://github.com/giantswarm/workspace-manager/issues/144))
 - `list_owners`: the owners a person reaches on a provider instance, fetched with their own token: on GitHub the accounts of the App's installations they can access, on GitLab their user namespace and top-level groups; without a grant, or with one the provider refuses, `grant_required` with the sign-in. ([#138](https://github.com/giantswarm/workspace-manager/issues/138))
 - `list_providers` names the account the person is signed in as (`login`) and the instance's git host (`host`); a grant the provider refuses shows as not connected. ([#138](https://github.com/giantswarm/workspace-manager/issues/138))
 - `list_repositories` counts the owner's repositories per language and per topic (`languageCounts`, `topicCounts`, most used first) and those with any topic (`withTopics`). ([#138](https://github.com/giantswarm/workspace-manager/issues/138))
