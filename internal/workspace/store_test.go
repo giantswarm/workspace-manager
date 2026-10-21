@@ -126,6 +126,11 @@ func TestADeletingWorkspaceIsAskedForItsCycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "2026-10-14T12:00:00Z", got.Annotations[v1alpha1.AnnotationSyncRequested])
 	require.Equal(t, "jane@example.com", got.Annotations[v1alpha1.AnnotationSyncRequestedBy])
+	require.Equal(t, []string{"20261014T120000.000000000Z"}, v1alpha1.SyncRequestIDs(got))
+	got, err = s.RequestSync(member, "acme-ws", at)
+	require.NoError(t, err)
+	require.Equal(t, []string{"20261014T120000.000000000Z", "20261014T120000.000000001Z"}, v1alpha1.SyncRequestIDs(got),
+		"a second request at the same time follows the first")
 
 	got, err = s.Delete(member, "acme-ws", at.Add(time.Minute))
 	require.NoError(t, err)

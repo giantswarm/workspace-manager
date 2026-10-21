@@ -212,16 +212,16 @@ caller, `invalid workspace` with the API server's or the manager's reason
 | `create_workspace` | `name`, `organization`, `sources`, `sizing` (`headroom`, `minimum` as quantities) | the view |
 | `update_workspace` | `name`, `sources` (replaced), `sizing` (replaced when given, kept otherwise; `sizing: {}` clears it), `resourceVersion` (optional: refused when the workspace changed since) | the view |
 | `delete_workspace` | `workspace` | `workspace`, `sessions`: the Sessions with a directory on the volume; `alreadyDeleting` when the workspace was being deleted, which runs its deletion cycle now |
-| `sync_workspace` | `workspace` | `workspace`, `requestedAt`, `requestedBy`; `activeSync` when a sync Job runs at the request, after which the requested cycle starts; `deleting` on a workspace being deleted, whose deletion cycle the request runs |
+| `sync_workspace` | `workspace` | `workspace`, `requestId` (below), `requestedAt`, `requestedBy`; `activeSync` when a sync Job runs at the request, after which the requested cycle starts; `deleting` on a workspace being deleted, whose deletion cycle the request runs |
 | `list_repositories` | `organization` (a member's), `provider`, `owner`, `search` (name, ignoring case), `languages` (any of), `topics` (any of), `archived` and `fork` (`true` only those, `false` none, unset both), `page`, `pageSize` (50, at most 200) | `total` matching, `ownerTotal`, `page`, `pageSize`, `repositories` (`name`, `language`, `topics`, `archived`, `fork`, `lastPush`, `sizeKiB`), and every `languages` and `topics` value of the owner for the picker's filters |
 | `preview_workspace` | `workspace` (an existing one), or a draft's `organization`, `sources` and `sizing`; `search` (`owner/name`), `page`, `pageSize` | `total` selected now, `excluded`, `skippedArchived` and `skippedForks` (what a selector matched and those rules left out), `providerSizeKiB`, `estimatedVolumeSize`, `matching` the search, and the page's `repositories` (`provider`, `repository`, `language`, `topics`, `lastPush`, `sizeKiB`, `why`: `name`, `language <l>`, `topic <t>`) |
 
 The view of a workspace: `name`, `organization`, `sources`,
 `sizing`, `resourceVersion`, `createdAt`, `deleting`, `lastSync` (`time`,
-`result`, `trigger`, `job`, `message`), `activeSync` (the sync
-Job running now: `job`, `startedAt`, `trigger`), `syncRequest` (a sync
-request, from `sync_workspace` or `authorize_workspace`, the controller has
-not taken up yet: `requestedAt`, `requestedBy`), the number of `repositories` and `sessions`, `volume`
+`result`, `trigger`, `job`, `requestIds`, `message`), `activeSync` (the sync
+Job running now: `job`, `startedAt`, `trigger`, `requestIds`), `syncRequest` (sync
+requests, from `sync_workspace` or `authorize_workspace`, the controller has
+not taken up yet: `requestedAt`, `requestedBy` of the latest, `requestIds` of all), the number of `repositories` and `sessions`, `volume`
 (`claimName`, and the CSI `driver` and `handle` read from the bound
 PersistentVolume, which a Session's volume reference names; else `pending`
 says why), `neededSize`, `volumeSize`, `storedBytes` (what the volume stores,
@@ -232,11 +232,23 @@ not) and the `conditions`. `list_workspaces` carries both from the status, so a
 list needs no `get_workspace` per row.
 
 `sync_workspace` asks for a cycle now: it records the
-request and the caller as annotations on the Workspace
-(`workspace-manager.giantswarm.io/sync-requested`, `-by`), which the
-controller serves and removes. A request made while a sync Job runs is served
-after it; nothing changed since the last sync costs no fetch. On a workspace
-being deleted the request runs its deletion cycle now (below).
+request, its identifier and the caller as annotations on the Workspace
+(`workspace-manager.giantswarm.io/sync-requested`, `-by`,
+`sync-request-ids`), which the controller serves and removes. A request made
+while a sync Job runs is served after it; requests pending together are served
+by one cycle; nothing changed since the last sync costs no fetch. On a
+workspace being deleted the request runs its deletion cycle now (below).
+
+The identifier, `requestId`, is the request's UTC time to the nanosecond
+(`20261021T141702.123456789Z`), moved past the workspace's latest identifier
+when the clock did not move, so a workspace's identifiers ascend in the order
+of their requests. The cycle serving a request names it in `activeSync.requestIds`
+while its Job runs and in `lastSync.requestIds` once it ended; the status
+names it before the annotation goes. A client therefore decides from one
+`get_workspace` whether its request was served: pending while
+`syncRequest.requestIds` or `activeSync.requestIds` holds it, served otherwise,
+by `lastSync`'s cycle when `lastSync.requestIds` holds it, else by an earlier
+one.
 
 `list_repositories` and `preview_workspace` read the owner's listing with the
 provider instance's own sync credential (on GitHub the `-agents` App's
@@ -308,7 +320,7 @@ manifest; a failed Job leaves the previous manifest and its error beside it,
 which the status carries.
 
 The status records it all, and nothing else writes it: `lastSync` (`time`,
-`result` `Succeeded`, `NoChange` or `Failed`, `trigger`, `job`, `message`),
+`result` `Succeeded`, `NoChange` or `Failed`, `trigger`, `job`, `requests`, `message`),
 `activeSync` while a Job runs, `repositories`, `neededSize`,
 `volumeSize`, `storedSize`, `grewFrom`, and the conditions `VolumeClaimed` and `Synced` (`True` with
 reason `Synced` or `NoChange`; `Unknown` with `Syncing`; `False` with

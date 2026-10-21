@@ -93,8 +93,11 @@ type LastSync struct {
 	// deletion or sessionDeleted.
 	Trigger string `json:"trigger,omitempty"`
 	// Job is the sync Job the cycle ran; empty for a cycle that ran none.
-	Job     string `json:"job,omitempty"`
-	Message string `json:"message,omitempty"`
+	Job string `json:"job,omitempty"`
+	// RequestIDs are the sync_workspace requests the cycle served, by the
+	// requestId it returned, ascending.
+	RequestIDs []string `json:"requestIds,omitempty"`
+	Message    string   `json:"message,omitempty"`
 }
 
 // ActiveSync is the sync Job running now.
@@ -102,6 +105,8 @@ type ActiveSync struct {
 	Job       string    `json:"job"`
 	StartedAt time.Time `json:"startedAt"`
 	Trigger   string    `json:"trigger,omitempty"`
+	// RequestIDs are the sync_workspace requests the cycle serves.
+	RequestIDs []string `json:"requestIds,omitempty"`
 }
 
 // SyncRequest is a sync requested through sync_workspace, until the
@@ -109,11 +114,21 @@ type ActiveSync struct {
 type SyncRequest struct {
 	RequestedAt time.Time `json:"requestedAt"`
 	RequestedBy string    `json:"requestedBy,omitempty"`
+	// RequestIDs are the requests pending, ascending; the next cycle serves
+	// them all.
+	RequestIDs []string `json:"requestIds,omitempty"`
 }
 
 // SyncResult is sync_workspace's result.
 type SyncResult struct {
-	Workspace   string    `json:"workspace"`
+	Workspace string `json:"workspace"`
+	// RequestID identifies the request: the cycle that serves it names it in
+	// get_workspace's lastSync.requestIds (activeSync.requestIds while it
+	// runs, syncRequest.requestIds until it starts). A workspace's
+	// identifiers ascend in the order of their requests, so one that is in
+	// neither syncRequest nor activeSync was served, by lastSync's cycle or
+	// an earlier one.
+	RequestID   string    `json:"requestId"`
 	RequestedAt time.Time `json:"requestedAt"`
 	RequestedBy string    `json:"requestedBy,omitempty"`
 	// ActiveSync is the sync Job running at the request, after which the
@@ -394,7 +409,8 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		tooldesc.Describe("Request a sync of a workspace of your Organization now: the controller fetches what changed in its sources.",
 			"It grows the volume where its StorageClass provisions a size. Nothing changed costs no fetch; a request made while a sync runs is served after it. "+
 				"On a workspace being deleted it runs the deletion cycle now, which only cleans up the session directories. "+
-				"get_workspace shows the request, the running sync Job and the outcome."),
+				"It returns a requestId; get_workspace names it in syncRequest, then activeSync, then lastSync, the requestIds of the cycle that served it. "+
+				"Identifiers ascend, so one in neither syncRequest nor activeSync was served."),
 		nameArg,
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -411,8 +427,11 @@ func addWorkspaceTools(s *mcpserver.MCPServer, t *workspaceTools) {
 		}
 		res := SyncResult{Workspace: name, RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy], ActiveSync: activeSyncOf(ws.Status.ActiveSync),
 			Deleting: ws.DeletionTimestamp != nil}
+		if ids := v1alpha1.SyncRequestIDs(ws); len(ids) > 0 {
+			res.RequestID = ids[len(ids)-1]
+		}
 		res.RequestedAt, _ = time.Parse(time.RFC3339, ws.Annotations[v1alpha1.AnnotationSyncRequested])
-		slog.InfoContext(ctx, "workspace sync requested", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization)
+		slog.InfoContext(ctx, "workspace sync requested", identity.LogAttr(ctx), "workspace", name, "organization", ws.Spec.Organization, "requestId", res.RequestID)
 		text := fmt.Sprintf("Sync of workspace %s requested: the controller starts its cycle now.", name)
 		if res.Deleting {
 			text = fmt.Sprintf("Deletion cycle of workspace %s requested: the workspace is being deleted, and the controller runs its deletion cycle now.", name)
@@ -449,11 +468,11 @@ func (t *workspaceTools) view(ctx context.Context, ws *v1alpha1.Workspace) (Work
 		w.StoredBytes = &stored
 	}
 	if ls := ws.Status.LastSync; ls != nil {
-		w.LastSync = &LastSync{Time: ls.Time.UTC(), Result: string(ls.Result), Trigger: string(ls.Trigger), Job: ls.Job, Message: ls.Message}
+		w.LastSync = &LastSync{Time: ls.Time.UTC(), Result: string(ls.Result), Trigger: string(ls.Trigger), Job: ls.Job, RequestIDs: ls.Requests, Message: ls.Message}
 	}
 	w.ActiveSync = activeSyncOf(ws.Status.ActiveSync)
 	if at, err := time.Parse(time.RFC3339, ws.Annotations[v1alpha1.AnnotationSyncRequested]); err == nil {
-		w.SyncRequest = &SyncRequest{RequestedAt: at.UTC(), RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy]}
+		w.SyncRequest = &SyncRequest{RequestedAt: at.UTC(), RequestedBy: ws.Annotations[v1alpha1.AnnotationSyncRequestedBy], RequestIDs: v1alpha1.SyncRequestIDs(ws)}
 	}
 	for _, c := range ws.Status.Conditions {
 		w.Conditions = append(w.Conditions, Condition{Type: c.Type, Status: string(c.Status), Reason: c.Reason, Message: c.Message})
@@ -540,7 +559,7 @@ func activeSyncOf(a *v1alpha1.ActiveSync) *ActiveSync {
 	if a == nil {
 		return nil
 	}
-	return &ActiveSync{Job: a.Job, StartedAt: a.StartedAt.UTC(), Trigger: string(a.Trigger)}
+	return &ActiveSync{Job: a.Job, StartedAt: a.StartedAt.UTC(), Trigger: string(a.Trigger), RequestIDs: a.Requests}
 }
 
 func sizingOf(s *v1alpha1.Sizing) *Sizing {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/identity"
@@ -149,11 +151,14 @@ func (s *Store) Organizations(ctx context.Context) []string {
 }
 
 // RequestSync asks the controller for a sync cycle of a Workspace of an
-// Organization the caller is a member of, now: it records the request and
-// the caller as annotations the controller acts on and removes. A request
-// made while a cycle runs is served after it; on a Workspace being deleted,
+// Organization the caller is a member of, now: it records the request, its
+// identifier and the caller as annotations the controller acts on and
+// removes. A request made while a cycle runs is served after it; requests
+// pending together are served by one cycle. On a Workspace being deleted,
 // which syncs no more, it runs the deletion cycle now, which cleans up the
-// session directories and lets the Workspace go once none is left.
+// session directories and lets the Workspace go once none is left. The
+// request's identifier is the last of the returned Workspace's
+// v1alpha1.SyncRequestIDs.
 func (s *Store) RequestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
 	if _, err := s.Get(ctx, name); err != nil {
 		return nil, err
@@ -162,20 +167,38 @@ func (s *Store) RequestSync(ctx context.Context, name string, at time.Time) (*v1
 }
 
 // requestSync records the sync request on a Workspace the caller passed the
-// check for.
+// check for. The write is conditional on the Workspace read, so that its
+// identifier follows every earlier one: a concurrent request reads again.
 func (s *Store) requestSync(ctx context.Context, name string, at time.Time) (*v1alpha1.Workspace, error) {
-	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{
-		v1alpha1.AnnotationSyncRequested:   at.UTC().Format(time.RFC3339),
-		v1alpha1.AnnotationSyncRequestedBy: identity.Caller(ctx),
-	}}})
-	if err != nil {
-		return nil, fmt.Errorf("workspace %q: %w", name, err)
-	}
-	updated, err := s.client.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	var out *v1alpha1.Workspace
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		ws, err := s.get(ctx, name)
+		if err != nil {
+			return err
+		}
+		id := v1alpha1.NextSyncRequestID(at, v1alpha1.LatestSyncRequestID(ws))
+		patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
+			"resourceVersion": ws.ResourceVersion,
+			"annotations": map[string]string{
+				v1alpha1.AnnotationSyncRequested:   at.UTC().Format(time.RFC3339),
+				v1alpha1.AnnotationSyncRequestedBy: identity.Caller(ctx),
+				v1alpha1.AnnotationSyncRequestIDs:  strings.Join(append(v1alpha1.SyncRequestIDs(ws), id), ","),
+			},
+		}})
+		if err != nil {
+			return err
+		}
+		updated, err := s.client.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+		if err != nil {
+			return err
+		}
+		out, err = fromUnstructured(updated)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("request a sync of workspace %q: %w", name, err)
 	}
-	return fromUnstructured(updated)
+	return out, nil
 }
 
 func (s *Store) get(ctx context.Context, name string) (*v1alpha1.Workspace, error) {

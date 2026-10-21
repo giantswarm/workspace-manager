@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/giantswarm/workspace-manager/api/v1alpha1"
 	"github.com/giantswarm/workspace-manager/internal/mirror"
@@ -75,24 +77,38 @@ func (c *Controller) wake(ws *v1alpha1.Workspace, now time.Time) time.Duration {
 	return wakeAt(at, now)
 }
 
-// cycle runs one sync cycle: the request annotations go, each owner is
-// listed once, the selection is compared with the last manifest, the volume
-// is claimed or grown to the formula's size where its class provisions one,
-// kagent's Sessions on the volume are listed for the session directories'
-// cleanup, and the sync Job starts unless nothing changed and there is no
-// session directory or dropped mirror to look after. A failure of the
+// cycle runs one sync cycle: each owner is listed once, the selection is
+// compared with the last manifest, the volume is claimed or grown to the
+// formula's size where its class provisions one, kagent's Sessions on the
+// volume are listed for the session directories' cleanup, and the sync Job
+// starts unless nothing changed and there is no session directory or dropped
+// mirror to look after. A failure of the
 // listing, the sizing or the claim is recorded and tried again at the next
 // resync.
+//
+// A requested cycle serves every request pending at its start: the status
+// names them (activeSync, else lastSync) before their annotations go, so a
+// cycle that ends in an error of the API server leaves them pending for the
+// next try.
 func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, claim *corev1.PersistentVolumeClaim) (time.Duration, error) {
 	log := c.log.With("workspace", ws.Name, "trigger", trigger)
+	var requests []string
 	if trigger == v1alpha1.TriggerRequest {
-		log = log.With("requestedAt", ws.Annotations[v1alpha1.AnnotationSyncRequested], "requestedBy", ws.Annotations[v1alpha1.AnnotationSyncRequestedBy])
-		if err := c.clearRequest(ctx, ws); err != nil {
-			return 0, err
-		}
+		requests = v1alpha1.SyncRequestIDs(ws)
+		log = log.With("requestedAt", ws.Annotations[v1alpha1.AnnotationSyncRequested], "requestedBy", ws.Annotations[v1alpha1.AnnotationSyncRequestedBy],
+			"requests", requests)
 	}
 	log.Info("sync cycle starting")
+	wake, err := c.runCycle(ctx, ws, trigger, requests, claim, log)
+	if err != nil || trigger != v1alpha1.TriggerRequest {
+		return wake, err
+	}
+	return wake, c.clearRequest(ctx, ws, requests)
+}
 
+// runCycle is the cycle after its start: it records its outcome, or its Job,
+// in the status with the requests it serves.
+func (c *Controller) runCycle(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, requests []string, claim *corev1.PersistentVolumeClaim, log *slog.Logger) (time.Duration, error) {
 	// A requested cycle (sync_workspace, a Session's start past the refresh
 	// threshold) lists every owner anew: the listing cache may predate the
 	// push it was requested for.
@@ -103,7 +119,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	sel, err := c.listings.Resolve(listCtx, ws.Spec.Sources)
 	if err != nil {
 		log.Warn("sync cycle failed: listing", "error", err)
-		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonListingFailed, err.Error())
+		return c.resync, c.fail(ctx, ws, trigger, requests, nil, v1alpha1.ReasonListingFailed, err.Error())
 	}
 	items := make([]provider.Item, len(sel.Items))
 	for i, it := range sel.Items {
@@ -121,7 +137,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	provisioned, err := c.volumes.Provisioned(ctx)
 	if errors.Is(err, ErrNoStorageClass) {
 		log.Warn("sync cycle failed: no volume", "reason", v1alpha1.ReasonStorageClassMissing)
-		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonStorageClassMissing, err.Error()))
+		return c.resync, c.fail(ctx, ws, trigger, requests, nil, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonStorageClassMissing, err.Error()))
 	}
 	if err != nil {
 		return 0, err
@@ -131,7 +147,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	if provisioned {
 		if err := c.sizing.Exceeds(size); err != nil {
 			log.Warn("sync cycle failed: size ceiling", "need", need, "size", size.String())
-			return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonSizeCeiling, err.Error())
+			return c.resync, c.fail(ctx, ws, trigger, requests, nil, v1alpha1.ReasonSizeCeiling, err.Error())
 		}
 	}
 	request := NominalSize
@@ -140,7 +156,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	}
 	if claim, err = c.volumes.Claim(ctx, ws, request); err != nil {
 		log.Warn("sync cycle failed: volume claim", "error", err)
-		return c.resync, c.fail(ctx, ws, trigger, nil, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonVolumeClaimFailed, err.Error()))
+		return c.resync, c.fail(ctx, ws, trigger, requests, nil, v1alpha1.ReasonVolumeMissing, err.Error(), volumeClaimed(ws, metav1.ConditionFalse, v1alpha1.ReasonVolumeClaimFailed, err.Error()))
 	}
 	claimed := volumeClaimed(ws, metav1.ConditionTrue, v1alpha1.ReasonVolumeClaimed, fmt.Sprintf("claim %s from StorageClass %s", claim.Name, c.volumes.StorageClass))
 	var volumeSize, grewFrom *resource.Quantity
@@ -168,7 +184,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 		log.Info("sync cycle done: no change", "repositories", len(items), "need", needed.String())
 		return wakeAt(c.cleanupAt(ws), now), c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 			w.Status.ObservedGeneration = ws.Generation
-			w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncNoChange, Trigger: trigger}
+			w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncNoChange, Trigger: trigger, Requests: requests}
 			w.Status.NeededSize, w.Status.VolumeSize = &needed, volumeSize
 			w.Status.StoredSize, w.Status.GrewFrom = storedSize(manifest, ws.Status.Sessions), grewFrom
 			w.Status.Manifest = ManifestName(ws)
@@ -183,7 +199,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 	creds, err := c.credentials(ctx, sel)
 	if err != nil {
 		log.Warn("sync cycle failed: credentials", "error", err)
-		return c.resync, c.fail(ctx, ws, trigger, grewFrom, v1alpha1.ReasonListingFailed, err.Error(), claimed)
+		return c.resync, c.fail(ctx, ws, trigger, requests, grewFrom, v1alpha1.ReasonListingFailed, err.Error(), claimed)
 	}
 	id, err := cycleID()
 	if err != nil {
@@ -200,7 +216,7 @@ func (c *Controller) cycle(ctx context.Context, ws *v1alpha1.Workspace, trigger 
 		"cleanupOnly", cleanupOnly, "need", needed.String(), "volumeSize", quantityString(volumeSize))
 	return 0, c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ObservedGeneration = ws.Generation
-		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: trigger, CleanupOnly: cleanupOnly}
+		w.Status.ActiveSync = &v1alpha1.ActiveSync{Job: job.Name, StartedAt: metav1.NewTime(now), Trigger: trigger, CleanupOnly: cleanupOnly, Requests: requests}
 		w.Status.NeededSize, w.Status.VolumeSize = &needed, volumeSize
 		w.Status.GrewFrom = grewFrom
 		w.Status.Manifest = ManifestName(ws)
@@ -239,7 +255,7 @@ func (c *Controller) finish(ctx context.Context, ws *v1alpha1.Workspace) (bool, 
 	if cond != nil && !cond.LastTransitionTime.IsZero() {
 		ended = cond.LastTransitionTime.Time
 	}
-	last := v1alpha1.LastSync{Time: metav1.NewTime(ended), Trigger: active.Trigger, Job: active.Job}
+	last := v1alpha1.LastSync{Time: metav1.NewTime(ended), Trigger: active.Trigger, Job: active.Job, Requests: active.Requests}
 	var manifest *mirror.Manifest
 	// removed is what a cleanup-only cycle's Job removed, empty for none.
 	var removed string
@@ -447,14 +463,14 @@ func (c *Controller) recordStored(ctx context.Context, ws *v1alpha1.Workspace) e
 	})
 }
 
-// fail records a cycle that ended before its Job: the result, the condition
-// and the share's size before the cycle grew it (nil for none); the next try
+// fail records a cycle that ended before its Job: the result, the requests
+// it served, the condition and the share's size before the cycle grew it (nil for none); the next try
 // is at the resync. Extra conditions are set with it.
-func (c *Controller) fail(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, grewFrom *resource.Quantity, reason, message string, conds ...metav1.Condition) error {
+func (c *Controller) fail(ctx context.Context, ws *v1alpha1.Workspace, trigger v1alpha1.SyncTrigger, requests []string, grewFrom *resource.Quantity, reason, message string, conds ...metav1.Condition) error {
 	now := c.now()
 	return c.status.Update(ctx, ws.Name, func(w *v1alpha1.Workspace) bool {
 		w.Status.ObservedGeneration = ws.Generation
-		w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncFailed, Trigger: trigger, Message: message}
+		w.Status.LastSync = &v1alpha1.LastSync{Time: metav1.NewTime(now), Result: v1alpha1.SyncFailed, Trigger: trigger, Requests: requests, Message: message}
 		w.Status.GrewFrom = grewFrom
 		for _, cond := range conds {
 			meta.SetStatusCondition(&w.Status.Conditions, cond)
@@ -464,10 +480,32 @@ func (c *Controller) fail(ctx context.Context, ws *v1alpha1.Workspace, trigger v
 	})
 }
 
-// clearRequest removes the sync request annotations the cycle serves.
-func (c *Controller) clearRequest(ctx context.Context, ws *v1alpha1.Workspace) error {
-	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:null,%q:null}}}`, v1alpha1.AnnotationSyncRequested, v1alpha1.AnnotationSyncRequestedBy)
-	if _, err := c.dynamic.Resource(v1alpha1.WorkspaceResource).Namespace(ws.Namespace).Patch(ctx, ws.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+// clearRequest removes the sync requests a cycle served from the
+// annotations, keeping those made since; with none left, the request's time
+// and caller go too. The write is conditional on the Workspace read, so that
+// a request made meanwhile is read again, never lost.
+func (c *Controller) clearRequest(ctx context.Context, ws *v1alpha1.Workspace, served []string) error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh, err := c.get(ctx, ws)
+		if err != nil {
+			return err
+		}
+		annotations := map[string]any{
+			v1alpha1.AnnotationSyncRequested:   nil,
+			v1alpha1.AnnotationSyncRequestedBy: nil,
+			v1alpha1.AnnotationSyncRequestIDs:  nil,
+		}
+		if left := v1alpha1.WithoutSyncRequests(v1alpha1.SyncRequestIDs(fresh), served); len(left) > 0 {
+			annotations = map[string]any{v1alpha1.AnnotationSyncRequestIDs: strings.Join(left, ",")}
+		}
+		patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": fresh.ResourceVersion, "annotations": annotations}})
+		if err != nil {
+			return err
+		}
+		_, err = c.dynamic.Resource(v1alpha1.WorkspaceResource).Namespace(ws.Namespace).Patch(ctx, ws.Name, types.MergePatchType, patch, metav1.PatchOptions{})
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("clear the sync request of workspace %s: %w", ws.Name, err)
 	}
 	return nil

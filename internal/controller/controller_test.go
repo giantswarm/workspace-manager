@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -245,16 +246,20 @@ func (f *fixture) updateSpec(name string, mutate func(*v1alpha1.Workspace)) {
 	require.NoError(f.t, err)
 }
 
-// reconcile runs Reconcile on the stored Workspace, as the loop does.
 // requestSync records a sync request as sync_workspace and
-// authorize_workspace do.
-func (f *fixture) requestSync(name string) {
+// authorize_workspace do, and returns its identifier.
+func (f *fixture) requestSync(name string) string {
 	f.t.Helper()
-	patch := `{"metadata":{"annotations":{"` + v1alpha1.AnnotationSyncRequested + `":"` + f.clock().Format(time.RFC3339) + `","` + v1alpha1.AnnotationSyncRequestedBy + `":"alice@acme.test"}}}`
+	ws := f.workspace(name)
+	id := v1alpha1.NextSyncRequestID(f.clock(), v1alpha1.LatestSyncRequestID(ws))
+	patch := `{"metadata":{"annotations":{"` + v1alpha1.AnnotationSyncRequested + `":"` + f.clock().Format(time.RFC3339) + `","` + v1alpha1.AnnotationSyncRequestedBy + `":"alice@acme.test","` +
+		v1alpha1.AnnotationSyncRequestIDs + `":"` + strings.Join(append(v1alpha1.SyncRequestIDs(ws), id), ",") + `"}}}`
 	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Patch(context.Background(), name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	require.NoError(f.t, err)
+	return id
 }
 
+// reconcile runs Reconcile on the stored Workspace, as the loop does.
 func (f *fixture) reconcile(name string) time.Duration {
 	f.t.Helper()
 	requeue, err := f.c.Reconcile(context.Background(), f.workspace(name))
@@ -637,6 +642,109 @@ func TestSyncRequestStartsACycleNow(t *testing.T) {
 	assert.Equal(t, v1alpha1.TriggerRequest, got.Status.LastSync.Trigger)
 	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)
 	assert.Equal(t, 4, f.listings.count())
+}
+
+// syncedTwice is the "platform" Workspace past its first cycle, with api and
+// web mirrored, an hour later.
+func syncedTwice(t *testing.T) (*fixture, provider.Item, provider.Item) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	ws := f.firstCycle("platform")
+	api, web := f.listings.items[testProvider+"/"+testOwner][0], f.listings.items[testProvider+"/"+testOwner][1]
+	got := f.completeCycle(ws, testNow, entry(api, 2<<20), entry(web, 3<<20))
+	assert.Empty(t, got.Status.LastSync.Requests, "a cycle nobody requested serves no request")
+	f.advance(time.Hour)
+	return f, api, web
+}
+
+// TestARequestIsServedByTheNextCycle: the cycle a request starts names its
+// identifier, in activeSync while its Job runs and in lastSync once it
+// ended; the request's annotations go once the status names it.
+func TestARequestIsServedByTheNextCycle(t *testing.T) {
+	f, _, web := syncedTwice(t)
+	f.listings.put(item("api", f.clock(), 1024))
+	id := f.requestSync("platform")
+	f.reconcile("platform")
+
+	got := f.workspace("platform")
+	require.NotNil(t, got.Status.ActiveSync)
+	assert.Equal(t, []string{id}, got.Status.ActiveSync.Requests)
+	assert.Empty(t, v1alpha1.SyncRequestIDs(got), "the request is taken")
+	assert.Empty(t, got.Annotations[v1alpha1.AnnotationSyncRequested])
+
+	got = f.completeCycle(got, f.clock(), entry(f.listings.items[testProvider+"/"+testOwner][0], 2<<20), entry(web, 3<<20))
+	assert.Equal(t, v1alpha1.SyncSucceeded, got.Status.LastSync.Result)
+	assert.Equal(t, []string{id}, got.Status.LastSync.Requests)
+	assert.Nil(t, got.Status.ActiveSync)
+}
+
+// TestTwoRequestsAreServedByOneCycle: requests pending together get
+// identifiers in their order, even within the clock's resolution, and one
+// cycle serves them both.
+func TestTwoRequestsAreServedByOneCycle(t *testing.T) {
+	f, _, _ := syncedTwice(t)
+	first, second := f.requestSync("platform"), f.requestSync("platform")
+	assert.Less(t, first, second)
+	listed := f.listings.count()
+	f.reconcile("platform")
+
+	got := f.workspace("platform")
+	assert.Equal(t, listed+1, f.listings.count(), "one cycle")
+	assert.Equal(t, v1alpha1.SyncNoChange, got.Status.LastSync.Result)
+	assert.Equal(t, []string{first, second}, got.Status.LastSync.Requests)
+	assert.Empty(t, v1alpha1.SyncRequestIDs(got))
+	assert.Empty(t, got.Annotations[v1alpha1.AnnotationSyncRequested])
+}
+
+// TestARequestMidCycleIsServedByTheFollowingOne: a request made while a Job
+// runs is not the running cycle's: it stays pending, and the cycle after the
+// Job serves it.
+func TestARequestMidCycleIsServedByTheFollowingOne(t *testing.T) {
+	f, _, web := syncedTwice(t)
+	f.listings.put(item("api", f.clock(), 1024))
+	first := f.requestSync("platform")
+	f.reconcile("platform")
+	running := f.workspace("platform")
+	require.NotNil(t, running.Status.ActiveSync)
+
+	f.advance(time.Minute)
+	f.listings.put(item("web", f.clock(), 1024))
+	second := f.requestSync("platform")
+	f.reconcile("platform")
+	got := f.workspace("platform")
+	assert.Equal(t, []string{first}, got.Status.ActiveSync.Requests, "the running cycle serves the first alone")
+	assert.Equal(t, []string{second}, v1alpha1.SyncRequestIDs(got), "the second waits for the Job")
+
+	got = f.completeCycle(running, f.clock(), entry(f.listings.items[testProvider+"/"+testOwner][0], 2<<20), entry(web, 3<<20))
+	assert.Equal(t, []string{first}, got.Status.LastSync.Requests, "the ended cycle served the first")
+	require.NotNil(t, got.Status.ActiveSync, "web was pushed: the following cycle runs a Job")
+	assert.Equal(t, []string{second}, got.Status.ActiveSync.Requests)
+	assert.Empty(t, v1alpha1.SyncRequestIDs(got))
+
+	got = f.completeCycle(got, f.clock(), entry(f.listings.items[testProvider+"/"+testOwner][0], 2<<20), entry(f.listings.items[testProvider+"/"+testOwner][1], 3<<20))
+	assert.Equal(t, []string{second}, got.Status.LastSync.Requests)
+}
+
+// TestARequestMadeAsTheCycleStartsIsKept: a request recorded after the
+// cycle read the Workspace is not cleared with the requests it served.
+func TestARequestMadeAsTheCycleStartsIsKept(t *testing.T) {
+	f, _, _ := syncedTwice(t)
+	first := f.requestSync("platform")
+	read := f.workspace("platform")
+	second := f.requestSync("platform")
+	claim, err := f.c.volumes.Get(context.Background(), read)
+	require.NoError(t, err)
+	_, err = f.c.cycle(context.Background(), read, v1alpha1.TriggerRequest, claim)
+	require.NoError(t, err)
+
+	got := f.workspace("platform")
+	assert.Equal(t, []string{first}, got.Status.LastSync.Requests)
+	assert.Equal(t, []string{second}, v1alpha1.SyncRequestIDs(got), "the later request stays pending")
+	assert.NotEmpty(t, got.Annotations[v1alpha1.AnnotationSyncRequested])
+
+	f.reconcile("platform")
+	got = f.workspace("platform")
+	assert.Equal(t, []string{second}, got.Status.LastSync.Requests, "the next cycle serves it")
+	assert.Empty(t, got.Annotations[v1alpha1.AnnotationSyncRequested])
 }
 
 // TestARequestedCycleReadsAFreshListing: a requested cycle (sync_workspace,
