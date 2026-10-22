@@ -11,7 +11,7 @@
 #
 # For a local build, produce the binary first:
 #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o workspace-manager-linux-amd64 .
-FROM gsoci.azurecr.io/giantswarm/alpine:3.24.2
+FROM gsoci.azurecr.io/giantswarm/alpine:3.24.3
 
 ARG TARGETOS
 ARG TARGETARCH
