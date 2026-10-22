@@ -415,6 +415,56 @@ func TestARequestRunsADeletingWorkspacesCycleNow(t *testing.T) {
 	assert.NotContains(t, f.workspace("platform").Finalizers, v1alpha1.FinalizerVolume, "the finalizer is removed")
 }
 
+// TestADeletedSessionRunsADeletingWorkspacesCycle: a deleting workspace whose
+// last deletion cycle kept the directory of a Session kagent lists looks for
+// its deletion within the poll; once kagent no longer lists it, the deletion
+// cycle runs at once, and the claim and the finalizer go after it. A failed
+// listing waits for the next poll.
+func TestADeletedSessionRunsADeletingWorkspacesCycle(t *testing.T) {
+	f := newFixture(t, testClass, workspaceNamed("platform"))
+	s, ws := f.withSessions("platform")
+	ws.DeletionTimestamp = &metav1.Time{Time: f.clock()}
+	_, err := f.dyn.Resource(v1alpha1.WorkspaceResource).Namespace(testNamespace).Update(context.Background(), toUnstructured(t, ws), metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	// The first deletion cycle keeps a, whose Session kagent lists.
+	f.reconcile("platform")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync)
+	f.finishCycle(ws, f.clock(), directory("a", true))
+	jobs := len(f.jobs())
+	assert.Equal(t, DefaultSessionPoll, f.reconcile("platform"), "a kept Session's deletion is looked for within the poll")
+	assert.Len(t, f.jobs(), jobs)
+
+	// A failed listing starts nothing and looks again at the next poll.
+	s.delete("a")
+	s.mu.Lock()
+	s.err = errors.New("kagent unavailable")
+	s.mu.Unlock()
+	f.advance(DefaultSessionPoll)
+	assert.Equal(t, DefaultSessionPoll, f.reconcile("platform"))
+	assert.Len(t, f.jobs(), jobs)
+
+	// a is deleted in kagent: the deletion cycle runs now, not at the recheck.
+	s.mu.Lock()
+	s.err = nil
+	s.mu.Unlock()
+	f.advance(DefaultSessionPoll)
+	assert.Zero(t, f.reconcile("platform"), "a running Job wakes the controller by itself")
+	ws = f.workspace("platform")
+	require.NotNil(t, ws.Status.ActiveSync, "the deleted Session runs the deletion cycle")
+	assert.Equal(t, v1alpha1.TriggerDeletion, ws.Status.ActiveSync.Trigger)
+	require.Len(t, f.jobs(), jobs+1)
+	sel := f.selection(ws)
+	require.NotNil(t, sel.Cleanup)
+	assert.True(t, sel.Cleanup.Deleted)
+	assert.NotContains(t, sel.Cleanup.Sessions, "a", "a's directory goes")
+
+	f.finishCycle(ws, f.clock())
+	assert.Empty(t, f.claims(), "the claim is deleted")
+	assert.NotContains(t, f.workspace("platform").Finalizers, v1alpha1.FinalizerVolume, "the finalizer is removed")
+}
+
 // TestADeletingWorkspaceStartsOneDeletionJob: where the status names no Job
 // (a CRD that prunes status.activeSync), a deleting workspace's every event
 // would start one more deletion Job, since no cycle's end is ever recorded;

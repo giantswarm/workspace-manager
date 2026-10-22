@@ -247,7 +247,8 @@ func sessionDirectories(m *mirror.Manifest) []v1alpha1.SessionDirectory {
 // Job only cleans up the session directories, at the earliest cleanup date
 // or a day after the last cycle, whichever comes first (a failed one again
 // after the resync), or at once for a sync request (sync_workspace, or
-// delete_workspace again), served after a running Job; once a cycle since
+// delete_workspace again) or, within the poll, for a Session deleted in kagent
+// whose directory the last cycle kept, served after a running Job; once a cycle since
 // the deletion leaves no directory, the volume claim is deleted and the
 // finalizer removed, and everything else the workspace owns goes with it.
 func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspace) (time.Duration, error) {
@@ -290,7 +291,14 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 			at = c.nextDeletionCycle(ws, last.Time.Time)
 		}
 		if at.After(now) {
-			return at.Sub(now), nil
+			if !cleaned {
+				return at.Sub(now), nil
+			}
+			wait, gone := c.sessionGone(ctx, ws, now, at.Sub(now))
+			if len(gone) == 0 {
+				return wait, nil
+			}
+			log = log.With("sessions", gone)
 		}
 	}
 	var requests []string
@@ -327,6 +335,24 @@ func (c *Controller) reconcileDeleted(ctx context.Context, ws *v1alpha1.Workspac
 		return 0, err
 	}
 	return 0, c.clearRequest(ctx, ws, requests)
+}
+
+// sessionGone looks, at most once per poll, for a Session deleted in kagent
+// whose directory a deleted workspace's last cycle kept: its ids start the
+// deletion cycle now. Without one it says how long until the next look: the
+// poll interval while a kept directory's Session is listed, or wait when that
+// comes first. A directory kagent never knew waits for wait.
+func (c *Controller) sessionGone(ctx context.Context, ws *v1alpha1.Workspace, now time.Time, wait time.Duration) (time.Duration, []string) {
+	if c.sessions == nil || !slices.ContainsFunc(ws.Status.Sessions, known) {
+		return wait, nil
+	}
+	wait = min(wait, c.sessionPoll)
+	listed, err := c.listed.get(ctx, c.sessions, now, c.sessionPoll)
+	if err != nil {
+		c.log.Warn("deleted Sessions not looked for: kagent's listing failed", "workspace", ws.Name, "error", err)
+		return wait, nil
+	}
+	return wait, goneSessions(ws, listed)
 }
 
 // nextDeletionCycle is when a deleted workspace's next cleanup runs: at the

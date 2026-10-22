@@ -304,9 +304,10 @@ func TestSessionDirectoriesAreCleanedUp(t *testing.T) {
 	ws = l.workspace()
 	require.Len(t, ws.Status.Sessions, 1)
 	require.Equal(t, v1alpha1.ReasonDeleting, meta.FindStatusCondition(ws.Status.Conditions, v1alpha1.ConditionSynced).Reason)
-	requeue := l.reconcile()
-	require.Positive(t, requeue)
-	require.LessOrEqual(t, requeue, newer.CleanupAfter.Sub(l.clock()), "the next run is due at the directory's cleanup date")
+	require.Equal(t, DefaultSessionPoll, l.reconcile(), "the kept directory's Session is looked for within the poll")
+	l.advance(DefaultSessionPoll)
+	require.Equal(t, DefaultSessionPoll, l.reconcile(), "a Session kagent still lists starts no cycle")
+	require.Nil(t, l.workspace().Status.ActiveSync)
 	claim, err = l.core.CoreV1().PersistentVolumeClaims(testNamespace).Get(l.ctx, ClaimName(ws), metav1.GetOptions{})
 	require.NoError(t, err)
 	require.Nil(t, claim.DeletionTimestamp, "the volume stays while a session directory is left")
@@ -314,7 +315,7 @@ func TestSessionDirectoriesAreCleanedUp(t *testing.T) {
 
 	// The last directory's window passes: it goes, and the volume and the
 	// workspace with it.
-	l.advance(requeue)
+	l.advance(newer.CleanupAfter.Sub(l.clock()))
 	l.reconcile()
 	l.runJob()
 	require.NoDirExists(t, newerDir)
