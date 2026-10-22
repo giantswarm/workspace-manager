@@ -63,9 +63,18 @@ storage:
   sizing:
     # -- What a repository not yet mirrored counts: this multiplier, at least
     # 1, of the size its provider reports (a number or a string, `"1.5"`).
+    # Measured on Amazon EFS and Azure Files (agentlab `workspaces-measure`):
+    # 1.07 to 1.09 for a 40 MiB repository, 1.29 to 1.46 for a 0.7 MiB one,
+    # 1.97 for a 0.5 MiB one, where a fixed mirror overhead of about 0.5 MiB
+    # dominates and the headroom absorbs it; 1.5 covers them.
     # Passed to `serve` as its `sizing-factor` flag.
     factor: "1.5"  # @schema type: [string, number]; pattern: ^[0-9]+(\.[0-9]+)?$
-    # -- The least headroom over the need, a Kubernetes quantity. Passed to
+    # -- The least headroom over the need, a Kubernetes quantity. Measured: a
+    # Session's directory holds 1.5 MiB (a small Go repository) to 19 MiB (a
+    # 40 MiB one) before any build output, so 4Gi, or half the need, is ample.
+    # Azure Files provisions at least 32 GiB per share, which absorbs it
+    # below about 21 GiB of need; a workspace's `spec.sizing.minimum` changes
+    # that. Passed to
     # `serve` as its `sizing-headroom` flag.
     headroom: 4Gi
     # -- The headroom as a share of the need, `0.5` for half of it, the
@@ -88,7 +97,10 @@ sync:
   # -- The refresh threshold, a Go duration: `authorize_workspace` requests a
   # sync of a Workspace whose last sync is older, without the Session waiting
   # for it. The requested sync lists the provider anew, never from the
-  # minute-long listing cache, so the value has no floor. Passed to `serve` as
+  # minute-long listing cache, so the value has no floor. Measured: a no-op
+  # cycle takes 4.6 to 5.2 s and a changed one 12 to 17 s on both drivers,
+  # the Session's own fetch 2 to 5 s, so an hour keeps a Workspace current
+  # at no noticeable cost. Passed to `serve` as
   # its `sync-refresh-after` flag.
   refreshAfter: 1h
   # The sync Job the controller starts per cycle that has something to fetch,
@@ -131,7 +143,8 @@ sessions:
   # idle TTL as the agent-platform chart sets it); every turn moves the date,
   # a Session deleted in kagent loses its directory at once (see `poll`), and
   # a directory whose Session kagent does not know goes this long after the
-  # sync that first found it. The sync Job cleans up, from kagent's record of
+  # sync that first found it. Measured directories (1.5 to 19 MiB) put 2,400
+  # live ones at about 45 GiB, so the window is no storage concern. The sync Job cleans up, from kagent's record of
   # each Session's last turn (`kagent.address`). Passed to `serve` as its
   # `sessions-cleanup-after` flag.
   cleanupAfter: 336h
