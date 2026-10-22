@@ -406,8 +406,9 @@ record of each Session's last turn:
   session directories — a directory whose Session kagent's listing does
   not name goes in the first one, a listed Session's after its window — at
   the earliest cleanup date or a day after the last cycle, whichever comes
-  first, or at once for a `sync_workspace` request or a
-  second `delete_workspace` (after a running Job): a directory cleared
+  first, or at once for a `sync_workspace` request, a
+  second `delete_workspace` or, within `--sessions-poll`, a Session deleted
+  in kagent whose directory the last cycle kept (after a running Job): a directory cleared
   outside a cycle is found gone without waiting, while one still there is
   kept as by any cycle. When a cycle since the deletion leaves no
   directory, the controller deletes the volume's claim and removes the
