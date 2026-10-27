@@ -2,6 +2,9 @@
 # defaults flag repeated test fixtures, which are not real duplication.
 version: "2"
 linters:
+  enable:
+    - gosec
+    - goconst
   settings:
     goconst:
       min-len: 5
