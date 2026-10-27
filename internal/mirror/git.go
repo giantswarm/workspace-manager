@@ -23,8 +23,10 @@ var gitEnv = []string{
 
 // gitBaseArgs precede every subcommand. The volume is a network filesystem
 // whose uid mapping may differ from the Job's, which git would otherwise
-// refuse as dubious ownership; the volume is the sync's own.
-var gitBaseArgs = []string{"-c", "safe.directory=*"}
+// refuse as dubious ownership; the volume is the sync's own. No command
+// starts git's automatic maintenance, which runs detached and rewrites a
+// mirror's packs and commit-graph beside the sync's own gc step.
+var gitBaseArgs = []string{"-c", "safe.directory=*", "-c", "maintenance.auto=false"}
 
 // gitEnviron is the environment git runs with: the process's own, gitEnv,
 // and the roots the binary's HTTP client verifies with (SSL_CERT_FILE, which

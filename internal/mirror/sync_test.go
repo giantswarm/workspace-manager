@@ -247,6 +247,79 @@ func TestSyncPrunesUnborrowedObjects(t *testing.T) {
 	runGit(t, h.mirror("acme", "alpha"), "fsck", "--full", "--strict")
 }
 
+func TestSyncLeavesNoCommitGraph(t *testing.T) {
+	for name, written := range map[string]string{
+		"split": filepath.Join("objects", "info", "commit-graphs", "commit-graph-chain"),
+		"plain": filepath.Join("objects", "info", "commit-graph"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.upstream.create("acme", "alpha")
+			h.upstream.commit("acme", "alpha", "one.txt", "one")
+			h.sync(h.repo("acme", "alpha", t0))
+			mirror := h.mirror("acme", "alpha")
+			require.Equal(t, "false", runGit(t, mirror, "config", "maintenance.auto"))
+
+			// A commit-graph an earlier sync's git left, and a mirror cloned
+			// before maintenance.auto=false, whose git would write one in the
+			// foreground after every fetch.
+			args := []string{"commit-graph", "write", "--reachable"}
+			if name == "split" {
+				args = append(args, "--split")
+			}
+			runGit(t, mirror, args...)
+			require.FileExists(t, filepath.Join(mirror, written))
+			for key, value := range map[string]string{
+				"maintenance.auto":                 "true",
+				"maintenance.commit-graph.enabled": "true",
+				"maintenance.commit-graph.auto":    "-1",
+				"maintenance.autoDetach":           "false",
+				"gc.autoDetach":                    "false",
+			} {
+				runGit(t, mirror, "config", key, value)
+			}
+
+			c2 := h.upstream.commit("acme", "alpha", "two.txt", "two")
+			res := h.sync(h.repo("acme", "alpha", t1))
+			require.Equal(t, []string{"acme/alpha"}, res.Fetched)
+			require.Equal(t, c2, h.manifest().Entry("acme", "alpha").Head)
+			require.NoDirExists(t, filepath.Join(mirror, "objects", "info", "commit-graphs"))
+			require.NoFileExists(t, filepath.Join(mirror, "objects", "info", "commit-graph"))
+			runGit(t, mirror, "fsck", "--full", "--strict")
+		})
+	}
+}
+
+func TestSyncRemovesStaleLocks(t *testing.T) {
+	h := newHarness(t)
+	h.upstream.create("acme", "alpha")
+	h.upstream.commit("acme", "alpha", "one.txt", "one")
+	h.sync(h.repo("acme", "alpha", t0))
+
+	// The locks a killed git left: the fetch updates refs/heads/main and
+	// fails while its lock stays.
+	mirror := h.mirror("acme", "alpha")
+	locks := []string{
+		"config.lock",
+		"packed-refs.lock",
+		filepath.Join("refs", "heads", "main.lock"),
+		filepath.Join("objects", "maintenance.lock"),
+		filepath.Join("objects", "pack", "multi-pack-index.lock"),
+	}
+	for _, l := range locks {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(mirror, l)), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(mirror, l), nil, 0o600))
+	}
+
+	c2 := h.upstream.commit("acme", "alpha", "two.txt", "two")
+	res := h.sync(h.repo("acme", "alpha", t1))
+	require.Equal(t, []string{"acme/alpha"}, res.Fetched)
+	require.Equal(t, c2, h.manifest().Entry("acme", "alpha").Head)
+	for _, l := range locks {
+		require.NoFileExists(t, filepath.Join(mirror, l))
+	}
+}
+
 func TestSyncFollowsAMovedDefaultBranch(t *testing.T) {
 	h := newHarness(t)
 	h.upstream.create("acme", "alpha")

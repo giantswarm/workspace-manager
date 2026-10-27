@@ -483,11 +483,19 @@ volume mounted at `--volume`:
 - **Borrowed objects:** a session's clone borrows the mirror's objects, so
   a mirror never loses an object such a clone may need, even after a
   force-push or a deleted branch upstream. Each mirror is cloned with
-  `gc.auto=0` and `gc.pruneExpire=never`; after a fetch the sync repacks
+  `gc.auto=0`, `gc.pruneExpire=never` and `maintenance.auto=false`; after a
+  fetch the sync repacks
   it with `--keep-unreachable` while any session directory's alternates name
   the mirror (matched by the tail `mirrors/<owner>/<name>.git/objects`, so a
   session's own mount path of the volume does not matter), and prunes the
-  unreachable objects only when none does.
+  unreachable objects only when none does. Every git call of the sync runs
+  with `maintenance.auto=false`, so only this step repacks a mirror, and a
+  fetch first deletes the mirror's commit-graph: a Session's fetch fails on
+  a commit the graph lists that its view of the packs lacks, which a
+  network filesystem's cached directory listing allows during a repack.
+  The sync is a mirror's only writer, so a fetch also deletes the lock
+  files a killed git left in it (`*.lock` under `refs/`, `packed-refs.lock`,
+  `config.lock` and the like), which would fail every later fetch.
 - **Result:** the manifest is written to the volume in one rename and, with
   `--result-configmap`, into that ConfigMap of `--namespace` under
   `manifest.json`, the Job's result; the chart renders the Job's
