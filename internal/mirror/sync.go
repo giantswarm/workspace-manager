@@ -306,6 +306,9 @@ func (s *Syncer) fetch(ctx context.Context, g *git, r Repository, dir, relPath s
 			return err
 		}
 	}
+	if err := removeCommitGraph(dir); err != nil {
+		return err
+	}
 	if _, err := g.run(ctx, dir, append(cred, "fetch", "--quiet", "--prune", "origin")...); err != nil {
 		return err
 	}
@@ -313,6 +316,25 @@ func (s *Syncer) fetch(ctx context.Context, g *git, r Repository, dir, relPath s
 		return err
 	}
 	return s.gc(ctx, g, dir, relPath)
+}
+
+// removeCommitGraph deletes the mirror's commit-graph before the gc step
+// repacks it. A Session whose view of the mirror's packs lags behind the
+// repack on a network filesystem then misses an object its fetch can do
+// without, where a commit the graph still lists fails the fetch. The chain
+// goes first, so a reader never follows it to a deleted layer.
+func removeCommitGraph(dir string) error {
+	info := filepath.Join(dir, "objects", "info")
+	for _, p := range []string{
+		filepath.Join(info, "commit-graphs", "commit-graph-chain"),
+		filepath.Join(info, "commit-graphs"),
+		filepath.Join(info, "commit-graph"),
+	} {
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("remove commit-graph: %w", err)
+		}
+	}
+	return nil
 }
 
 // gc repacks a fetched mirror. While a session directory's clone borrows the

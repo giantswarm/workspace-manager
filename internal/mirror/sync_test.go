@@ -247,6 +247,35 @@ func TestSyncPrunesUnborrowedObjects(t *testing.T) {
 	runGit(t, h.mirror("acme", "alpha"), "fsck", "--full", "--strict")
 }
 
+func TestSyncLeavesNoCommitGraph(t *testing.T) {
+	h := newHarness(t)
+	h.upstream.create("acme", "alpha")
+	h.upstream.commit("acme", "alpha", "one.txt", "one")
+	h.sync(h.repo("acme", "alpha", t0))
+
+	// A commit-graph an earlier sync's git left, and a mirror whose git
+	// would write one in the foreground after every fetch.
+	mirror := h.mirror("acme", "alpha")
+	runGit(t, mirror, "commit-graph", "write", "--reachable", "--split")
+	require.FileExists(t, filepath.Join(mirror, "objects", "info", "commit-graphs", "commit-graph-chain"))
+	for key, value := range map[string]string{
+		"maintenance.commit-graph.enabled": "true",
+		"maintenance.commit-graph.auto":    "-1",
+		"maintenance.autoDetach":           "false",
+		"gc.autoDetach":                    "false",
+	} {
+		runGit(t, mirror, "config", key, value)
+	}
+
+	c2 := h.upstream.commit("acme", "alpha", "two.txt", "two")
+	res := h.sync(h.repo("acme", "alpha", t1))
+	require.Equal(t, []string{"acme/alpha"}, res.Fetched)
+	require.Equal(t, c2, h.manifest().Entry("acme", "alpha").Head)
+	require.NoDirExists(t, filepath.Join(mirror, "objects", "info", "commit-graphs"))
+	require.NoFileExists(t, filepath.Join(mirror, "objects", "info", "commit-graph"))
+	runGit(t, mirror, "fsck", "--full", "--strict")
+}
+
 func TestSyncFollowsAMovedDefaultBranch(t *testing.T) {
 	h := newHarness(t)
 	h.upstream.create("acme", "alpha")

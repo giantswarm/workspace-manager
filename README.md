@@ -487,7 +487,11 @@ volume mounted at `--volume`:
   it with `--keep-unreachable` while any session directory's alternates name
   the mirror (matched by the tail `mirrors/<owner>/<name>.git/objects`, so a
   session's own mount path of the volume does not matter), and prunes the
-  unreachable objects only when none does.
+  unreachable objects only when none does. Every git call of the sync runs
+  with `maintenance.auto=false`, so only this step repacks a mirror, and a
+  fetch first deletes the mirror's commit-graph: a Session's fetch fails on
+  a commit the graph lists that its view of the packs lacks, which a
+  network filesystem's cached directory listing allows during a repack.
 - **Result:** the manifest is written to the volume in one rename and, with
   `--result-configmap`, into that ConfigMap of `--namespace` under
   `manifest.json`, the Job's result; the chart renders the Job's
