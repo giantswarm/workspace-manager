@@ -8,6 +8,7 @@ package mirror
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -262,7 +263,8 @@ func (s *Syncer) apply(ctx context.Context, g *git, a action, r Repository, prev
 // clone mirrors the repository into a temporary directory beside its final
 // place and renames it there once complete: the volume never holds a partial
 // mirror under its name. The mirror's own configuration disables automatic
-// garbage collection and expiry, so only the sync's gc step touches objects.
+// garbage collection, maintenance and expiry, so only the sync's gc step
+// touches objects, whichever git runs in the mirror.
 func (s *Syncer) clone(ctx context.Context, g *git, r Repository, dir string) error {
 	tmp := filepath.Join(filepath.Dir(dir), tmpPrefix+filepath.Base(dir))
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil { //nolint:gosec // the mirrors are shared with the sessions
@@ -276,7 +278,7 @@ func (s *Syncer) clone(ctx context.Context, g *git, r Repository, dir string) er
 		return err
 	}
 	args := append(cred, "clone", "--mirror", "--quiet",
-		"-c", "gc.auto=0", "-c", "gc.pruneExpire=never",
+		"-c", "gc.auto=0", "-c", "gc.pruneExpire=never", "-c", "maintenance.auto=false",
 		"--", r.CloneURL, tmp)
 	if _, err := g.run(ctx, s.Volume, args...); err != nil {
 		_ = os.RemoveAll(tmp)
@@ -298,6 +300,9 @@ func (s *Syncer) fetch(ctx context.Context, g *git, r Repository, dir, relPath s
 	if err != nil {
 		return err
 	}
+	if err := removeStaleLocks(dir); err != nil {
+		return err
+	}
 	// The provider may have moved the repository since the clone. The config
 	// is rewritten only then: git replaces it by lock and rename, and a
 	// Session's setup that reads the mirror's origin meanwhile fails.
@@ -316,6 +321,44 @@ func (s *Syncer) fetch(ctx context.Context, g *git, r Repository, dir, relPath s
 		return err
 	}
 	return s.gc(ctx, g, dir, relPath)
+}
+
+// removeStaleLocks deletes the lock files a killed git left in the mirror: a
+// sync that ended mid-write, or the detached maintenance an earlier sync's
+// fetch started, which ended with its Job. The sync is the mirror's only
+// writer, so no lock is live when it starts, and a stale one fails every
+// later fetch.
+func removeStaleLocks(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("remove stale lock: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	for _, p := range []string{
+		"config.lock",
+		"HEAD.lock",
+		"packed-refs.lock",
+		"objects/maintenance.lock",
+		"objects/pack/multi-pack-index.lock",
+		"objects/info/commit-graphs/commit-graph-chain.lock",
+	} {
+		if err := root.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove stale lock: %w", err)
+		}
+	}
+	err = fs.WalkDir(root.FS(), "refs", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() && strings.HasSuffix(d.Name(), ".lock") {
+			return root.Remove(p)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove stale lock: %w", err)
+	}
+	return nil
 }
 
 // removeCommitGraph deletes the mirror's commit-graph before the gc step
