@@ -49,6 +49,9 @@
                 }
             }
         },
+        "externalDNSIP": {
+            "type": "string"
+        },
         "extraArgs": {
             "type": "array",
             "description": "Extra container arguments."
@@ -82,7 +85,14 @@
         },
         "global": {
             "type": "object",
-            "additionalProperties": true
+            "description": "Global values shared between all subcharts and the platform.",
+            "additionalProperties": true,
+            "properties": {
+                "podSecurityStandards": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
         },
         "grant": {
             "type": "object",
@@ -118,6 +128,10 @@
                     "description": "How long a grant is valid, a Go duration: the time a surface has to pass it to agent-manager's `start_session`."
                 }
             }
+        },
+        "helm": {
+            "type": "object",
+            "additionalProperties": true
         },
         "image": {
             "type": "object",
@@ -185,6 +199,9 @@
                     "description": "Enable debug logging."
                 }
             }
+        },
+        "managementCluster": {
+            "type": "string"
         },
         "mcp": {
             "type": "object",
