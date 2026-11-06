@@ -10,6 +10,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/giantswarm/mcp-toolkit/brand"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpotel "github.com/mark3labs/mcp-go/otel"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -81,6 +82,7 @@ func NewMCPServer(cfg Config, version string) *mcpserver.MCPServer {
 		mcpotel.WithServerTracingPropagator(otel.Tracer(tracerName), propagation.NewCompositeTextMapPropagator()),
 		mcpserver.WithToolCapabilities(false),
 		mcpserver.WithInstructions("Manage the Agent Platform's workspaces: the sources an agent session works on. Every call is checked against the caller's Organization."),
+		brand.WithGiantSwarmIcon(),
 	)
 	if cfg.Kube != nil {
 		names := make([]string, len(cfg.Providers))
