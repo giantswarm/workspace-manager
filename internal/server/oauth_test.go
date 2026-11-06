@@ -380,6 +380,6 @@ func TestMCPInitialize(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
-	assert.Contains(t, string(body), `"serverInfo":{"name":"workspace-manager","version":"test"}`)
+	assert.Contains(t, string(body), `"serverInfo":{"name":"workspace-manager","version":"test","icons":[{"src":"data:image/svg+xml;base64,`)
 	assert.NotContains(t, string(body), `"error"`)
 }
