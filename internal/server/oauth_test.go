@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -226,16 +225,13 @@ func TestForwardedIDTokenBecomesTheCaller(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, call("not-a-token").Code)
 }
 
-// TestUntrustedAudienceIsNamedInTheRefusal: a session that signed in through
-// another Dex client forwards an id_token for that client next to the
-// audience the MCPServer requires, never the platform client. With neither
-// trusted, mcp-oauth falls back to Dex's userinfo endpoint (Dex answers for
-// any token it signed), so the caller is known but not SSO and there is no
-// Dex token to carry. The refusal names the token's audiences and the trusted
-// ones, in the log and in the WWW-Authenticate description muster shows,
-// without any token material. Trusting the required audience turns the same
-// token into the caller.
-func TestUntrustedAudienceIsNamedInTheRefusal(t *testing.T) {
+// TestUntrustedAudienceIsRefused: a session that signed in through another
+// Dex client forwards an id_token for that client next to the audience the
+// MCPServer requires, never the platform client. mcp-oauth refuses it before
+// this server sees a caller, and its log names the token's audiences next to
+// the trusted ones, without any token material. Trusting the required
+// audience turns the same token into the caller.
+func TestUntrustedAudienceIsRefused(t *testing.T) {
 	idp := newFakeIdP(t)
 	var logs bytes.Buffer
 	o, err := newOAuth(idp.config(), "/mcp", slog.New(slog.NewTextHandler(&logs, nil)))
@@ -243,7 +239,7 @@ func TestUntrustedAudienceIsNamedInTheRefusal(t *testing.T) {
 	t.Cleanup(func() { o.shutdown(context.Background()) })
 
 	h := o.protect(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("a caller without a token to present must not reach the handler")
+		t.Error("an untrusted audience must not reach the handler")
 	}))
 	portal := idp.idToken(t, []string{"portal-client", "kubernetes"}, time.Now().Add(30*time.Minute))
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
@@ -252,26 +248,11 @@ func TestUntrustedAudienceIsNamedInTheRefusal(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
-	www := rec.Header().Get("WWW-Authenticate")
-	assert.Contains(t, www, `Bearer error="invalid_token"`)
-	assert.Contains(t, www, `error_description="token audience [portal-client kubernetes] matches none of the trusted audiences [agent-platform]`, www)
-	assert.Contains(t, rec.Body.String(), "matches none of the trusted audiences [agent-platform]")
-	assert.NotContains(t, www, portal, "no token material in the challenge")
-	assert.Contains(t, logs.String(), "request refused")
-	assert.Contains(t, logs.String(), `aud="[portal-client kubernetes]"`)
-	assert.Contains(t, logs.String(), `trustedAudiences=[agent-platform]`)
-	assert.Contains(t, logs.String(), "caller=admin@lab.local", "the caller is known — userinfo authenticated it")
+	assert.Contains(t, rec.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+	assert.Contains(t, logs.String(), "Unknown JWT bearer refused")
+	assert.Contains(t, logs.String(), `token_audience="[portal-client kubernetes]"`)
+	assert.Contains(t, logs.String(), `trusted_audiences=[agent-platform]`)
 	assert.NotContains(t, logs.String(), portal, "no token material in the log")
-
-	// The generic refusal stays for a bearer that is not a JWT with a
-	// readable audience — here an opaque token the fake IdP does not know,
-	// which mcp-oauth already rejects.
-	req = httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req.Header.Set("Authorization", "Bearer opaque-unknown")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.NotContains(t, rec.Header().Get("WWW-Authenticate"), "matches none of the trusted audiences")
 
 	// Trust what the MCPServer requires (kubernetes here, dex-k8s-authenticator
 	// on a Giant Swarm cluster) and the portal's token is the caller's.
@@ -298,39 +279,7 @@ func TestUntrustedAudienceIsNamedInTheRefusal(t *testing.T) {
 	assert.Equal(t, portal, seenToken, "the id_token travels with the request")
 }
 
-func TestUnverifiedAudience(t *testing.T) {
-	payload := func(claims string) string {
-		return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".sig"
-	}
-	for name, tc := range map[string]struct {
-		token string
-		want  []string
-		ok    bool
-	}{
-		"single audience":    {payload(`{"aud":"portal-client","sub":"x"}`), []string{"portal-client"}, true},
-		"audience list":      {payload(`{"aud":["portal-client","kubernetes"]}`), []string{"portal-client", "kubernetes"}, true},
-		"no audience":        {payload(`{"sub":"x"}`), nil, false},
-		"empty audience":     {payload(`{"aud":""}`), nil, false},
-		"not json":           {payload(`{"aud":`), nil, false},
-		"opaque":             {"not-a-jwt", nil, false},
-		"four segments":      {"a.b.c.d", nil, false},
-		"payload not base64": {"a.!!!.c", nil, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			got, ok := unverifiedAudience(tc.token)
-			assert.Equal(t, tc.ok, ok)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-
-	aud, ok := untrustedAudience(payload(`{"aud":["portal-client","kubernetes"]}`), []string{"agent-platform"})
-	assert.True(t, ok)
-	assert.Equal(t, []string{"portal-client", "kubernetes"}, aud)
-	_, ok = untrustedAudience(payload(`{"aud":["portal-client","kubernetes"]}`), []string{"agent-platform", "kubernetes"})
-	assert.False(t, ok, "a token naming a trusted audience was refused for another reason")
-	_, ok = untrustedAudience("opaque", []string{"agent-platform"})
-	assert.False(t, ok)
-
+func TestHeaderQuotedString(t *testing.T) {
 	assert.Equal(t, `aud [a b] vs [c]`, headerQuotedString(`aud ["a" b] vs [\c]`))
 }
 
