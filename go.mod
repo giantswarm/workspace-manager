@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
-	github.com/giantswarm/mcp-oauth v1.10.2
+	github.com/giantswarm/mcp-oauth v1.13.0
 	github.com/giantswarm/mcp-toolkit v0.5.2
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/mark3labs/mcp-go v1.5.0
@@ -30,6 +30,7 @@ require (
 )
 
 require (
+	code.dny.dev/ssrf v0.3.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
