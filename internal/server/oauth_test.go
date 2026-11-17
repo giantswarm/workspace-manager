@@ -150,7 +150,6 @@ func (f *fakeIdP) config() OAuthConfig {
 		DexClientID:        "agent-platform",
 		DexClientSecret:    "lab-only",
 		DexCAFile:          f.caFile,
-		DexAllowPrivateIP:  true,
 		TrustedAudiences:   []string{"agent-platform"},
 		SSOAllowPrivateIPs: true,
 	}
