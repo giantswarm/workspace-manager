@@ -128,7 +128,7 @@ var validatedUser = &providers.UserInfo{
 	TokenSource: providers.TokenSourceSSO,
 }
 
-const validatedBearer = "dex-id-token"
+const validatedBearer = "dex-id-token" //nolint:gosec // G101: a placeholder the validation stub matches, not a credential
 
 // afterValidation replaces mcp-oauth's ValidateToken: the bearer
 // validatedBearer is a validated forwarded id_token, anything else is refused.
