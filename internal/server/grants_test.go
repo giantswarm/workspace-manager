@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,7 +43,7 @@ func TestProviderAppGrants(t *testing.T) {
 		headers []string
 	}
 	var got seen
-	h := srv.guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := guardAfterValidation(srv, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = seen{tokens: map[string]string{}}
 		got.id, _ = identity.FromContext(r.Context())
 		for _, name := range []string{"github", "gitlab"} {
@@ -69,7 +68,7 @@ func TestProviderAppGrants(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec
 	}
-	dexToken := idp.idToken(t, []string{"agent-platform"}, time.Now().Add(30*time.Minute))
+	dexToken := validatedBearer
 
 	rec := call(dexToken, map[string]string{"github": "ghu_alice", "gitlab": "glpat_alice"})
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())

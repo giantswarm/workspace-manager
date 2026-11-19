@@ -77,9 +77,16 @@ type oauthRuntime struct {
 	log     *slog.Logger
 }
 
-// adjustServerConfig, when set, edits the mcp-oauth server configuration before
-// the server is built.
-var adjustServerConfig func(*oauth.ServerConfig)
+func oauthServerConfig(cfg OAuthConfig, rootCAs *x509.CertPool) *oauth.ServerConfig {
+	return &oauth.ServerConfig{
+		Issuer:                        cfg.BaseURL,
+		AllowRefreshTokenRotation:     true,
+		AllowPublicClientRegistration: cfg.AllowPublicClientRegistration,
+		MaxClientsPerIP:               10,
+		TrustedAudiences:              cfg.TrustedAudiences,
+		JWKSRootCAs:                   rootCAs,
+	}
+}
 
 func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime, error) {
 	if err := cfg.Validate(); err != nil {
@@ -94,18 +101,7 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 		return nil, err
 	}
 	store := memory.New()
-	serverCfg := &oauth.ServerConfig{
-		Issuer:                        cfg.BaseURL,
-		AllowRefreshTokenRotation:     true,
-		AllowPublicClientRegistration: cfg.AllowPublicClientRegistration,
-		MaxClientsPerIP:               10,
-		TrustedAudiences:              cfg.TrustedAudiences,
-		JWKSRootCAs:                   rootCAs,
-	}
-	if adjustServerConfig != nil {
-		adjustServerConfig(serverCfg)
-	}
-	srv, err := oauth.NewServer(provider, store, store, store, serverCfg, log,
+	srv, err := oauth.NewServer(provider, store, store, store, oauthServerConfig(cfg, rootCAs), log,
 		oauth.WithAuditor(security.NewAuditor(log, true)))
 	if err != nil {
 		return nil, fmt.Errorf("oauth: server: %w", err)
