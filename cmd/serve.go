@@ -171,7 +171,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.dexCAFile, "dex-ca-file", envOr("DEX_CA_FILE", ""), "PEM CA bundle of a Dex with a private certificate; verifies discovery, token and JWKS calls (DEX_CA_FILE)")
 	f.BoolVar(&o.dexAllowPrivateIP, "allow-private-oauth-urls", envBool("WORKSPACE_MANAGER_OAUTH_ALLOW_PRIVATE_URLS", false), "Deprecated, no effect: the Dex client reaches private addresses and follows HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it (WORKSPACE_MANAGER_OAUTH_ALLOW_PRIVATE_URLS)")
 	f.StringVar(&o.oauthTrustedAudiences, "oauth-trusted-audiences", envOr("OAUTH_TRUSTED_AUDIENCES", ""), "Comma-separated OAuth client IDs whose Dex id_tokens are accepted as bearer tokens: the platform client and the audiences muster requires, which every forwarded token carries (OAUTH_TRUSTED_AUDIENCES)")
-	f.BoolVar(&o.ssoAllowPrivateIPs, "sso-allow-private-ips", envBool("SSO_ALLOW_PRIVATE_IPS", false), "Let Dex's JWKS endpoint resolve to a private address when validating forwarded tokens (SSO_ALLOW_PRIVATE_IPS)")
+	f.BoolVar(&o.ssoAllowPrivateIPs, "sso-allow-private-ips", envBool("SSO_ALLOW_PRIVATE_IPS", false), "Deprecated, no effect: the issuer host's JWKS endpoint may resolve to a private address without it (SSO_ALLOW_PRIVATE_IPS)")
 	f.BoolVar(&o.allowPublicClientRegistration, "allow-public-client-registration", envBool("WORKSPACE_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION", false), "Accept unauthenticated dynamic client registration; labs only (WORKSPACE_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION)")
 	return cmd
 }
@@ -179,6 +179,9 @@ environment variable named next to it; flags win over the environment.`,
 func warnDeprecatedOAuthOptions(o *serveOptions, log *slog.Logger) {
 	if o.dexAllowPrivateIP {
 		log.Warn("--allow-private-oauth-urls (WORKSPACE_MANAGER_OAUTH_ALLOW_PRIVATE_URLS) has no effect and will be removed: the Dex client reaches private addresses and follows HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it")
+	}
+	if o.ssoAllowPrivateIPs {
+		log.Warn("--sso-allow-private-ips (SSO_ALLOW_PRIVATE_IPS) has no effect and will be removed: the issuer host's JWKS endpoint may resolve to a private address without it")
 	}
 }
 
@@ -282,7 +285,6 @@ func runServe(ctx context.Context, o *serveOptions) error {
 			DexClientSecret:               o.dexClientSecret,
 			DexCAFile:                     o.dexCAFile,
 			TrustedAudiences:              splitList(o.oauthTrustedAudiences),
-			SSOAllowPrivateIPs:            o.ssoAllowPrivateIPs,
 			AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		}
 	}
