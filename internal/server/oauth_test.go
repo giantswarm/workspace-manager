@@ -234,13 +234,14 @@ func TestMCPInitialize(t *testing.T) {
 
 func TestOAuthServerConfig(t *testing.T) {
 	rootCAs := x509.NewCertPool()
-	cfg := OAuthConfig{BaseURL: "https://wm.example.com", TrustedAudiences: []string{"agent-platform"}, AllowPublicClientRegistration: true}
+	cfg := OAuthConfig{BaseURL: "https://wm.example.com", TrustedAudiences: []string{"agent-platform"}, AllowPrivateIPJWKSHosts: []string{"keys.example.com"}, AllowPublicClientRegistration: true}
 	assert.Equal(t, &oauth.ServerConfig{
 		Issuer:                        "https://wm.example.com",
 		AllowRefreshTokenRotation:     true,
 		AllowPublicClientRegistration: true,
 		MaxClientsPerIP:               10,
 		TrustedAudiences:              []string{"agent-platform"},
+		AllowPrivateIPJWKSHosts:       []string{"keys.example.com"},
 		JWKSRootCAs:                   rootCAs,
 	}, oauthServerConfig(cfg, rootCAs))
 }
