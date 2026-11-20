@@ -84,13 +84,14 @@ type oauthRuntime struct {
 
 func oauthServerConfig(cfg OAuthConfig, rootCAs *x509.CertPool) *oauth.ServerConfig {
 	return &oauth.ServerConfig{
-		Issuer:                        cfg.BaseURL,
-		AllowRefreshTokenRotation:     true,
-		AllowPublicClientRegistration: cfg.AllowPublicClientRegistration,
-		MaxClientsPerIP:               10,
-		TrustedAudiences:              cfg.TrustedAudiences,
-		AllowPrivateIPJWKSHosts:       cfg.AllowPrivateIPJWKSHosts,
-		JWKSRootCAs:                   rootCAs,
+		EnableClientIDMetadataDocuments: true,
+		Issuer:                          cfg.BaseURL,
+		AllowRefreshTokenRotation:       true,
+		AllowPublicClientRegistration:   cfg.AllowPublicClientRegistration,
+		MaxClientsPerIP:                 10,
+		TrustedAudiences:                cfg.TrustedAudiences,
+		AllowPrivateIPJWKSHosts:         cfg.AllowPrivateIPJWKSHosts,
+		JWKSRootCAs:                     rootCAs,
 	}
 }
 

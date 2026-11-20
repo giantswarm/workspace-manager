@@ -1,5 +1,8 @@
 # workspace-manager
 
+CIMD is enabled by default. DCR is deprecated by MCP 2026-07-28 and remains a
+compatibility fallback; see the [OAuth registration guide](../../docs/oauth-client-registration.md).
+
 Manages the Agent Platform's workspaces, the sources agent sessions work on and their provider sign-ins, as one MCP server behind muster
 
 **Homepage:** <https://github.com/giantswarm/workspace-manager>
