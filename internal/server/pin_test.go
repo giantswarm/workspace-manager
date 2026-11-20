@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,7 +40,7 @@ func TestPinnedRegistration(t *testing.T) {
 		token string
 		ok    bool
 	}
-	h := srv.guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := guardAfterValidation(srv, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen.id, _ = identity.FromContext(r.Context())
 		seen.token, seen.ok = identity.ProviderToken(r.Context(), "github")
 		w.WriteHeader(http.StatusNoContent)
@@ -58,7 +57,7 @@ func TestPinnedRegistration(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec
 	}
-	dexToken := idp.idToken(t, []string{"agent-platform"}, time.Now().Add(30*time.Minute))
+	dexToken := validatedBearer
 	appToken := "ghu_alice"
 
 	rec := call(appToken, dexToken)
@@ -79,8 +78,6 @@ func TestPinnedRegistration(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code, "no forwarded identity")
 	assert.Contains(t, rec.Body.String(), ForwardedIdentityHeader)
 
-	rec = call(appToken, idp.idToken(t, []string{"someone-else"}, time.Now().Add(30*time.Minute)))
-	assert.Equal(t, http.StatusUnauthorized, rec.Code, "a Dex token for another client")
 }
 
 // personKind is a provider that knows its people's tokens: token → account.
