@@ -246,6 +246,38 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestPublicGitHubUploadHost(t *testing.T) {
+	for _, test := range []struct {
+		name, web, api string
+		wantUpload     bool
+	}{
+		{name: "public GitHub", wantUpload: true},
+		{name: "enterprise", web: "https://ghe.example.com"},
+		{name: "separate enterprise API", web: "https://ghe.example.com", api: "https://api.ghe.example.com"},
+		{name: "custom API", web: "https://github.com", api: "https://api.example.com"},
+		{name: "insecure GitHub URL", web: "http://github.com"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			kind, err := github.New(github.Values{
+				URL: test.web, APIURL: test.api,
+				App: github.AppValues{ID: "1", PrivateKey: provider.SecretRef{Name: "a", Key: "k"}},
+			}, github.Options{})
+			require.NoError(t, err)
+			var uploads []provider.Host
+			for _, host := range kind.Hosts().API {
+				if host.Name == "uploads.github.com" {
+					uploads = append(uploads, host)
+				}
+			}
+			if test.wantUpload {
+				require.Equal(t, []provider.Host{{Name: "uploads.github.com", Scheme: provider.SchemeBearer}}, uploads)
+			} else {
+				require.Empty(t, uploads)
+			}
+		})
+	}
+}
+
 func TestEnterpriseServer(t *testing.T) {
 	k, err := github.New(github.Values{
 		URL: "https://ghe.example.com/",
