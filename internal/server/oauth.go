@@ -84,6 +84,7 @@ type oauthRuntime struct {
 
 func oauthServerConfig(cfg OAuthConfig, rootCAs *x509.CertPool) *oauth.ServerConfig {
 	return &oauth.ServerConfig{
+		EnableClientIDMetadataDocuments: true,
 		Issuer:                        cfg.BaseURL,
 		AllowRefreshTokenRotation:     true,
 		AllowPublicClientRegistration: cfg.AllowPublicClientRegistration,

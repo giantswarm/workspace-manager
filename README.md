@@ -1,5 +1,10 @@
 # workspace-manager
 
+OAuth client registration: CIMD is enabled by default. DCR is deprecated by MCP
+2026-07-28 and remains a compatibility fallback. See
+[registration, consent, egress and TLS configuration](docs/oauth-client-registration.md).
+
+
 Manages the Agent Platform's workspaces, the sources agent sessions work on,
 as one MCP server behind muster.
 
