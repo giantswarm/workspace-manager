@@ -198,6 +198,9 @@ func (k *Kind) Hosts() provider.Hosts {
 	if k.api.Host != k.web.Host {
 		h.API = []provider.Host{{Name: k.api.Host, Scheme: provider.SchemeBearer}}
 	}
+	if k.web.Scheme == "https" && k.web.Host == "github.com" && k.api.Scheme == "https" && k.api.Host == "api.github.com" {
+		h.API = append(h.API, provider.Host{Name: "uploads.github.com", Scheme: provider.SchemeBearer})
+	}
 	return h
 }
 
