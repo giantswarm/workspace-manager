@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,8 +99,15 @@ func TestRunDrainsBeforeShutdown(t *testing.T) {
 	require.NoError(t, l.Close())
 	srv, err := New(Config{Addr: addr, Drain: 500 * time.Millisecond}, api.NewMCPServer(api.Config{}, "test"), quiet())
 	require.NoError(t, err)
+	var accepted sync.Map
+	srv.http.ConnState = func(connection net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			accepted.Store(connection.RemoteAddr().String(), struct{}{})
+		}
+	}
 
 	ctx, stop := context.WithCancel(t.Context())
+	t.Cleanup(stop)
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
 	get := func() (int, error) {
@@ -111,6 +119,13 @@ func TestRunDrainsBeforeShutdown(t *testing.T) {
 		return resp.StatusCode, nil
 	}
 	require.Eventually(t, func() bool { c, err := get(); return err == nil && c == http.StatusOK }, 5*time.Second, 10*time.Millisecond)
+	idleConnection, err := net.DialTimeout("tcp", addr, time.Second)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idleConnection.Close() })
+	require.Eventually(t, func() bool {
+		_, exists := accepted.Load(idleConnection.LocalAddr().String())
+		return exists
+	}, time.Second, time.Millisecond)
 
 	stop()
 	require.Eventually(t, func() bool { c, err := get(); return err == nil && c == http.StatusServiceUnavailable }, time.Second, 10*time.Millisecond,
@@ -118,8 +133,8 @@ func TestRunDrainsBeforeShutdown(t *testing.T) {
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("not stopped after the drain")
+	case <-time.After(httpShutdownTimeout + time.Second):
+		t.Fatal("not stopped within the shutdown deadline")
 	}
 	_, err = get()
 	assert.Error(t, err, "still serving after the drain")
