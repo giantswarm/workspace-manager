@@ -49,6 +49,13 @@ the bearer and the person's token of each provider instance's App in
 `X-Muster-Grant-<instance>`; add
 `--providers-config=<file> --muster-provider-apps=<instance>,<instance>`.
 
+Public GitHub workspace grants include `github.com` for git and
+`api.github.com` and `uploads.github.com` for bearer-authenticated CLI
+requests. The upload destination lets `gh --attach` use the person's token
+through the Session's egress gateway. It is included only for the standard
+HTTPS GitHub web and API endpoints; an enterprise or custom API instance
+receives its configured hosts.
+
 Run a sync against a directory standing in for a workspace's volume, with a
 selection file and a credential directory `<provider>/<owner>` per provider
 instance and owner (`username`

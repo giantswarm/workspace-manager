@@ -21,6 +21,8 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+const httpShutdownTimeout = 15 * time.Second
+
 // Config configures the listener.
 type Config struct {
 	Addr    string
@@ -202,7 +204,7 @@ func (s *Server) Run(ctx context.Context) error {
 		case <-time.After(s.drain):
 		}
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	defer cancel()
 	if s.oauth != nil {
 		s.oauth.shutdown(shutdownCtx)
