@@ -380,3 +380,51 @@ tests:
             providerApps: [github]
     asserts:
       - failedTemplate: {}
+
+  - it: sets the tool approval explicitly, the "Allow all" preset
+    asserts:
+      - equal:
+          path: spec.approval.rule
+          value: Allow
+      - equal:
+          path: spec.approval.tools.list_workspaces
+          value: Allow
+      - equal:
+          path: spec.approval.tools.delete_workspace
+          value: Allow
+      - equal:
+          path: spec.approval.tools.authorize_workspace
+          value: Allow
+
+  - it: renders an installation's override of one tool
+    set:
+      muster:
+        mcpServer:
+          approval:
+            tools:
+              delete_workspace: Ask
+    asserts:
+      - equal:
+          path: spec.approval.tools.delete_workspace
+          value: Ask
+      - equal:
+          path: spec.approval.tools.create_workspace
+          value: Allow
+
+  - it: renders no approval when it is null
+    set:
+      muster:
+        mcpServer:
+          approval: null
+    asserts:
+      - notExists:
+          path: spec.approval
+
+  - it: refuses an approval rule of Block
+    set:
+      muster:
+        mcpServer:
+          approval:
+            rule: Block
+    asserts:
+      - failedTemplate: {}

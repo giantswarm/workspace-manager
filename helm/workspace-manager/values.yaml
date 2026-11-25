@@ -323,6 +323,38 @@ muster:
     description: Workspaces of this installation, the sources agent sessions work on, for the Agent Platform
     # -- Extra labels on the MCPServer CR.
     labels: {}  # @schema additionalProperties: true
+    # -- The connector's tool approval, rendered as the MCPServer's
+    # `spec.approval`. The chart writes out every tool of this release
+    # explicitly (the "Allow all" preset: it is one of the platform's own
+    # management servers, whose tools the Dev Portal's pages (and
+    # klaus-gateway's Slack forms) call as the signed-in person and agents use
+    # freely on a trusted platform; agent callers are asked by muster's floors
+    # and the governance mode (`governance` in agent-platform), not by these
+    # settings; an installation tightens a tool here (Ask or Block)), so the
+    # connector arrives reviewed. `rule` is what a tool without its own entry
+    # gets, new tools included. Values are Allow | Ask | Block (Block hides the
+    # tool); `rule` is Allow | Ask. An installation overrides per tool in its
+    # values. `null` renders none (the connector then runs every tool, shown as
+    # not reviewed); `{}` does not, Helm merges it into this default. Needs a
+    # muster whose MCPServer CRD carries `spec.approval` (an older CRD drops the
+    # field). See
+    # https://docs.giantswarm.io/overview/agent-platform/governing-tool-calls/
+    approval:
+      # @schema enum: [Allow, Ask]
+      rule: Allow
+      # @schema maxProperties: 512; additionalProperties: {type: string, enum: [Allow, Ask, Block]}
+      tools:
+        list_workspaces: Allow  # @schema enum: [Allow, Ask, Block]
+        get_workspace: Allow  # @schema enum: [Allow, Ask, Block]
+        create_workspace: Allow  # @schema enum: [Allow, Ask, Block]
+        update_workspace: Allow  # @schema enum: [Allow, Ask, Block]
+        delete_workspace: Allow  # @schema enum: [Allow, Ask, Block]
+        sync_workspace: Allow  # @schema enum: [Allow, Ask, Block]
+        list_owners: Allow  # @schema enum: [Allow, Ask, Block]
+        list_repositories: Allow  # @schema enum: [Allow, Ask, Block]
+        preview_workspace: Allow  # @schema enum: [Allow, Ask, Block]
+        list_providers: Allow  # @schema enum: [Allow, Ask, Block]
+        authorize_workspace: Allow  # @schema enum: [Allow, Ask, Block]
     # -- (int) How long muster waits for a tool's answer, in seconds (the
     # MCPServer's `spec.timeout`, 1 to 300); unset keeps muster's default,
     # 30 seconds. `authorize_workspace` bounds its access check at 20
