@@ -420,11 +420,22 @@ tests:
       - notExists:
           path: spec.approval
 
-  - it: refuses an approval rule of Block
+  - it: renders a rule of Block, which hides and refuses every tool without its own entry
     set:
       muster:
         mcpServer:
           approval:
             rule: Block
+    asserts:
+      - equal:
+          path: spec.approval.rule
+          value: Block
+
+  - it: refuses a rule the CRD does not allow
+    set:
+      muster:
+        mcpServer:
+          approval:
+            rule: Deny
     asserts:
       - failedTemplate: {}
