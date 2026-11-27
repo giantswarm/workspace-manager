@@ -65,6 +65,10 @@ spec:
   {{- with .Values.muster.mcpServer.timeout }}
   timeout: {{ . | int }}
   {{- end }}
+  {{- with .Values.muster.mcpServer.approval }}
+  approval:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- if and .Values.oauth.enabled .Values.muster.mcpServer.auth.provider }}
   {{- with .Values.muster.mcpServer.auth.authorizationServer }}
   auth:
